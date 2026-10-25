@@ -404,6 +404,82 @@ async fn http_router_returns_network_topology_for_a_segment() {
 }
 
 #[tokio::test]
+async fn http_router_draws_the_container_layer_with_service_edges() {
+    let app = TopologyMonolith::new_in_memory();
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/atlas_edge_container_sample.jsonl");
+    app.replay_jsonl(fixture).unwrap();
+
+    let host_id = app
+        .store()
+        .unwrap()
+        .list_all_hosts(Page::default())
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap()
+        .host_id;
+
+    let router = build_http_router(HttpAppState::new(app));
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/topology/host/{host_id}/processes"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let payload: Value = serde_json::from_slice(&body).unwrap();
+    let nodes = payload["data"]["nodes"].as_array().unwrap();
+    let edges = payload["data"]["edges"].as_array().unwrap();
+
+    let container_nodes: Vec<&Value> = nodes
+        .iter()
+        .filter(|node| node["objectKind"] == "ContainerRuntime")
+        .collect();
+    assert_eq!(container_nodes.len(), 2);
+    assert_eq!(container_nodes[0]["label"], "nginx");
+    assert_eq!(
+        container_nodes[0]["properties"]["runtimeType"],
+        "Containerd"
+    );
+    assert_eq!(container_nodes[0]["properties"]["imageRef"], "nginx:1.27");
+
+    // 容器挂在主机下
+    assert_eq!(
+        edges
+            .iter()
+            .filter(|edge| edge["edgeKind"] == "host_container_assoc")
+            .count(),
+        2
+    );
+
+    // nginx 实例落在 nginx 容器里：端口证据写的 Container 绑定被画成一条边
+    let container_edges: Vec<&Value> = edges
+        .iter()
+        .filter(|edge| edge["edgeKind"] == "container_service_assoc")
+        .collect();
+    assert_eq!(container_edges.len(), 1);
+    assert!(
+        container_edges[0]["source"]
+            .as_str()
+            .unwrap()
+            .starts_with("container:")
+    );
+    let instance_node = nodes
+        .iter()
+        .find(|node| node["id"] == container_edges[0]["target"])
+        .unwrap();
+    assert_eq!(instance_node["objectKind"], "ServiceInstance");
+}
+
+#[tokio::test]
 async fn http_router_exposes_containers_on_the_host_view() {
     let app = TopologyMonolith::new_in_memory();
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

@@ -143,12 +143,7 @@ fn build_container(
     scope: &str,
 ) -> ContainerRuntime {
     ContainerRuntime {
-        // 身份由「租户 + 运行时自己的容器 id」派生：容器重建会拿到新 id，
-        // 资产也就跟着变成新对象 —— 这正是我们想要的（旧容器是被替换掉的）。
-        container_id: stable_uuid(
-            "container_runtime",
-            &format!("{}:{}", candidate.tenant_id.0, candidate.container_key),
-        ),
+        container_id: container_uuid(candidate.tenant_id, &candidate.container_key),
         tenant_id: candidate.tenant_id,
         // pod 目录还没有，先不写悬空外键；K8s 线索留在下面的文本列里。
         pod_id: None,
@@ -167,6 +162,17 @@ fn build_container(
         pod_name: candidate.k8s_pod_name.clone(),
         k8s_namespace: candidate.k8s_namespace.clone(),
     }
+}
+
+/// 容器的资产 id：由「租户 + 运行时自己的容器 id」派生。
+///
+/// 两处会用到它 —— 容器物化、以及端口证据里带的 `container_id`（把实例挂到容器上）。
+/// 推导规则必须只有一份：盘成两份的话，「同一个容器」会变成两个资产。
+pub(crate) fn container_uuid(tenant_id: atlas_domain::TenantId, container_key: &str) -> Uuid {
+    stable_uuid(
+        "container_runtime",
+        &format!("{}:{}", tenant_id.0, container_key),
+    )
 }
 
 /// 容器挂在哪台主机：先按 `machine_id` 精确匹配，再退回主机名。

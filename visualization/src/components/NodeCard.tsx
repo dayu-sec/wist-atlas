@@ -106,6 +106,8 @@ function CardBody({
       return <ProcessGroupCard node={node} />;
     case 'ServiceEntity':
       return <ServiceCard node={node} />;
+    case 'ContainerRuntime':
+      return <ContainerCard node={node} />;
     case 'Subject':
       return <SubjectCard node={node} />;
     default:
@@ -464,6 +466,38 @@ function endpointLabels(properties: Record<string, unknown>): EndpointLabel[] {
       };
     })
     .filter((item) => Boolean(item.label));
+}
+
+/** 容器卡：名字 + 运行时/镜像。与主机卡片同一密度，不塞 k8s 细节。 */
+function ContainerCard({ node }: { node: HostProcessTopologyNode }) {
+  const name = String(node.properties.containerName ?? node.label);
+  const runtime = String(node.properties.runtimeType ?? '');
+  const image = typeof node.properties.imageRef === 'string' ? node.properties.imageRef : '';
+  const podName = typeof node.properties.podName === 'string' ? node.properties.podName : '';
+  const subtitle = image || podName || runtime;
+
+  return (
+    <div className="flex h-full items-center gap-2.5 px-3.5">
+      <span
+        className="grid size-[30px] shrink-0 place-items-center rounded-[9px]"
+        style={{ backgroundColor: '#ECFDF3', color: '#027A48' }}
+        aria-hidden
+      >
+        <KindGlyph kind="ContainerRuntime" className="size-[16px]" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-[12px] font-semibold leading-4 text-[#101828]" title={name}>
+          {name}
+        </div>
+        <div
+          className="mt-1 truncate font-mono text-[9.5px] leading-3 text-[#667085]"
+          title={[subtitle, runtime].filter(Boolean).join(' · ')}
+        >
+          {subtitle || '容器'}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function SubjectCard({ node }: { node: HostProcessTopologyNode }) {

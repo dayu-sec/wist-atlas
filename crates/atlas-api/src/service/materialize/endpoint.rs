@@ -35,6 +35,17 @@ struct EndpointPlan {
     instance: ServiceInstance,
     binding: RuntimeBinding,
     endpoint: InstanceEndpoint,
+    /// 端口证据里带了 `container_id`、而且这个容器本轮确实被采集到时，
+    /// 额外给实例挂一条「属于这个容器」的绑定。
+    container_binding: Option<RuntimeBinding>,
+}
+
+impl EndpointPlan {
+    fn container_id(&self) -> Option<Uuid> {
+        self.container_binding
+            .as_ref()
+            .map(|binding| binding.object_id)
+    }
 }
 
 /// 本次物化的结果。
@@ -57,6 +68,7 @@ pub(crate) fn materialize_service_endpoints<S>(
     catalog: &InMemoryCatalog,
     candidates: Vec<ServiceEndpointCandidate>,
     reported: bool,
+    known_containers: &BTreeSet<Uuid>,
     sweep_hosts: &BTreeSet<Uuid>,
     now: DateTime<Utc>,
 ) -> StorageResult<EndpointSweep>
@@ -68,6 +80,8 @@ where
     let mut seen_by_instance: BTreeMap<Uuid, BTreeSet<Uuid>> = BTreeMap::new();
     // 同一个服务的多个端口会产生多份完全相同的“计划”；服务与实例只需写一次。
     let mut written_instances: BTreeSet<Uuid> = BTreeSet::new();
+    // 同一个进程的多个端口只写一次容器归属。
+    let mut attributed_processes: BTreeSet<Uuid> = BTreeSet::new();
 
     for candidate in candidates {
         let Some(host_id) = resolve_host_id(catalog, &candidate) else {
@@ -92,21 +106,31 @@ where
             continue;
         }
 
-        let plan = plan_endpoint(&candidate, host_id, process, now);
+        let plan = plan_endpoint(&candidate, host_id, process, now, known_containers);
         if written_instances.insert(plan.instance.instance_id) {
             store.upsert_service(&plan.service)?;
             store.upsert_service_instance(&plan.instance)?;
             store.upsert_runtime_binding(&plan.binding)?;
-            // 同一个实例换了宿主进程（pid 被复用、进程重启后接管端口）时，
+            if let Some(container_binding) = &plan.container_binding {
+                store.upsert_runtime_binding(container_binding)?;
+            }
+            // 同一个实例换了宿主进程（pid 被复用、进程重启后接管端口）或换了容器时，
             // 旧绑定不能一直悬着，否则“这个实例由谁在跑”同时有两个答案。
             close_previous_bindings(
                 store,
                 plan.instance.instance_id,
                 process.process_id,
+                plan.container_id(),
                 plan.endpoint.valid_from,
                 now,
             )?;
         }
+        attribute_process_container(
+            store,
+            process,
+            plan.container_id(),
+            &mut attributed_processes,
+        )?;
         store.upsert_instance_endpoint(&plan.endpoint)?;
 
         sweep.materialized += 1;
@@ -125,6 +149,7 @@ pub(crate) async fn materialize_service_endpoints_async<S>(
     catalog: &InMemoryCatalog,
     candidates: Vec<ServiceEndpointCandidate>,
     reported: bool,
+    known_containers: &BTreeSet<Uuid>,
     sweep_hosts: &BTreeSet<Uuid>,
     now: DateTime<Utc>,
 ) -> StorageResult<EndpointSweep>
@@ -137,6 +162,7 @@ where
     let mut sweep = EndpointSweep::default();
     let mut seen_by_instance: BTreeMap<Uuid, BTreeSet<Uuid>> = BTreeMap::new();
     let mut written_instances: BTreeSet<Uuid> = BTreeSet::new();
+    let mut attributed_processes: BTreeSet<Uuid> = BTreeSet::new();
 
     for candidate in candidates {
         let Some(host_id) = resolve_host_id(catalog, &candidate) else {
@@ -160,20 +186,31 @@ where
             continue;
         }
 
-        let plan = plan_endpoint(&candidate, host_id, process, now);
+        let plan = plan_endpoint(&candidate, host_id, process, now, known_containers);
         if written_instances.insert(plan.instance.instance_id) {
             AsyncCatalogStore::upsert_service(store, &plan.service).await?;
             AsyncRuntimeStore::upsert_service_instance(store, &plan.instance).await?;
             AsyncRuntimeStore::upsert_runtime_binding(store, &plan.binding).await?;
+            if let Some(container_binding) = &plan.container_binding {
+                AsyncRuntimeStore::upsert_runtime_binding(store, container_binding).await?;
+            }
             close_previous_bindings_async(
                 store,
                 plan.instance.instance_id,
                 process.process_id,
+                plan.container_id(),
                 plan.endpoint.valid_from,
                 now,
             )
             .await?;
         }
+        attribute_process_container_async(
+            store,
+            process,
+            plan.container_id(),
+            &mut attributed_processes,
+        )
+        .await?;
         AsyncRuntimeStore::upsert_instance_endpoint(store, &plan.endpoint).await?;
 
         sweep.materialized += 1;
@@ -188,12 +225,74 @@ where
     Ok(sweep)
 }
 
-/// 把候选推导成四行。纯函数，方便单测。
+/// 端口证据顺带回答了「这个进程属于哪个容器」。
+/// agentd 的进程探针目前不带容器线索，而持有 socket 的进程与这个 socket 的容器归属
+/// 来自同一次观测 —— 用它补 `process_runtime_state.container_id` 是直接证据，不是推测。
+///
+/// 只在进程**还活着**时写：给一条已经 stale 的行补容器 id，upsert 会把 `stale_at` 抹掉，
+/// 等于把退出的进程写活了。
+fn attribute_process_container<S>(
+    store: &S,
+    process: &ProcessRuntimeState,
+    container_id: Option<Uuid>,
+    attributed: &mut BTreeSet<Uuid>,
+) -> StorageResult<()>
+where
+    S: RuntimeStore,
+{
+    let Some(container_id) = container_id else {
+        return Ok(());
+    };
+    if process.stale_at.is_some() || process.container_id == Some(container_id) {
+        return Ok(());
+    }
+    if !attributed.insert(process.process_id) {
+        return Ok(());
+    }
+    store.upsert_process_runtime_state(&ProcessRuntimeState {
+        container_id: Some(container_id),
+        ..process.clone()
+    })
+}
+
+async fn attribute_process_container_async<S>(
+    store: &S,
+    process: &ProcessRuntimeState,
+    container_id: Option<Uuid>,
+    attributed: &mut BTreeSet<Uuid>,
+) -> StorageResult<()>
+where
+    S: atlas_storage::AsyncRuntimeStore,
+{
+    let Some(container_id) = container_id else {
+        return Ok(());
+    };
+    if process.stale_at.is_some() || process.container_id == Some(container_id) {
+        return Ok(());
+    }
+    if !attributed.insert(process.process_id) {
+        return Ok(());
+    }
+    atlas_storage::AsyncRuntimeStore::upsert_process_runtime_state(
+        store,
+        &ProcessRuntimeState {
+            container_id: Some(container_id),
+            ..process.clone()
+        },
+    )
+    .await
+}
+
+/// 把候选推导成几行。纯函数，方便单测。
+///
+/// `known_containers` 是本轮采集到的容器 id：端口证据里带的 `container_id` 只有
+/// 在容器本身也被看到时才建绑定 —— 否则会造出一条指向不存在容器的边。
 fn plan_endpoint(
     candidate: &ServiceEndpointCandidate,
     host_id: Uuid,
     process: &ProcessRuntimeState,
     now: DateTime<Utc>,
+    known_containers: &BTreeSet<Uuid>,
 ) -> EndpointPlan {
     let tenant_id = candidate.tenant_id;
     let observed_at = candidate.observed_at.map(|item| item.0).unwrap_or(now);
@@ -283,11 +382,37 @@ fn plan_endpoint(
         updated_at: now,
     };
 
+    let container_binding = candidate
+        .container_id
+        .as_deref()
+        .map(|key| super::container_uuid(tenant_id, key))
+        .filter(|container_id| known_containers.contains(container_id))
+        .map(|container_id| RuntimeBinding {
+            binding_id: stable_uuid(
+                "runtime_binding",
+                &format!("{instance_id}:{container_id}:container"),
+            ),
+            instance_id,
+            object_type: RuntimeObjectType::Container,
+            object_id: container_id,
+            scope: BindingScope::Observed,
+            // 端口探针同时给出了 socket 归属和容器归属：这是直接观测，不是推测。
+            confidence: Confidence::High,
+            source: "runtime_probe".to_string(),
+            validity: ValidityWindow {
+                valid_from: observed_at,
+                valid_to: None,
+            },
+            created_at: now,
+            updated_at: now,
+        });
+
     EndpointPlan {
         service,
         instance,
         binding,
         endpoint,
+        container_binding,
     }
 }
 
@@ -405,6 +530,7 @@ fn close_previous_bindings<S>(
     store: &S,
     instance_id: Uuid,
     keep_process: Uuid,
+    keep_container: Option<Uuid>,
     at: DateTime<Utc>,
     now: DateTime<Utc>,
 ) -> StorageResult<()>
@@ -412,10 +538,16 @@ where
     S: RuntimeStore,
 {
     for binding in store.list_runtime_bindings_for_instance(instance_id, Page::default())? {
-        if binding.object_type != RuntimeObjectType::Process
-            || binding.object_id == keep_process
-            || binding.validity.valid_to.is_some()
-        {
+        if binding.validity.valid_to.is_some() {
+            continue;
+        }
+        let still_current = match binding.object_type {
+            RuntimeObjectType::Process => binding.object_id == keep_process,
+            RuntimeObjectType::Container => keep_container == Some(binding.object_id),
+            // pod 绑定不由这里维护。
+            RuntimeObjectType::Pod => true,
+        };
+        if still_current {
             continue;
         }
         let closed = RuntimeBinding {
@@ -435,6 +567,7 @@ async fn close_previous_bindings_async<S>(
     store: &S,
     instance_id: Uuid,
     keep_process: Uuid,
+    keep_container: Option<Uuid>,
     at: DateTime<Utc>,
     now: DateTime<Utc>,
 ) -> StorageResult<()>
@@ -447,10 +580,15 @@ where
         AsyncRuntimeStore::list_runtime_bindings_for_instance(store, instance_id, Page::default())
             .await?
     {
-        if binding.object_type != RuntimeObjectType::Process
-            || binding.object_id == keep_process
-            || binding.validity.valid_to.is_some()
-        {
+        if binding.validity.valid_to.is_some() {
+            continue;
+        }
+        let still_current = match binding.object_type {
+            RuntimeObjectType::Process => binding.object_id == keep_process,
+            RuntimeObjectType::Container => keep_container == Some(binding.object_id),
+            RuntimeObjectType::Pod => true,
+        };
+        if still_current {
             continue;
         }
         let closed = RuntimeBinding {

@@ -16,6 +16,7 @@ export type NodeKind =
   | 'ProcessGroup'
   | 'ServiceEntity'
   | 'ServiceInstance'
+  | 'ContainerRuntime'
   | 'Subject';
 
 // ---- Edge kind (V1: only 2 relation types) ----
@@ -23,13 +24,15 @@ export type EdgeKind =
   | 'host_network_assoc'
   | 'host_process_assoc'
   | 'host_service_assoc'
+  | 'host_container_assoc'
   | 'service_instance_assoc'
+  | 'container_service_assoc'
   | 'process_service_assoc'
   | 'responsibility_assignment';
 
 // ---- Layer → NodeKind mapping ----
 export const LAYER_NODE_KINDS: Record<LayerKind, readonly NodeKind[]> = {
-  resource:   ['HostInventory', 'NetworkSegment', 'ProcessRuntime', 'ProcessSummary', 'ProcessGroup', 'ServiceEntity', 'ServiceInstance'],
+  resource:   ['HostInventory', 'NetworkSegment', 'ProcessRuntime', 'ProcessSummary', 'ProcessGroup', 'ServiceEntity', 'ServiceInstance', 'ContainerRuntime'],
   governance: ['Subject'],
 };
 

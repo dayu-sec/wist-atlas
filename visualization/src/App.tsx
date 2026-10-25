@@ -773,7 +773,12 @@ function buildDisplayGraph(
   };
 
   for (const node of source.nodes) {
-    if (node.objectKind !== 'HostInventory' && node.objectKind !== 'NetworkSegment' && node.objectKind !== 'Subject') {
+    if (
+      node.objectKind !== 'HostInventory' &&
+      node.objectKind !== 'NetworkSegment' &&
+      node.objectKind !== 'ContainerRuntime' &&
+      node.objectKind !== 'Subject'
+    ) {
       continue;
     }
     addNode(node);
@@ -787,7 +792,28 @@ function buildDisplayGraph(
     if (edge.edgeKind === 'host_service_assoc') continue;
     if (edge.edgeKind === 'service_instance_assoc') continue;
     if (edge.edgeKind === 'process_service_assoc') continue;
+    if (edge.edgeKind === 'host_container_assoc') continue;
+    if (edge.edgeKind === 'container_service_assoc') continue;
     addEdge(edge);
+  }
+
+  // 容器层：容器属于主机，实例属于容器。
+  // 这里不筛实例/服务 —— 容器卡片点进去看不到「里面在听什么」就没有意义；
+  // 容器数量本身是主机级事实（k8s 节点几十个），不像服务那样需要在画布上 TopN。
+  for (const edge of source.edges) {
+    if (edge.edgeKind !== 'host_container_assoc') continue;
+    addNode(nodesById.get(edge.source));
+    addNode(nodesById.get(edge.target));
+    addEdge(edge);
+  }
+  for (const edge of source.edges) {
+    if (edge.edgeKind !== 'container_service_assoc') continue;
+    addNode(nodesById.get(edge.target));
+    addEdge(edge);
+    for (const instanceEdge of serviceInstanceEdgesByInstance.get(edge.target) ?? []) {
+      addNode(nodesById.get(instanceEdge.target));
+      addEdge(instanceEdge);
+    }
   }
 
   for (const [hostNodeId, summaryEdges] of processSummaryEdgesByHost.entries()) {

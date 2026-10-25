@@ -1,4 +1,5 @@
 use atlas_api::TopologyQueryService;
+use atlas_domain::RuntimeObjectType;
 use atlas_storage::{AsyncCatalogStore, CatalogStore, GovernanceStore, Page, RuntimeStore};
 use chrono::Utc;
 use orion_error::conversion::ConvErr;
@@ -282,6 +283,10 @@ where
             });
         }
 
+        // 容器层：主机上跑着哪些容器；实例落在哪个容器里，靠端口证据写的 Container 绑定。
+        let mut instances_by_container: std::collections::BTreeMap<Uuid, Vec<String>> =
+            std::collections::BTreeMap::new();
+
         for service_view in &view.services {
             let service_node_id = format!("service:{}", service_view.service.service_id);
             let mut service_props = serde_json::Map::new();
@@ -343,6 +348,16 @@ where
             for instance_view in &service_view.instances {
                 let instance_node_id =
                     format!("service-instance:{}", instance_view.instance.instance_id);
+                for binding in &instance_view.bindings {
+                    if binding.object_type == RuntimeObjectType::Container
+                        && binding.validity.valid_to.is_none()
+                    {
+                        instances_by_container
+                            .entry(binding.object_id)
+                            .or_default()
+                            .push(instance_node_id.clone());
+                    }
+                }
                 let mut instance_props = serde_json::Map::new();
                 let instance_endpoints: Vec<String> = instance_view
                     .endpoints
@@ -423,6 +438,14 @@ where
                 }
             }
         }
+
+        append_container_graph(
+            &mut nodes,
+            &mut edges,
+            &host_node_id,
+            &view.containers,
+            &instances_by_container,
+        );
     }
 
     Ok(HostProcessTopologyGraph {
@@ -492,6 +515,94 @@ pub(in crate::graph) fn append_network_graph(
             label: assoc.iface_name.clone(),
             properties,
         });
+    }
+}
+
+/// 容器层：主机上跑着哪些容器，以及哪些服务实例落在容器里。
+///
+/// 容器是主机下的独立对象（`host_container_assoc`）：它不属于某个服务，
+/// 一个容器可以监听多个端口。实例→容器的边来自端口证据（`container_service_assoc`）——
+/// 没有这条边时，容器只是主机上的一个孤立对象，这正是未接入归属前的样子。
+pub(in crate::graph) fn append_container_graph(
+    nodes: &mut Vec<HostProcessTopologyNode>,
+    edges: &mut Vec<HostProcessTopologyEdge>,
+    host_node_id: &str,
+    containers: &[atlas_domain::ContainerRuntime],
+    instance_nodes_by_container: &std::collections::BTreeMap<Uuid, Vec<String>>,
+) {
+    let mut container_node_ids: std::collections::BTreeMap<Uuid, String> =
+        std::collections::BTreeMap::new();
+
+    for container in containers {
+        let container_node_id = format!("container:{}", container.container_id);
+        let mut props = serde_json::Map::new();
+        if let Some(name) = &container.container_name {
+            props.insert("containerName".to_string(), Value::String(name.clone()));
+        }
+        props.insert(
+            "runtimeType".to_string(),
+            Value::String(format!("{:?}", container.runtime_type)),
+        );
+        if let Some(image) = &container.image_ref {
+            props.insert("imageRef".to_string(), Value::String(image.clone()));
+        }
+        if let Some(namespace) = &container.runtime_namespace {
+            props.insert(
+                "runtimeNamespace".to_string(),
+                Value::String(namespace.clone()),
+            );
+        }
+        if let Some(pod_name) = &container.pod_name {
+            props.insert("podName".to_string(), Value::String(pod_name.clone()));
+        }
+        if let Some(namespace) = &container.k8s_namespace {
+            props.insert("k8sNamespace".to_string(), Value::String(namespace.clone()));
+        }
+        if let Some(external_ref) = &container.external_ref {
+            props.insert(
+                "externalRef".to_string(),
+                Value::String(external_ref.clone()),
+            );
+        }
+
+        nodes.push(HostProcessTopologyNode {
+            id: container_node_id.clone(),
+            object_kind: "ContainerRuntime",
+            object_id: container.container_id.to_string(),
+            layer: "resource",
+            // 卡片标题用容器名；没采到名字时退回 id 前 12 位，至少能区分两个容器。
+            label: container
+                .container_name
+                .clone()
+                .unwrap_or_else(|| container.container_id.to_string()[..12].to_string()),
+            properties: props,
+        });
+        edges.push(HostProcessTopologyEdge {
+            id: format!("edge:{}:{}", host_node_id, container.container_id),
+            edge_kind: "host_container_assoc",
+            source: host_node_id.to_string(),
+            target: container_node_id.clone(),
+            label: None,
+            properties: serde_json::Map::new(),
+        });
+        container_node_ids.insert(container.container_id, container_node_id);
+    }
+
+    for (container_id, instance_node_ids) in instance_nodes_by_container {
+        // 绑定指向的容器本轮没采到（已退役）时不画边，避免悬空连线。
+        let Some(container_node_id) = container_node_ids.get(container_id) else {
+            continue;
+        };
+        for instance_node_id in instance_node_ids {
+            edges.push(HostProcessTopologyEdge {
+                id: format!("edge:{}:{}", container_node_id, instance_node_id),
+                edge_kind: "container_service_assoc",
+                source: container_node_id.clone(),
+                target: instance_node_id.clone(),
+                label: None,
+                properties: serde_json::Map::new(),
+            });
+        }
     }
 }
 

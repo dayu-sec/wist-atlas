@@ -1,4 +1,5 @@
 use atlas_api::TopologyQueryService;
+use atlas_domain::RuntimeObjectType;
 use atlas_storage::{AsyncCatalogStore, AsyncGovernanceStore, AsyncRuntimeStore, Page};
 use chrono::Utc;
 use orion_error::conversion::ConvErr;
@@ -7,8 +8,8 @@ use uuid::Uuid;
 
 use super::{
     HostProcessTopologyEdge, HostProcessTopologyGraph, HostProcessTopologyMetadata,
-    HostProcessTopologyNode, append_network_graph, basename, collect_endpoints,
-    list_all_hosts_page_async,
+    HostProcessTopologyNode, append_container_graph, append_network_graph, basename,
+    collect_endpoints, list_all_hosts_page_async,
 };
 use crate::{AppResult, materialization_missing};
 
@@ -238,6 +239,10 @@ where
             });
         }
 
+        // 容器层：主机上跑着哪些容器；实例落在哪个容器里，靠端口证据写的 Container 绑定。
+        let mut instances_by_container: std::collections::BTreeMap<Uuid, Vec<String>> =
+            std::collections::BTreeMap::new();
+
         for service_view in &view.services {
             let service_node_id = format!("service:{}", service_view.service.service_id);
             let mut service_props = serde_json::Map::new();
@@ -298,6 +303,16 @@ where
             for instance_view in &service_view.instances {
                 let instance_node_id =
                     format!("service-instance:{}", instance_view.instance.instance_id);
+                for binding in &instance_view.bindings {
+                    if binding.object_type == RuntimeObjectType::Container
+                        && binding.validity.valid_to.is_none()
+                    {
+                        instances_by_container
+                            .entry(binding.object_id)
+                            .or_default()
+                            .push(instance_node_id.clone());
+                    }
+                }
                 let mut instance_props = serde_json::Map::new();
                 let instance_endpoints: Vec<String> = instance_view
                     .endpoints
@@ -377,6 +392,14 @@ where
                 }
             }
         }
+
+        append_container_graph(
+            &mut nodes,
+            &mut edges,
+            &host_node_id,
+            &view.containers,
+            &instances_by_container,
+        );
     }
 
     Ok(HostProcessTopologyGraph {

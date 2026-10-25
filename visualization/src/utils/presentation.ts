@@ -15,6 +15,7 @@ export const NODE_DIMS: Record<NodeKind, { width: number; height: number }> = {
   ProcessRuntime: { width: 176, height: 44 },
   ServiceEntity: { width: 232, height: 68 },
   ServiceInstance: { width: 208, height: 56 },
+  ContainerRuntime: { width: 220, height: 60 },
   Subject: { width: 184, height: 56 },
 };
 
@@ -34,6 +35,7 @@ export const KIND_LABELS: Record<NodeKind, string> = {
   ProcessRuntime: '进程',
   ServiceEntity: '服务',
   ServiceInstance: '服务实例',
+  ContainerRuntime: '容器',
   Subject: '责任人',
 };
 

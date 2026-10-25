@@ -86,6 +86,15 @@ export function InstanceGlyph({ className }: IconProps) {
   );
 }
 
+export function ContainerGlyph({ className }: IconProps) {
+  return (
+    <Stroke className={className}>
+      <rect x="3.5" y="7" width="17" height="13" rx="2.5" />
+      <path d="M7 7V4.5h10V7M3.5 12h17" />
+    </Stroke>
+  );
+}
+
 export function UserGlyph({ className }: IconProps) {
   return (
     <Stroke className={className}>
@@ -109,6 +118,9 @@ export function KindGlyph({ kind, className }: { kind: NodeKind; className?: str
       return <BoxGlyph className={className} />;
     case 'ServiceInstance':
       return <InstanceGlyph className={className} />;
+    case 'ContainerRuntime':
+      // 容器与「服务」都是盒子，但容器要有自己的形状（双层盒）。
+      return <ContainerGlyph className={className} />;
     case 'Subject':
       return <UserGlyph className={className} />;
     default:

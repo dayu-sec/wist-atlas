@@ -26,6 +26,7 @@ export const NODE_STYLES: Record<NodeKind, NodeStyle> = {
   ProcessRuntime: { fill: '#F8FAFC', stroke: '#98A2B3', accent: '#475467', label: '进程' },
   ServiceEntity: { fill: '#F4F3FF', stroke: '#7A5AF8', accent: '#5925DC', label: '服务' },
   ServiceInstance: { fill: '#F9F5FF', stroke: '#9E77ED', accent: '#6941C6', label: '服务实例' },
+  ContainerRuntime: { fill: '#ECFDF3', stroke: '#12B76A', accent: '#027A48', label: '容器' },
   Subject: { fill: '#FDF2FA', stroke: '#EE46BC', accent: '#C11574', label: '责任人' },
 };
 

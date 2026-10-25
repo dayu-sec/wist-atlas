@@ -17,7 +17,7 @@ use crate::query::TopologyQueryService;
 fn envelope(
     ingest_id: &str,
     tenant_id: TenantId,
-    observed_at: &str,
+    _observed_at: &str,
     payload: serde_json::Value,
 ) -> IngestEnvelope {
     IngestEnvelope {
@@ -278,4 +278,107 @@ fn container_ids_are_stable_across_snapshots() {
         second[0].last_seen_at.to_rfc3339(),
         "2026-10-25T09:19:00+00:00"
     );
+}
+
+// ── 容器 ↔ 服务实例 / 进程 归属 ─────────────────────────
+
+fn container_and_endpoint_payload() -> serde_json::Value {
+    json!({
+        "processes": [
+            {"pid": 3101, "executable": "/usr/bin/nginx", "host_ref": "node-c",
+             "identity": "ps_lstart:Sat Oct 25 09:10:00 2026"}
+        ],
+        "containers": [{
+            "id": "3f2c9f3c1b8e",
+            "name": "nginx",
+            "runtime": "containerd",
+            "host_ref": "node-c"
+        }],
+        "service_endpoints": [{
+            "protocol": "tcp",
+            "address": "0.0.0.0",
+            "port": 80,
+            "pid": 3101,
+            "host_ref": "node-c",
+            "process_executable": "/usr/bin/nginx",
+            "container_id": "3f2c9f3c1b8e"
+        }]
+    })
+}
+
+#[test]
+fn an_endpoint_inside_a_container_links_instance_and_process_to_it() {
+    let service = TopologyIngestService::new_in_memory();
+    let tenant_id = TenantId(Uuid::new_v4());
+    seed_host(&service, tenant_id);
+    service
+        .submit_and_materialize(envelope(
+            "ing-attribution",
+            tenant_id,
+            "2026-10-25T09:18:00Z",
+            container_and_endpoint_payload(),
+        ))
+        .unwrap();
+
+    let host = host_id(&service, tenant_id);
+    let view = TopologyQueryService::new(service.store().clone())
+        .host_topology_view(host)
+        .unwrap()
+        .unwrap();
+    let container = view
+        .containers
+        .iter()
+        .find(|item| item.container_name.as_deref() == Some("nginx"))
+        .expect("container materialized");
+
+    // 实例上多了一条「属于这个容器」的绑定：画布上的 容器 → 服务实例 边靠它。
+    let instance = view.services[0].instances[0].clone();
+    let container_binding = instance
+        .bindings
+        .iter()
+        .find(|binding| binding.object_type == atlas_domain::RuntimeObjectType::Container)
+        .expect("instance should be bound to the container");
+    assert_eq!(container_binding.object_id, container.container_id);
+    assert!(container_binding.validity.valid_to.is_none());
+
+    // 进程表也补上了容器归属（agentd 的进程探针本身不带容器线索）。
+    let process = view
+        .processes
+        .iter()
+        .find(|item| item.pid == 3101)
+        .expect("process materialized");
+    assert_eq!(process.container_id, Some(container.container_id));
+}
+
+#[test]
+fn an_endpoint_referencing_an_unreported_container_gets_no_link() {
+    let service = TopologyIngestService::new_in_memory();
+    let tenant_id = TenantId(Uuid::new_v4());
+    seed_host(&service, tenant_id);
+
+    // 采集侧说要容器 X，但本轮没有 containers[]（容器探针没跑 / 没权限）。
+    let mut payload = container_and_endpoint_payload();
+    payload.as_object_mut().unwrap().remove("containers");
+    service
+        .submit_and_materialize(envelope(
+            "ing-dangling",
+            tenant_id,
+            "2026-10-25T09:18:00Z",
+            payload,
+        ))
+        .unwrap();
+
+    let view = TopologyQueryService::new(service.store().clone())
+        .host_topology_view(host_id(&service, tenant_id))
+        .unwrap()
+        .unwrap();
+    let instance = &view.services[0].instances[0];
+    assert!(
+        instance
+            .bindings
+            .iter()
+            .all(|binding| binding.object_type != atlas_domain::RuntimeObjectType::Container),
+        "no container row means no container edge"
+    );
+    assert_eq!(view.processes[0].container_id, None);
 }

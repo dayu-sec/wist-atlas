@@ -121,6 +121,7 @@ where
             &catalog,
             endpoint_extraction.candidates,
             endpoint_extraction.reported,
+            &container_sweep.seen,
             &materialized.host_ids,
             accepted_at,
         )
@@ -255,6 +256,7 @@ where
             &catalog,
             endpoints.candidates,
             endpoints.reported,
+            &container_sweep.seen,
             &materialized.host_ids,
             accepted_at,
         )

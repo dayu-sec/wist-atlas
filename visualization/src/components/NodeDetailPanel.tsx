@@ -82,6 +82,8 @@ export default function NodeDetailPanel({
           <NetworkDetail node={node} graph={graph} />
         ) : node.objectKind === 'ServiceEntity' ? (
           <ServiceDetail node={node} graph={graph} />
+        ) : node.objectKind === 'ContainerRuntime' ? (
+          <ContainerDetail node={node} graph={graph} />
         ) : node.objectKind === 'ProcessSummary' ? (
           <RuntimeDetail
             node={node}
@@ -377,6 +379,78 @@ function ServiceDetail({
         <Field label="对象 ID">
           <span className="font-mono text-[10px] break-all">{node.objectId}</span>
         </Field>
+      </Section>
+
+      <GraphId id={node.id} />
+    </div>
+  );
+}
+
+/** 容器详情：它自己是什么（运行时/镜像/K8s 位置），以及它里挂了哪些服务实例。 */
+function ContainerDetail({
+  node,
+  graph,
+}: {
+  node: HostProcessTopologyNode;
+  graph: HostProcessTopologyGraph | null;
+}) {
+  const runtimeType = asString(node.properties.runtimeType);
+  const imageRef = asString(node.properties.imageRef);
+  const podName = asString(node.properties.podName);
+  const k8sNamespace = asString(node.properties.k8sNamespace);
+  const runtimeNamespace = asString(node.properties.runtimeNamespace);
+  const externalRef = asString(node.properties.externalRef);
+
+  // 实例从图上反查：容器里监听了什么，是这张图的主题。
+  const instanceIds = new Set(
+    (graph?.edges ?? [])
+      .filter(
+        (edge) => edge.edgeKind === 'container_service_assoc' && edge.source === node.id,
+      )
+      .map((edge) => edge.target),
+  );
+  const instances = (graph?.nodes ?? []).filter((item) => instanceIds.has(item.id));
+
+  return (
+    <div className="space-y-5">
+      <Section title="容器">
+        <Field label="运行时">{runtimeType ?? '—'}</Field>
+        <Field label="镜像">
+          <span className="font-mono text-[10px] break-all">{imageRef ?? '—'}</span>
+        </Field>
+        {runtimeNamespace && <Field label="命名空间">{runtimeNamespace}</Field>}
+      </Section>
+
+      {(podName || k8sNamespace) && (
+        <Section title="K8s">
+          <Field label="Pod">{podName ?? '—'}</Field>
+          <Field label="Namespace">{k8sNamespace ?? '—'}</Field>
+        </Section>
+      )}
+
+      <Section title={`监听端点（${instances.length}）`}>
+        {instances.length === 0 ? (
+          <p className="text-[11px] text-[#98a2b3]">这个容器没有采集到监听端口</p>
+        ) : (
+          <ul className="space-y-1">
+            {instances.map((instance) => (
+              <li key={instance.id} className="font-mono text-[10.5px] text-[#475467]">
+                {instance.label}
+              </li>
+            ))}
+          </ul>
+        )}
+      </Section>
+
+      <Section title="标识">
+        <Field label="对象 ID">
+          <span className="font-mono text-[10px] break-all">{node.objectId}</span>
+        </Field>
+        {externalRef && (
+          <Field label="容器 ID">
+            <span className="font-mono text-[10px] break-all">{externalRef}</span>
+          </Field>
+        )}
       </Section>
 
       <GraphId id={node.id} />

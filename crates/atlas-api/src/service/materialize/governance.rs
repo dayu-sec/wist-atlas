@@ -30,8 +30,9 @@ where
         persisted_subjects.push(subject);
     }
 
-    let hosts = store.list_hosts(tenant_id, atlas_storage::Page::default())?;
-    let segments = store.list_network_segments(tenant_id, atlas_storage::Page::default())?;
+    // 责任人分配要按名字匹配主机/网段：只取第一页会让第二页之后的主机永远挂不上责任人。
+    let hosts = super::list_all_hosts(store, tenant_id)?;
+    let segments = super::list_all_network_segments(store, tenant_id)?;
 
     for candidate in assignments {
         let subject = persisted_subjects.iter().find(|subject| {
@@ -114,18 +115,8 @@ where
         persisted_subjects.push(subject);
     }
 
-    let hosts = atlas_storage::AsyncCatalogStore::list_hosts(
-        store,
-        tenant_id,
-        atlas_storage::Page::default(),
-    )
-    .await?;
-    let segments = atlas_storage::AsyncCatalogStore::list_network_segments(
-        store,
-        tenant_id,
-        atlas_storage::Page::default(),
-    )
-    .await?;
+    let hosts = super::list_all_hosts_async(store, tenant_id).await?;
+    let segments = super::list_all_network_segments_async(store, tenant_id).await?;
 
     for candidate in assignments {
         let subject = persisted_subjects.iter().find(|subject| {

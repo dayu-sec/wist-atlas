@@ -45,6 +45,9 @@ const CARD_GAP = 16;
  * 信息有了阅读方向，宽屏也用上了；边只负责连接，不再负责构图。
  */
 export function computeFocusLayout(graph: HostProcessTopologyGraph): FocusLayout | null {
+  // 服务焦点图有自己的版式（服务居中，主机在左），先让给它。
+  if (isServiceFocusGraph(graph)) return null;
+
   const hosts = graph.nodes.filter((node) => node.objectKind === 'HostInventory');
   if (hosts.length !== 1) return null;
 
@@ -61,20 +64,45 @@ export function computeFocusLayout(graph: HostProcessTopologyGraph): FocusLayout
     if (edge.target === host.id) attachedToHost.add(edge.source);
   }
 
-  const isStar = leaves.every(
-    (node) => attachedToHost.has(node.id) && (degree.get(node.id) ?? 0) <= 1,
-  );
-  if (!isStar) return null;
-
+  const containers = leaves
+    .filter((node) => node.objectKind === 'ContainerRuntime')
+    .sort((a, b) => a.label.localeCompare(b.label, 'en'));
   const left = leaves
     .filter((node) => node.objectKind === 'NetworkSegment')
     .sort((a, b) => a.label.localeCompare(b.label, 'en'));
-  const right = leaves.filter((node) => node.objectKind !== 'NetworkSegment');
+  const right = leaves.filter(
+    (node) => node.objectKind !== 'NetworkSegment' && node.objectKind !== 'ContainerRuntime',
+  );
+
+  // 「还是这颗星的内部结构」的判定：
+  // 一层：直接挂在主机上（度数 ≤ 1）；容器、服务是有自己的叶子的，单独放行。
+  // 两层以内：宿主 → 容器 / 服务 → 服务实例；三层：实例 → 监听进程。
+  // 展开后的进程树（汇总 → 分组 → 进程）不在其中 —— 那种层数交给 dagre。
+  const reachable = reachableWithinHostStar(graph, host.id);
+  const isStar = leaves.every((node) => {
+    if (attachedToHost.has(node.id) && (degree.get(node.id) ?? 0) <= 1) return true;
+    if (
+      attachedToHost.has(node.id) &&
+      (node.objectKind === 'ContainerRuntime' || node.objectKind === 'ServiceEntity')
+    ) {
+      return true;
+    }
+    return reachable.has(node.id);
+  });
+  if (!isStar) return null;
 
   const hostDims = nodeDims(host.objectKind);
   const positions: Record<string, GraphPoint> = { [host.id]: { x: 0, y: 0 } };
   const annotations: LaneAnnotation[] = [];
   placeNetworkLane(left, hostDims, positions, annotations);
+
+  // 容器车道夹在主机与「运行时/服务」之间：左边是它落在哪台机，右边是它里面跑什么。
+  const containerLaneWidth =
+    containers.length > 0 ? nodeDims('ContainerRuntime').width + LANE_GAP : 0;
+  if (containers.length > 0) {
+    const containerX = hostDims.width / 2 + LANE_GAP + nodeDims('ContainerRuntime').width / 2;
+    placeContainerLane(containers, containerX, positions, annotations);
+  }
 
   if (right.length > 0) {
     const summary = right.find((node) => node.objectKind === 'ProcessSummary');
@@ -106,8 +134,100 @@ export function computeFocusLayout(graph: HostProcessTopologyGraph): FocusLayout
     }
   }
 
+  // 容器车道占了一段宽度，右栏整体往右让 —— 否则两组卡片会叠在一起。
+  if (containerLaneWidth > 0) {
+    const shifted = new Set([host.id, ...left.map((node) => node.id), ...containers.map((node) => node.id)]);
+    for (const [id, point] of Object.entries(positions)) {
+      if (shifted.has(id)) continue;
+      point.x += containerLaneWidth;
+    }
+    for (const annotation of annotations) {
+      if (annotation.id === 'lane-network' || annotation.id === 'lane-containers') continue;
+      annotation.x += containerLaneWidth;
+    }
+  }
+
   centerComposition(positions, annotations, graph);
   return { positions, annotations };
+}
+
+/**
+ * 容器车道。数量通常个位数，但 k8s 节点上几十个是常态 —— 与右栏服务同一套网格策略，
+ * 否则一列堆 30 张卡会把整图压成一团。
+ */
+function placeContainerLane(
+  containers: HostProcessTopologyNode[],
+  x: number,
+  positions: Record<string, GraphPoint>,
+  annotations: LaneAnnotation[],
+) {
+  const dims = nodeDims('ContainerRuntime');
+  const columns = Math.max(1, Math.ceil(containers.length / RIGHT_LANE_MAX_ROWS));
+  const rows = Math.ceil(containers.length / columns);
+  const stepX = dims.width + CARD_GAP;
+  const stepY = dims.height + 14;
+  const gridHeight = rows * stepY - 14;
+
+  containers.forEach((node, index) => {
+    const column = Math.floor(index / rows);
+    const row = index % rows;
+    positions[node.id] = {
+      x: x + column * stepX,
+      y: -gridHeight / 2 + dims.height / 2 + row * stepY,
+    };
+  });
+  annotations.push({
+    id: 'lane-containers',
+    x: x - dims.width / 2,
+    y: -gridHeight / 2 - 36,
+    width: columns * stepX - CARD_GAP,
+    text: '容器',
+    count: String(containers.length),
+  });
+}
+
+/**
+ * 「服务焦点图」的唯一判据：这张图没有任何主机进程树（`host_process_assoc`），
+ * 且恰好一个服务节点挂着实例。主机视图即使只展平成一个进程，也仍然有这条边。
+ */
+export function isServiceFocusGraph(graph: HostProcessTopologyGraph): boolean {
+  if (graph.edges.some((edge) => edge.edgeKind === 'host_process_assoc')) return false;
+  const services = graph.nodes.filter(
+    (node) => node.objectKind === 'ServiceEntity' && node.properties.collapsed !== true,
+  );
+  if (services.length !== 1) return false;
+  return graph.edges.some(
+    (edge) => edge.edgeKind === 'service_instance_assoc' && edge.target === services[0].id,
+  );
+}
+
+/** 从主机出发、最多三跳、且中间节点只能是 容器 / 服务 / 服务实例 的可达集合。 */
+function reachableWithinHostStar(
+  graph: HostProcessTopologyGraph,
+  hostId: string,
+): Set<string> {
+  const intermediate = new Set(['ContainerRuntime', 'ServiceEntity', 'ServiceInstance']);
+  const kindById = new Map(graph.nodes.map((node) => [node.id, node.objectKind]));
+  const adjacency = new Map<string, string[]>();
+  for (const edge of graph.edges) {
+    adjacency.set(edge.source, [...(adjacency.get(edge.source) ?? []), edge.target]);
+    adjacency.set(edge.target, [...(adjacency.get(edge.target) ?? []), edge.source]);
+  }
+
+  const reachable = new Set<string>([hostId]);
+  let frontier = [hostId];
+  for (let depth = 0; depth < 3 && frontier.length > 0; depth += 1) {
+    const next: string[] = [];
+    for (const id of frontier) {
+      for (const neighbor of adjacency.get(id) ?? []) {
+        if (reachable.has(neighbor)) continue;
+        reachable.add(neighbor);
+        next.push(neighbor);
+      }
+    }
+    frontier = next.filter((id) => intermediate.has(kindById.get(id) ?? ''));
+  }
+  return reachable;
 }
 
 /**
@@ -131,8 +251,14 @@ export function computeRuntimeLayout(graph: HostProcessTopologyGraph): FocusLayo
     .sort((a, b) => Number(b.properties.processCount ?? 0) - Number(a.properties.processCount ?? 0));
   if (groups.length === 0) return null;
 
-  // 出现进程明细/服务/责任人时结构更深，交回 dagre，别硬摆。
-  const allowed = new Set(['HostInventory', 'NetworkSegment', 'ProcessSummary', 'ProcessGroup']);
+  // 出现进程明细/服务/容器时结构更深，交回 dagre，别硬摆。
+  const allowed = new Set([
+    'HostInventory',
+    'NetworkSegment',
+    'ProcessSummary',
+    'ProcessGroup',
+    'ContainerRuntime',
+  ]);
   if (graph.nodes.some((node) => !allowed.has(node.objectKind))) return null;
 
   const host = hosts[0];
@@ -179,6 +305,15 @@ export function computeRuntimeLayout(graph: HostProcessTopologyGraph): FocusLayo
     count: `${shownGroups} / ${totalGroups.toLocaleString('zh-CN')}`,
   });
 
+  // 容器是主机级事实，与进程分组没有从属关系：放在分组网格之后单独一列。
+  const containers = graph.nodes
+    .filter((node) => node.objectKind === 'ContainerRuntime')
+    .sort((a, b) => a.label.localeCompare(b.label, 'en'));
+  if (containers.length > 0) {
+    const containerX = gridLeft + gridWidth + 96 + nodeDims('ContainerRuntime').width / 2;
+    placeContainerLane(containers, containerX, positions, annotations);
+  }
+
   centerComposition(positions, annotations, graph);
   return { positions, annotations };
 }
@@ -191,18 +326,13 @@ export function computeRuntimeLayout(graph: HostProcessTopologyGraph): FocusLayo
  * 实例与它的进程按块对齐（而不是两栏各自竖向排），否则连线会全体交叉。
  */
 export function computeServiceLayout(graph: HostProcessTopologyGraph): FocusLayout | null {
-  const service = graph.nodes.find((node) => node.objectKind === 'ServiceEntity');
+  // 判据只写一处：`isServiceFocusGraph`。
+  if (!isServiceFocusGraph(graph)) return null;
+
+  const service = graph.nodes.find(
+    (node) => node.objectKind === 'ServiceEntity' && node.properties.collapsed !== true,
+  );
   if (!service) return null;
-  // 主机视图也有服务节点，但它带运行时汇总/分组；服务焦点图没有进程树。
-  if (
-    graph.nodes.some(
-      (node) => node.objectKind === 'ProcessSummary' || node.objectKind === 'ProcessGroup',
-    )
-  ) {
-    return null;
-  }
-  // 溢出卡片是伪节点，它的图不套这个版式。
-  if (service.properties.collapsed === true) return null;
 
   const hosts = graph.nodes.filter((node) => node.objectKind === 'HostInventory');
   const instances = graph.nodes.filter((node) => node.objectKind === 'ServiceInstance');
