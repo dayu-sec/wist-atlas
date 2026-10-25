@@ -261,6 +261,159 @@ fn extract_process_runtime_from_edge_process_fact_payload() {
 }
 
 #[test]
+fn extract_process_runtime_from_processes_array() {
+    let extracted = extract_process_runtime_candidates(&envelope(json!({
+        "processes": [
+            {
+                "pid": "231",
+                "host_name": "node-08",
+                "machine_id": "machine-08",
+                "identity": "ps_lstart:a",
+                "executable_name": "/usr/sbin/sshd"
+            },
+            {
+                "pid": "232",
+                "host_ref": "node-08",
+                "machine_id": "machine-08",
+                "identity": "ps_lstart:b",
+                "executable_name": "/usr/bin/nginx"
+            }
+        ]
+    })))
+    .unwrap();
+
+    assert_eq!(extracted.candidates.len(), 2);
+    assert_eq!(extracted.candidates[0].pid, 231);
+    assert_eq!(extracted.candidates[1].pid, 232);
+    assert_eq!(extracted.candidates[1].executable, "/usr/bin/nginx");
+    assert_eq!(
+        extracted.candidates[1].host_name.as_deref(),
+        Some("node-08")
+    );
+    assert_eq!(
+        extracted.candidates[1].machine_id.as_deref(),
+        Some("machine-08")
+    );
+}
+
+#[test]
+fn extract_process_runtime_from_empty_processes_array_yields_nothing() {
+    // 空数组是「这个快照里没有进程」，**不是**「没有 processes 字段」。
+    // 不能落回单对象路径 —— 那里会去看顶层 pid，把信封自己的字段当成一个进程。
+    let extracted = extract_process_runtime_candidates(&envelope(json!({
+        "processes": [],
+        "pid": "999",
+        "process_key": "machine-08:pid:999:start:1",
+        "executable_name": "/usr/sbin/sshd"
+    })))
+    .unwrap();
+
+    assert!(extracted.candidates.is_empty());
+}
+
+#[test]
+fn extract_process_runtime_treats_a_null_processes_field_as_absent() {
+    // 生产端把可选列表序列化成 `null` 是常态；一个 `null` 不该让整个信封被打回。
+    let extracted = extract_process_runtime_candidates(&envelope(json!({
+        "processes": null,
+        "pid": "999",
+        "process_key": "machine-08:pid:999:start:1",
+        "executable_name": "/usr/sbin/sshd"
+    })))
+    .unwrap();
+
+    assert_eq!(extracted.candidates.len(), 1);
+    assert_eq!(extracted.candidates[0].pid, 999);
+}
+
+#[test]
+fn extract_process_runtime_processes_array_wins_over_top_level_fact() {
+    // 两种形状同时在（网关补字段是常态）：数组是权威，不能两个路径都跑一遍导致重复计数。
+    let extracted = extract_process_runtime_candidates(&envelope(json!({
+        "pid": "1",
+        "process_key": "machine-01:pid:1:start:1",
+        "executable_name": "/sbin/launchd",
+        "processes": [
+            { "pid": "231", "executable_name": "/usr/sbin/sshd" },
+            { "pid": "232", "executable_name": "/usr/bin/nginx" }
+        ]
+    })))
+    .unwrap();
+
+    assert_eq!(extracted.candidates.len(), 2);
+    let pids: Vec<i32> = extracted.candidates.iter().map(|c| c.pid).collect();
+    assert_eq!(pids, vec![231, 232]);
+}
+
+#[test]
+fn extract_process_runtime_accepts_numeric_pid_in_a_processes_row() {
+    // 目标态 `atlas.in.edge.v1` 里 `pid` 是数字，不是字符串。
+    let extracted = extract_process_runtime_candidates(&envelope(json!({
+        "processes": [{ "pid": 210, "executable_name": "/usr/sbin/sshd" }]
+    })))
+    .unwrap();
+
+    assert_eq!(extracted.candidates.len(), 1);
+    assert_eq!(extracted.candidates[0].pid, 210);
+}
+
+#[test]
+fn extract_process_runtime_accepts_numeric_pid_in_an_edge_process_fact() {
+    let extracted = extract_process_runtime_candidates(&envelope(json!({
+        "pid": 4242,
+        "process_key": "machine-08:pid:4242:start:9",
+        "executable_name": "/usr/bin/nginx"
+    })))
+    .unwrap();
+
+    assert_eq!(extracted.candidates.len(), 1);
+    assert_eq!(extracted.candidates[0].pid, 4242);
+    assert_eq!(extracted.candidates[0].executable, "/usr/bin/nginx");
+}
+
+#[test]
+fn extract_process_runtime_rejects_a_non_object_processes_row() {
+    let err = extract_process_runtime_candidates(&envelope(json!({
+        "processes": [{ "pid": 1, "executable_name": "/a" }, "not-an-object"]
+    })))
+    .unwrap_err();
+
+    assert_eq!(err.reason().stable_code(), "biz.atlas.api.field_invalid");
+}
+
+#[test]
+fn extract_process_runtime_still_rejects_a_scalar_processes_field() {
+    // `null` 宽容了，但类型错（比如误写成字符串）必须继续硬失败：
+    // 静默当成空列表会把一个缩进错的生产端伪装成「这台机没进程」。
+    let err = extract_process_runtime_candidates(&envelope(json!({
+        "processes": "oops"
+    })))
+    .unwrap_err();
+
+    assert_eq!(err.reason().stable_code(), "biz.atlas.api.field_invalid");
+}
+
+#[test]
+fn extract_process_runtime_rejects_an_unparsable_pid() {
+    let err = extract_process_runtime_candidates(&envelope(json!({
+        "processes": [{ "pid": "not-a-pid", "executable_name": "/a" }]
+    })))
+    .unwrap_err();
+
+    assert_eq!(err.reason().stable_code(), "biz.atlas.api.field_invalid");
+}
+
+#[test]
+fn extract_process_runtime_reports_a_missing_pid() {
+    let err = extract_process_runtime_candidates(&envelope(json!({
+        "processes": [{ "executable_name": "/a" }]
+    })))
+    .unwrap_err();
+
+    assert_eq!(err.reason().stable_code(), "biz.atlas.api.field_missing");
+}
+
+#[test]
 fn extract_process_runtime_derives_host_locator_from_process_key() {
     let extracted = extract_process_runtime_candidates(&envelope(json!({
         "target_kind": "process",

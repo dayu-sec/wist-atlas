@@ -30,8 +30,11 @@ pub(super) fn optional_array<'a>(
 ) -> ApiResult<Option<Vec<&'a Value>>> {
     match object.get(field) {
         Some(Value::Array(values)) => Ok(Some(values.iter().collect())),
+        // `null` 与缺席同义：与 `optional_string` 同一口径。生产端把可选列表序列化成
+        // `null` 是常态（含 Go/Rust 的 `Option<Vec<_>>`），一个 `null` 不该让**整个**
+        // 信封报 `invalid_field_type` 被打回。
+        Some(Value::Null) | None => Ok(None),
         Some(_) => Err(invalid_field_type(field)),
-        None => Ok(None),
     }
 }
 
@@ -52,6 +55,21 @@ pub(super) fn required_string(
     field: &'static str,
 ) -> ApiResult<String> {
     optional_string(object, field)?.ok_or(missing_field(field))
+}
+
+/// 接受 JSON 字符串或数字并转成字符串。
+///
+/// `pid` 在目标态输入里是数字（`"pid": 210`），而旧样例用字符串；两者都应收。
+pub(super) fn required_string_like(
+    object: &serde_json::Map<String, Value>,
+    field: &'static str,
+) -> ApiResult<String> {
+    match object.get(field) {
+        Some(Value::String(value)) if !value.trim().is_empty() => Ok(value.clone()),
+        Some(Value::Number(value)) => Ok(value.to_string()),
+        Some(Value::Null) | None => Err(missing_field(field)),
+        Some(_) => Err(invalid_field_type(field)),
+    }
 }
 
 pub(super) fn required_string_any(

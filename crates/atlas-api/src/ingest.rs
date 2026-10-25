@@ -160,15 +160,24 @@ pub fn extract_process_runtime_candidates(
     envelope: &IngestEnvelope,
 ) -> ApiResult<ExtractedProcessRuntimes> {
     let payload = object_payload(envelope)?;
-    if !looks_like_edge_process_fact(payload)? {
-        return Ok(ExtractedProcessRuntimes {
-            candidates: Vec::new(),
-        });
+    let mut candidates = Vec::new();
+
+    // 目标态 `atlas.in.edge.v1` 用 `processes[]` 承载一个快照里的全部进程。
+    // 有数组时只走数组，避免和下面的单对象路径重复计数。
+    if let Some(rows) = optional_array(payload, "processes")? {
+        candidates.reserve(rows.len());
+        for row in rows {
+            let row = row.as_object().ok_or(invalid_field_type("processes[]"))?;
+            candidates.push(process_candidate_from_row(envelope, row)?);
+        }
+        return Ok(ExtractedProcessRuntimes { candidates });
     }
 
-    Ok(ExtractedProcessRuntimes {
-        candidates: vec![process_candidate_from_row(envelope, payload)?],
-    })
+    if looks_like_edge_process_fact(payload)? {
+        candidates.push(process_candidate_from_row(envelope, payload)?);
+    }
+
+    Ok(ExtractedProcessRuntimes { candidates })
 }
 
 fn looks_like_edge_network_fact(object: &serde_json::Map<String, Value>) -> ApiResult<bool> {
@@ -241,15 +250,16 @@ fn looks_like_edge_process_fact(object: &serde_json::Map<String, Value>) -> ApiR
         return Ok(target_kind == "process");
     }
 
-    Ok(optional_string(object, "pid")?.is_some()
-        && optional_string(object, "process_key")?.is_some())
+    Ok(object.get("pid").is_some_and(|value| {
+        value.is_number() || value.as_str().is_some_and(|v| !v.trim().is_empty())
+    }) && optional_string_lossy(object, "process_key").is_some())
 }
 
 fn process_candidate_from_row(
     envelope: &IngestEnvelope,
     row: &serde_json::Map<String, Value>,
 ) -> ApiResult<ProcessRuntimeCandidate> {
-    let pid_raw = required_string(row, "pid")?;
+    let pid_raw = required_string_like(row, "pid")?;
     let pid = pid_raw
         .parse::<i32>()
         .map_err(|_| invalid_field_value("pid", pid_raw.clone()))?;
@@ -259,6 +269,7 @@ fn process_candidate_from_row(
         .ok_or_else(|| missing_field("executable_name"))?;
     let observed_at = optional_timestamp(row, "observed_at")?;
     let host_name = optional_string(row, "host_name")?
+        .or_else(|| optional_string_lossy(row, "host_ref"))
         .or_else(|| optional_string_lossy(row, "hostname"))
         .or_else(|| process_host_locator(row).and_then(|locator| locator.1));
     let machine_id = optional_string(row, "machine_id")?
