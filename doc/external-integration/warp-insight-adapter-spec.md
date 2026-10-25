@@ -326,7 +326,7 @@ DiscoveredResource.kind = service_endpoint
 | `process.pid` | `service_endpoints[].pid` | socket 持有进程；缺失时只记地址 |
 | `process.identity` | `service_endpoints[].process_identity` | 优先于 pid 匹配（pid 会复用） |
 | `process.executable.name` | `service_endpoints[].process_executable` | 服务名的来源 |
-| `container.id` | `service_endpoints[].container_id` | 容器内监听，当前仅透传 |
+| `container.id` | `service_endpoints[].container_id` | 容器内监听；中心侧据此给实例挂一条 Container 绑定 |
 | `runtime.binding.confidence` | `service_endpoints[].binding_confidence` | socket owner 归属置信 |
 
 输出：
@@ -338,6 +338,20 @@ DiscoveredResource.kind = service_endpoint
 
 不做「端口值不值得收」的过滤：`127.0.0.1` 上的监听只对本机开放，
 而 `0.0.0.0` 上的监听是对外暴露，两者都是暴露面事实，不能按接口地址那套规则丢掉回环地址。
+
+### 7.5 `process` resource
+
+输入：`DiscoveredResource.kind = process`。
+
+| warp-insight key | atlas 输出 | 说明 |
+| --- | --- | --- |
+| `process.pid` | `processes[].pid` | |
+| `process.executable.name` | `processes[].executable_name` | 绝对路径（Linux 取 `/proc/<pid>/exe`） |
+| `container.id` | `processes[].container_id` | 进程所属容器（探针从 `/proc/<pid>/cgroup` 推出）；与 `containers[].id` 同一个 id |
+
+`container_id` 的意义：**不监听端口的容器化进程**（批处理、sidecar）拿不到端口证据，
+只能靠这里挂到容器上。中心侧只在该容器本轮确实被采集到时才写引用，
+避免出现指向不存在容器的边。字段缺失就整个不出现（宿主进程不写空串）。
 
 ---
 
