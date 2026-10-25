@@ -18,8 +18,20 @@ export type FocusLayout = {
   annotations: LaneAnnotation[];
 };
 
-const FOCUS_LEAF_LIMIT = 20;
+/**
+ * 焦点版式的叶子数上限。
+ *
+ * 它现在是**防呆**用的（避免把几百个节点硬套进三栏），不再是版式质量的门槛 ——
+ * 数量由右栏网格消化。服务展开后一台机器就是 30~40 个叶子，卡在 20 会让
+ * 「点开查看全部」直接退回 dagre 的一列竖排。
+ */
+const FOCUS_LEAF_LIMIT = 64;
 const LANE_GAP = 132;
+/** 右栏竖向堆叠的上限。超过就换网格 —— 一列堆 28 张服务卡会把整图压到 14%。 */
+const RIGHT_LANE_STACK_LIMIT = 4;
+/** 网格每列最多多少行。14 行 ≈ 左栏网段列的高度，两列就能装下 28 个服务。 */
+const RIGHT_LANE_MAX_ROWS = 14;
+const CARD_GAP = 16;
 
 /**
  * 「聚焦视图」布局：一台主机 + 一圈直连对象。
@@ -65,27 +77,33 @@ export function computeFocusLayout(graph: HostProcessTopologyGraph): FocusLayout
   placeNetworkLane(left, hostDims, positions, annotations);
 
   if (right.length > 0) {
-    const panelWidth = Math.max(...right.map((node) => nodeDims(node.objectKind).width));
-    const x = hostDims.width / 2 + LANE_GAP + panelWidth / 2;
-    // 右栏高度不一致（运行时卡片高、服务卡片矮），按行累加而不是等距排。
-    const gap = 16;
-    const total = right.reduce((sum, node) => sum + nodeDims(node.objectKind).height, 0)
-      + gap * Math.max(0, right.length - 1);
-    let cursor = -total / 2;
-    for (const node of right) {
-      const dims = nodeDims(node.objectKind);
-      positions[node.id] = { x, y: cursor + dims.height / 2 };
-      cursor += dims.height + gap;
-    }
     const summary = right.find((node) => node.objectKind === 'ProcessSummary');
-    annotations.push({
-      id: 'lane-runtime',
-      x: x - panelWidth / 2,
-      y: -total / 2 - 36,
-      width: panelWidth,
-      text: summary ? '运行时' : '关联对象',
-      count: summary ? `${summaryCount(summary).toLocaleString('zh-CN')} 进程` : String(right.length),
-    });
+
+    if (right.length <= RIGHT_LANE_STACK_LIMIT) {
+      // 少量对象：竖向堆叠，运行时卡片在上、服务卡片在下。常见入口就长这样。
+      const panelWidth = Math.max(...right.map((node) => nodeDims(node.objectKind).width));
+      const x = hostDims.width / 2 + LANE_GAP + panelWidth / 2;
+      // 右栏高度不一致（运行时卡片高、服务卡片矮），按行累加而不是等距排。
+      const gap = CARD_GAP;
+      const total = right.reduce((sum, node) => sum + nodeDims(node.objectKind).height, 0)
+        + gap * Math.max(0, right.length - 1);
+      let cursor = -total / 2;
+      for (const node of right) {
+        const dims = nodeDims(node.objectKind);
+        positions[node.id] = { x, y: cursor + dims.height / 2 };
+        cursor += dims.height + gap;
+      }
+      annotations.push({
+        id: 'lane-runtime',
+        x: x - panelWidth / 2,
+        y: -total / 2 - 36,
+        width: panelWidth,
+        text: summary ? '运行时' : '关联对象',
+        count: summary ? `${summaryCount(summary).toLocaleString('zh-CN')} 进程` : String(right.length),
+      });
+    } else {
+      placeRightLaneGrid(hostDims, summary, right, positions, annotations);
+    }
   }
 
   centerComposition(positions, annotations, graph);
@@ -190,6 +208,64 @@ function placeNetworkLane(
 
 function stackSpan(count: number, height: number, gap: number) {
   return count * height + Math.max(0, count - 1) * gap;
+}
+
+/**
+ * 数量多时的右栏：运行时卡片独占一列，服务按网格铺开。
+ *
+ * 一列堆 N 张卡片的问题这个文件里已经写过一次 ——「12 个分组竖排一列，整张图被迫缩到
+ * 39%」。服务接上真实端口后一台开发机就是 28 个，不换网格会把整图压到 14%。
+ *
+ * 行数上限取 14：这个高度与左栏的网段列大致齐平，于是 28 个服务刚好两列，
+ * 宽高两个方向都不吃亏。
+ */
+function placeRightLaneGrid(
+  hostDims: { width: number; height: number },
+  summary: HostProcessTopologyNode | undefined,
+  right: HostProcessTopologyNode[],
+  positions: Record<string, GraphPoint>,
+  annotations: LaneAnnotation[],
+) {
+  const laneLeft = hostDims.width / 2 + LANE_GAP;
+  const others = right.filter((node) => node !== summary);
+
+  const columns = Math.max(1, Math.ceil(others.length / RIGHT_LANE_MAX_ROWS));
+  const rows = Math.max(1, Math.ceil(others.length / columns));
+  const cardWidth = Math.max(0, ...others.map((node) => nodeDims(node.objectKind).width));
+  const cardHeight = Math.max(0, ...others.map((node) => nodeDims(node.objectKind).height));
+  const stepX = cardWidth + CARD_GAP;
+  const stepY = cardHeight + CARD_GAP;
+  const gridHeight = others.length === 0 ? 0 : rows * stepY - CARD_GAP;
+  const summaryDims = summary ? nodeDims(summary.objectKind) : null;
+  const laneHeight = Math.max(gridHeight, summaryDims?.height ?? 0);
+
+  let cursorX = laneLeft;
+  if (summary && summaryDims) {
+    // 运行时卡片比服务卡高得多，混进网格会把行高撑乱；让它独占一列并垂直居中。
+    positions[summary.id] = { x: cursorX + summaryDims.width / 2, y: 0 };
+    cursorX += summaryDims.width + CARD_GAP * 2;
+  }
+
+  const gridTop = -gridHeight / 2;
+  others.forEach((node, index) => {
+    const column = Math.floor(index / rows);
+    const row = index % rows;
+    const dims = nodeDims(node.objectKind);
+    positions[node.id] = {
+      x: cursorX + column * stepX + dims.width / 2,
+      y: gridTop + row * stepY + dims.height / 2,
+    };
+  });
+
+  const laneWidth = cursorX + columns * stepX - CARD_GAP - laneLeft;
+  annotations.push({
+    id: 'lane-runtime',
+    x: laneLeft,
+    y: -laneHeight / 2 - 36,
+    width: laneWidth,
+    text: summary ? '运行时与服务' : '关联对象',
+    count: summary ? `${summaryCount(summary).toLocaleString('zh-CN')} 进程` : String(others.length),
+  });
 }
 
 function summaryCount(summary: HostProcessTopologyNode | undefined): number {
