@@ -1,8 +1,8 @@
-# dayu-topology Software Normalization 与 Vulnerability Enrichment 设计
+# wist-atlas Software Normalization 与 Vulnerability Enrichment 设计
 
 ## 1. 文档目的
 
-本文档定义 `dayu-topology` 中“软件归一化”和“漏洞/元数据 enrichment”的独立设计。
+本文档定义 `wist-atlas` 中“软件归一化”和“漏洞/元数据 enrichment”的独立设计。
 
 这里的目标不是在边缘节点直接查漏洞，而是先把边缘发现到的进程、安装路径和包管理事实，收敛成中心侧可复用的软件实体，再挂载漏洞、生命周期和其他 meta 信息。
 
@@ -26,7 +26,7 @@
 
 第一版固定以下结论：
 
-- `dayu-topology` 所依赖的边缘发现侧只负责发现本地软件线索，不负责维护漏洞知识库
+- `wist-atlas` 所依赖的边缘发现侧只负责发现本地软件线索，不负责维护漏洞知识库
 - 软件归一化和漏洞 enrichment 应放在中心侧
 - 软件实体不能直接以 `CPE` 或 `purl` 作为唯一主键
 - 中心必须维护内部稳定 `product_id / version_id / artifact_id`
@@ -996,4 +996,4 @@ InstalledPackage -> SoftwareArtifact -> SoftwareVersion -> VulnerabilityFindings
 
 一句话总结：
 
-`dayu-topology` 应把软件知识库设计成中心侧产品、版本、制品目录，而不是把进程名直接当漏洞库查询键。
+`wist-atlas` 应把软件知识库设计成中心侧产品、版本、制品目录，而不是把进程名直接当漏洞库查询键。

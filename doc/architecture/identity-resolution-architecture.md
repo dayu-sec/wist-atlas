@@ -1,8 +1,8 @@
-# dayu-topology Identity Resolution 架构设计
+# wist-atlas Identity Resolution 架构设计
 
 ## 1. 文档目的
 
-本文档定义 `dayu-topology` 第一版 identity resolution 架构。
+本文档定义 `wist-atlas` 第一版 identity resolution 架构。
 
 目标是固定：
 
@@ -210,7 +210,7 @@ candidate
 
 - `wp-reactor` 可以计算候选匹配信号、窗口聚合、规则命中、风险因子候选。
 - identity resolver 负责把候选信号裁决为内部稳定对象，或将冲突放入 unresolved / review queue。
-- 强标识、组合标识、弱标识的优先级和冲突策略仍由 `dayu-topology` 管理。
+- 强标识、组合标识、弱标识的优先级和冲突策略仍由 `wist-atlas` 管理。
 - `wp-reactor` 输出必须保留 rule id、window、input evidence refs、score / confidence，作为 explain 输入。
 - 规则命中不能直接创建或合并 `host`、`service`、`subject`、`software` 等中心主对象。
 
@@ -226,8 +226,8 @@ candidate / evidence / observation
 
 错误处理要求：
 
-- `wp-reactor` 错误进入 dayu 集成层时必须保持结构化 source chain。
-- 纯 reason 转换使用 `conv_err()`；建立 dayu 语义边界时使用 `source_err(...)`。
+- `wp-reactor` 错误进入 atlas 集成层时必须保持结构化 source chain。
+- 纯 reason 转换使用 `conv_err()`；建立 atlas 语义边界时使用 `source_err(...)`。
 - 不允许 `anyhow::Error`、裸 `io::Error` 或字符串错误穿透 identity resolution 热路径。
 
 ---
@@ -265,7 +265,7 @@ identity resolution 必须支持 explain。
 
 当前建议固定为：
 
-- identity resolution 是 `dayu-topology` 的核心语义能力
+- identity resolution 是 `wist-atlas` 的核心语义能力
 - 不允许分散在各数据源私有实现里
 - 所有关键对象都应先经过 resolution，再进入主对象模型
 - `wp-reactor` 只作为规则计算和候选信号生成组件，不替代 resolver / materializer

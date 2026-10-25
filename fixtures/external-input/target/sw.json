@@ -1,0 +1,23 @@
+{
+  "schema": "atlas.in.sw.v1",
+  "source": {
+    "system": "example",
+    "producer": "fixture-sw",
+    "tenant": "tenant-demo",
+    "env": "dev"
+  },
+  "collect": {
+    "mode": "incremental",
+    "observed_at": "2026-04-26T02:20:30Z",
+    "collected_at": "2026-04-26T02:20:31Z",
+    "cursor": "cursor-sw-001"
+  },
+  "payload": {
+    "evidence": [
+      {
+        "external_id": "sw-1",
+        "name": "demo"
+      }
+    ]
+  }
+}

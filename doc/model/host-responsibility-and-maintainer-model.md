@@ -1,8 +1,8 @@
-# dayu-topology Host 责任者与维护者关系模型设计
+# wist-atlas Host 责任者与维护者关系模型设计
 
 ## 1. 文档目的
 
-本文档定义 `dayu-topology` 中心侧针对主机责任归属的关系模型。
+本文档定义 `wist-atlas` 中心侧针对主机责任归属的关系模型。
 
 这里的目标是固定：
 

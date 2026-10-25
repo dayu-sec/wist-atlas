@@ -1,8 +1,8 @@
-# dayu-topology Observability 与 Audit 架构设计
+# wist-atlas Observability 与 Audit 架构设计
 
 ## 1. 文档目的
 
-本文档定义 `dayu-topology` 第一版可观测性与审计架构。
+本文档定义 `wist-atlas` 第一版可观测性与审计架构。
 
 目标是固定：
 

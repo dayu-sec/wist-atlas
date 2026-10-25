@@ -29,6 +29,75 @@ dependencies = [
 ]
 
 [[package]]
+name = "atlas-api"
+version = "0.1.0"
+dependencies = [
+ "atlas-domain",
+ "atlas-storage",
+ "chrono",
+ "orion-error",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
+name = "atlas-app"
+version = "0.1.0"
+dependencies = [
+ "atlas-api",
+ "atlas-domain",
+ "atlas-storage",
+ "atlas-sync",
+ "axum",
+ "chrono",
+ "orion-error",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tower",
+ "uuid",
+]
+
+[[package]]
+name = "atlas-domain"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "orion-error",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
+name = "atlas-storage"
+version = "0.1.0"
+dependencies = [
+ "atlas-domain",
+ "chrono",
+ "orion-error",
+ "tokio",
+ "tokio-postgres",
+ "uuid",
+]
+
+[[package]]
+name = "atlas-sync"
+version = "0.1.0"
+dependencies = [
+ "atlas-api",
+ "atlas-domain",
+ "atlas-storage",
+ "chrono",
+ "orion-error",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "atomic-waker"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1061,75 +1130,6 @@ dependencies = [
  "futures-sink",
  "pin-project-lite",
  "tokio",
-]
-
-[[package]]
-name = "topology-api"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "orion-error",
- "serde",
- "serde_json",
- "topology-domain",
- "topology-storage",
- "uuid",
-]
-
-[[package]]
-name = "topology-app"
-version = "0.1.0"
-dependencies = [
- "axum",
- "chrono",
- "orion-error",
- "serde",
- "serde_json",
- "tokio",
- "topology-api",
- "topology-domain",
- "topology-storage",
- "topology-sync",
- "tower",
- "uuid",
-]
-
-[[package]]
-name = "topology-domain"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "orion-error",
- "serde",
- "serde_json",
- "uuid",
-]
-
-[[package]]
-name = "topology-storage"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "orion-error",
- "tokio",
- "tokio-postgres",
- "topology-domain",
- "uuid",
-]
-
-[[package]]
-name = "topology-sync"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "orion-error",
- "serde",
- "serde_json",
- "tokio",
- "topology-api",
- "topology-domain",
- "topology-storage",
- "uuid",
 ]
 
 [[package]]

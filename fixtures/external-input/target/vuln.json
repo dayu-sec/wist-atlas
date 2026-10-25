@@ -1,0 +1,23 @@
+{
+  "schema": "atlas.in.vuln.v1",
+  "source": {
+    "system": "example",
+    "producer": "fixture-vuln",
+    "tenant": "tenant-demo",
+    "env": "dev"
+  },
+  "collect": {
+    "mode": "snapshot",
+    "observed_at": "2026-04-26T02:20:30Z",
+    "collected_at": "2026-04-26T02:20:31Z",
+    "snap_id": "snap-vuln-001"
+  },
+  "payload": {
+    "advisories": [
+      {
+        "external_id": "vuln-1",
+        "severity": "low"
+      }
+    ]
+  }
+}

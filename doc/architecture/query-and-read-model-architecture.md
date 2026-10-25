@@ -1,8 +1,8 @@
-# dayu-topology Query 与 Read Model 架构设计
+# wist-atlas Query 与 Read Model 架构设计
 
 ## 1. 文档目的
 
-本文档定义 `dayu-topology` 第一版查询架构与读模型架构。
+本文档定义 `wist-atlas` 第一版查询架构与读模型架构。
 
 目标是固定：
 

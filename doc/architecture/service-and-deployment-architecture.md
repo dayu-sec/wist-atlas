@@ -1,8 +1,8 @@
-# dayu-topology 服务与部署架构设计
+# wist-atlas 服务与部署架构设计
 
 ## 1. 文档目的
 
-本文档定义 `dayu-topology` 第一版服务与部署架构。
+本文档定义 `wist-atlas` 第一版服务与部署架构。
 
 目标是固定：
 
@@ -77,7 +77,7 @@
 ### 4.1 形态 A：单体起步
 
 ```text
-dayu-topology-server
+wist-atlas-server
 ```
 
 内含：
@@ -104,8 +104,8 @@ dayu-topology-server
 ### 4.2 形态 B：单体 + 异步 worker
 
 ```text
-dayu-topology-server
-dayu-topology-worker
+wist-atlas-server
+wist-atlas-worker
 ```
 
 适用条件：
@@ -117,9 +117,9 @@ dayu-topology-worker
 ### 4.3 形态 C：API / Worker / Sync 三分
 
 ```text
-dayu-topology-api
-dayu-topology-worker
-dayu-topology-sync
+wist-atlas-api
+wist-atlas-worker
+wist-atlas-sync
 ```
 
 适用条件：
@@ -186,7 +186,7 @@ dayu-topology-sync
 
 ```text
 +---------------------+
-| dayu-topology-server|
+| wist-atlas-server|
 +----------+----------+
            |
    +-------+--------+
@@ -201,7 +201,7 @@ dayu-topology-sync
 
 ```text
 +------------------+     +------------------+     +------------------+
-| topology-api     |     | topology-worker  |     | topology-sync    |
+| atlas-api     |     | topology-worker  |     | atlas-sync    |
 +--------+---------+     +---------+--------+     +---------+--------+
          \_____________________|___________________________/
                               |

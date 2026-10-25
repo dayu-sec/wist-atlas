@@ -1,8 +1,8 @@
-# dayu-topology 统一模型总图
+# wist-atlas 统一模型总图
 
 ## 1. 文档目的
 
-本文档把 `dayu-topology` 当前已经收敛出的各组模型放到同一个总图中，明确：
+本文档把 `wist-atlas` 当前已经收敛出的各组模型放到同一个总图中，明确：
 
 - 哪些是目录对象
 - 哪些是运行对象
@@ -24,7 +24,7 @@
 
 ## 2. 核心结论
 
-`dayu-topology` 第一版应被理解为一个统一中心对象图谱，由五层组成：
+`wist-atlas` 第一版应被理解为一个统一中心对象图谱，由五层组成：
 
 - 业务架构层
 - 资源目录层
@@ -441,6 +441,6 @@ flowchart LR
 
 当前建议固定为：
 
-- `dayu-topology` 第一版不是单一 CMDB，也不是单一 runtime store
+- `wist-atlas` 第一版不是单一 CMDB，也不是单一 runtime store
 - 它是“目录对象 + 运行对象 + 关系对象 + 治理对象”的统一中心图谱
 - 后续 schema、ingest、query、sync 都应围绕这张总图展开

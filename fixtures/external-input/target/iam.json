@@ -1,0 +1,23 @@
+{
+  "schema": "atlas.in.iam.v1",
+  "source": {
+    "system": "example",
+    "producer": "fixture-iam",
+    "tenant": "tenant-demo",
+    "env": "dev"
+  },
+  "collect": {
+    "mode": "snapshot",
+    "observed_at": "2026-04-26T02:20:30Z",
+    "collected_at": "2026-04-26T02:20:31Z",
+    "snap_id": "snap-iam-001"
+  },
+  "payload": {
+    "users": [
+      {
+        "external_id": "user-1",
+        "display_name": "Demo User"
+      }
+    ]
+  }
+}

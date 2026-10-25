@@ -1,8 +1,8 @@
-# dayu-topology 文件导入规范
+# wist-atlas 文件导入规范
 
 ## 1. 目的
 
-本文档固定 `dayu-topology` 第一版从文件载入 normalized batch import payload 的规范，并给出可直接运行的示例。
+本文档固定 `wist-atlas` 第一版从文件载入 normalized batch import payload 的规范，并给出可直接运行的示例。
 
 这里的 payload 是 source adapter 之后的中心侧候选输入，不是真实 edge agent、CMDB、IAM 或 K8s API 的原始输入协议。外部输入协议见 [`external-input-spec.md`](./external-input-spec.md)。
 
@@ -22,12 +22,12 @@
 
 ## 2. 当前运行方式
 
-当前 `topology-app` 的文件模式读取的是 payload JSON 本体，不读取完整 `IngestEnvelope`。
+当前 `atlas-app` 的文件模式读取的是 payload JSON 本体，不读取完整 `IngestEnvelope`。
 
 运行命令：
 
 ```bash
-cargo run -p topology-app -- file fixtures/file-ingest/minimal-host-network.json
+cargo run -p atlas-app -- file fixtures/file-ingest/minimal-host-network.json
 ```
 
 单体入口会自动补齐 envelope 字段：
@@ -48,15 +48,15 @@ cargo run -p topology-app -- file fixtures/file-ingest/minimal-host-network.json
 除了 `file <json>` 的 normalized payload 导入外，当前还支持：
 
 ```bash
-cargo run -q -p topology-app -- replay-jsonl \
+cargo run -q -p atlas-app -- replay-jsonl \
   ../asset-twins-demo/warp-parse/data/out_dat/dayu-edge.jsonl \
   ../asset-twins-demo/warp-parse/data/out_dat/dayu-telemetry.jsonl
 
-cargo run -q -p topology-app -- postgres-live import-jsonl \
+cargo run -q -p atlas-app -- postgres-live import-jsonl \
   ../asset-twins-demo/warp-parse/data/out_dat/dayu-edge.jsonl \
   ../asset-twins-demo/warp-parse/data/out_dat/dayu-telemetry.jsonl
 
-cargo run -q -p topology-app -- postgres-live replace-jsonl \
+cargo run -q -p atlas-app -- postgres-live replace-jsonl \
   ../asset-twins-demo/warp-parse/data/out_dat/dayu-edge.jsonl \
   ../asset-twins-demo/warp-parse/data/out_dat/dayu-telemetry.jsonl
 ```
@@ -66,19 +66,19 @@ cargo run -q -p topology-app -- postgres-live replace-jsonl \
 - `file <json>` 读取的是单个 JSON payload object
 - `replay-jsonl` / `import-jsonl` 读取的是一个或多个 JSONL 文件
 - `replace-jsonl` 会先执行 `reset-public`，再执行正式导入
-- JSONL 的正式导入实现已下沉到 `topology-sync::JsonlImportService`
+- JSONL 的正式导入实现已下沉到 `atlas-sync::JsonlImportService`
 
 当前职责分层如下：
 
 ```text
-topology-app
+atlas-app
   └─ CLI 参数解析、store 初始化、结果打印
 
-topology-sync
+atlas-sync
   └─ 多文件 JSONL replay / import
-  └─ JSON -> DayuInputEnvelope -> IngestEnvelope
+  └─ JSON -> AtlasInputEnvelope -> IngestEnvelope
 
-topology-api
+atlas-api
   └─ candidate 提取、identity 解析、materialize
 ```
 
@@ -88,11 +88,11 @@ topology-api
 
 当前 `replay-jsonl` / `import-jsonl` / `replace-jsonl` 已支持：
 
-- `dayu.in.edge.v1`
+- `atlas.in.edge.v1`
   - host fact
   - network fact
   - process fact
-- `dayu.in.telemetry.v1`
+- `atlas.in.telemetry.v1`
   - host metrics
   - process metrics
 
@@ -130,7 +130,7 @@ JSONL import 当前会把数据导入到 storage traits 对应的对象：
 - 默认模式使用 `InMemoryTopologyStore`
 - `postgres-mock` 仍然不是正式 PostgreSQL，只是 mock executor
 
-但 `topology-app` 已支持正式 PostgreSQL 入口：
+但 `atlas-app` 已支持正式 PostgreSQL 入口：
 
 - `postgres-live reset-public`
 - `postgres-live import-jsonl`
@@ -302,13 +302,13 @@ P0 支持的 `target_kind`：
 最小闭环：
 
 ```bash
-cargo run -p topology-app -- file fixtures/file-ingest/minimal-host-network.json
+cargo run -p atlas-app -- file fixtures/file-ingest/minimal-host-network.json
 ```
 
 预期输出应包含：
 
 ```text
-dayu-topology monolith started
+wist-atlas monolith started
 ingest_id=demo-ingest-1
 host=demo-node
 network=10.42.0.0/24
@@ -319,7 +319,7 @@ responsibilities=alice:Owner
 小型办公网络：
 
 ```bash
-cargo run -p topology-app -- file fixtures/file-ingest/small-office.json
+cargo run -p atlas-app -- file fixtures/file-ingest/small-office.json
 ```
 
 该示例包含：

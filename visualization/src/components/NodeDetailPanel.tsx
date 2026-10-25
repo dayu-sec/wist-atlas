@@ -56,10 +56,27 @@ export default function NodeDetailPanel({
               </span>
             </div>
             <div className="grid grid-cols-3 gap-2 pt-2 border-t border-gray-100">
-              <SummaryItem label="Groups" value={hostTopology.processGroups.length} />
+              <SummaryItem label="Networks" value={hostTopology.networkSegments.length} />
               <SummaryItem label="Processes" value={hostTopology.processes.length} />
               <SummaryItem label="Services" value={hostTopology.services.length} />
             </div>
+            {hostTopology.networkSegments.length > 0 && (
+              <div className="pt-2 border-t border-gray-100">
+                <span className="text-xs text-gray-400 block mb-2">Networks</span>
+                <div className="space-y-2">
+                  {hostTopology.networkSegments.slice(0, 8).map((segment, index) => (
+                    <div key={`${String(segment.network_segment_id ?? segment.cidr ?? index)}`} className="rounded border border-gray-100 bg-gray-50 p-2">
+                      <div className="text-xs font-medium text-gray-800 break-all">
+                        {String(segment.name ?? segment.cidr ?? '-')}
+                      </div>
+                      <div className="text-[11px] text-gray-500">
+                        {String(segment.address_family ?? '-')}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             {hostTopology.services.length > 0 && (
               <div className="pt-2 border-t border-gray-100">
                 <span className="text-xs text-gray-400 block mb-2">Services</span>

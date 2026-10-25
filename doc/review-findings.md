@@ -1,4 +1,4 @@
-# dayu-topology 设计文档 Review 结果
+# wist-atlas 设计文档 Review 结果
 
 Review 日期：2026-04-24
 
@@ -61,7 +61,7 @@ Review 日期：2026-04-24
 
 `README.md` 和 `glossary.md` 引用了 `scripts/sync_glossary.py`，但该脚本不存在。
 
-**状态**：已于 2026-04-25 补充。脚本位于 `dayu-topology/scripts/sync_glossary.py`，功能：读取 `glossary.md` 的 `GLOSSARY_SYNC_SOURCE` 术语表，同步到所有带 `GLOSSARY_SYNC` 标记的模型文档。幂等设计，重复运行不产生差异。
+**状态**：已于 2026-04-25 补充。脚本位于 `wist-atlas/scripts/sync_glossary.py`，功能：读取 `glossary.md` 的 `GLOSSARY_SYNC_SOURCE` 术语表，同步到所有带 `GLOSSARY_SYNC` 标记的模型文档。幂等设计，重复运行不产生差异。
 
 ---
 

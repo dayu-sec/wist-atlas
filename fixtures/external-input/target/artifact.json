@@ -1,0 +1,23 @@
+{
+  "schema": "atlas.in.artifact.v1",
+  "source": {
+    "system": "example",
+    "producer": "fixture-artifact",
+    "tenant": "tenant-demo",
+    "env": "dev"
+  },
+  "collect": {
+    "mode": "snapshot",
+    "observed_at": "2026-04-26T02:20:30Z",
+    "collected_at": "2026-04-26T02:20:31Z",
+    "snap_id": "snap-artifact-001"
+  },
+  "payload": {
+    "artifacts": [
+      {
+        "external_id": "artifact-1",
+        "hash": "sha256:demo"
+      }
+    ]
+  }
+}

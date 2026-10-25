@@ -1,0 +1,35 @@
+{
+  "hosts": [
+    {
+      "host_name": "demo-node",
+      "machine_id": "demo-machine-01",
+      "os_name": "linux",
+      "os_version": "6.8"
+    }
+  ],
+  "ips": [
+    {
+      "ip": "10.42.0.12",
+      "cidr": "10.42.0.0/24",
+      "host_name": "demo-node",
+      "machine_id": "demo-machine-01",
+      "iface_name": "eth0"
+    }
+  ],
+  "subjects": [
+    {
+      "display_name": "alice",
+      "email": "alice@example.com",
+      "subject_type": "user"
+    }
+  ],
+  "responsibility_assignments": [
+    {
+      "subject_display_name": "alice",
+      "subject_email": "alice@example.com",
+      "target_kind": "host",
+      "target_external_ref": "demo-node",
+      "role": "owner"
+    }
+  ]
+}

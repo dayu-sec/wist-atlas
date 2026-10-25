@@ -1,0 +1,91 @@
+{
+  "hosts": [
+    {
+      "external_ref": "asset-macbook-001",
+      "host_name": "office-laptop-01",
+      "machine_id": "office-machine-001",
+      "os_name": "macos",
+      "os_version": "14.5"
+    },
+    {
+      "external_ref": "asset-linux-002",
+      "host_name": "office-build-01",
+      "machine_id": "office-machine-002",
+      "os_name": "linux",
+      "os_version": "6.8"
+    },
+    {
+      "external_ref": "asset-nas-003",
+      "host_name": "office-nas-01",
+      "machine_id": "office-machine-003",
+      "os_name": "linux",
+      "os_version": "6.6"
+    }
+  ],
+  "ips": [
+    {
+      "ip": "192.168.10.41",
+      "cidr": "192.168.10.0/24",
+      "host_name": "office-laptop-01",
+      "machine_id": "office-machine-001",
+      "iface_name": "en0"
+    },
+    {
+      "ip": "192.168.10.52",
+      "cidr": "192.168.10.0/24",
+      "host_name": "office-build-01",
+      "machine_id": "office-machine-002",
+      "iface_name": "eth0"
+    },
+    {
+      "ip": "192.168.20.15",
+      "cidr": "192.168.20.0/24",
+      "host_name": "office-nas-01",
+      "machine_id": "office-machine-003",
+      "iface_name": "bond0"
+    }
+  ],
+  "subjects": [
+    {
+      "external_ref": "user-alice",
+      "display_name": "alice",
+      "email": "alice@example.com",
+      "subject_type": "user"
+    },
+    {
+      "external_ref": "team-platform",
+      "display_name": "platform-team",
+      "email": "platform@example.com",
+      "subject_type": "team"
+    },
+    {
+      "external_ref": "rotation-office-oncall",
+      "display_name": "office-oncall",
+      "email": "office-oncall@example.com",
+      "subject_type": "rotation"
+    }
+  ],
+  "responsibility_assignments": [
+    {
+      "subject_display_name": "alice",
+      "subject_email": "alice@example.com",
+      "target_kind": "host",
+      "target_external_ref": "office-laptop-01",
+      "role": "owner"
+    },
+    {
+      "subject_display_name": "platform-team",
+      "subject_email": "platform@example.com",
+      "target_kind": "host",
+      "target_external_ref": "office-build-01",
+      "role": "maintainer"
+    },
+    {
+      "subject_display_name": "office-oncall",
+      "subject_email": "office-oncall@example.com",
+      "target_kind": "network_segment",
+      "target_external_ref": "192.168.10.0/24",
+      "role": "oncall"
+    }
+  ]
+}

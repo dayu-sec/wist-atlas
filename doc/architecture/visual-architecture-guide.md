@@ -1,8 +1,8 @@
-# dayu-topology 可视化架构指南
+# wist-atlas 可视化架构指南
 
 ## 1. 文档目的
 
-本文档把 `dayu-topology` 的关键设计整理成可传播的专业图示。每张图只配简短说明，详细论述见对应的架构文档。
+本文档把 `wist-atlas` 的关键设计整理成可传播的专业图示。每张图只配简短说明，详细论述见对应的架构文档。
 
 ## 2. 一页总览
 
@@ -15,7 +15,7 @@ flowchart LR
         External["External Systems<br/>CMDB / LDAP / IAM / Oncall / Vuln"]
     end
 
-    subgraph Topology["dayu-topology 中心侧"]
+    subgraph Topology["wist-atlas 中心侧"]
         Ingest["Ingest Gateway<br/>鉴权 / 幂等 / envelope"]
         Normalize["Normalization Engine<br/>candidate / resolver / materializer"]
         Store[("Catalog Store<br/>PostgreSQL source of truth")]
@@ -53,7 +53,7 @@ flowchart LR
 
 ```mermaid
 flowchart TB
-    subgraph Outside["dayu-topology 外部"]
+    subgraph Outside["wist-atlas 外部"]
         Agent["边缘 Agent / Discovery"]
         Control["控制中心<br/>审批 / 编译 / 下发 / 执行跟踪"]
         Cmdb["CMDB / LDAP / IAM / Oncall"]
@@ -61,7 +61,7 @@ flowchart TB
         Visual["可视化系统"]
     end
 
-    subgraph Dayu["dayu-topology"]
+    subgraph Atlas["wist-atlas"]
         Model["统一对象模型"]
         Relation["统一关系图谱"]
         Resolve["Identity Resolution"]
@@ -79,11 +79,11 @@ flowchart TB
     Query -- "拓扑 / 责任 / 风险 / explain" --> Control
     Query -- "稳定 read model" --> Visual
 
-    Control -. "不属于 dayu-topology" .- Control
+    Control -. "不属于 wist-atlas" .- Control
     Agent -. "不由中心侧执行 discovery" .- Agent
 ```
 
-`dayu-topology` 不做边缘采集，不做控制面执行。可视化系统消费 read model，不重新定义领域模型。
+`wist-atlas` 不做边缘采集，不做控制面执行。可视化系统消费 read model，不重新定义领域模型。
 
 ## 4. 逻辑模块与职责
 
@@ -337,7 +337,7 @@ Cursor 只在主写成功后推进，staged payload 支持失败重放，一个�
 ```mermaid
 flowchart TB
     subgraph Phase1["Phase 1：单体起步"]
-        Mono["dayu-topology-server<br/>API + ingest + normalize + query"]
+        Mono["wist-atlas-server<br/>API + ingest + normalize + query"]
         PG1[("PostgreSQL")]
         OBJ1[("Object Storage")]
         Mono --> PG1
@@ -345,8 +345,8 @@ flowchart TB
     end
 
     subgraph Phase2["Phase 2：单体 + Worker"]
-        API2["dayu-topology-server"]
-        Worker2["dayu-topology-worker<br/>batch normalize / derive / explain rebuild"]
+        API2["wist-atlas-server"]
+        Worker2["wist-atlas-worker<br/>batch normalize / derive / explain rebuild"]
         PG2[("PostgreSQL")]
         OBJ2[("Object Storage")]
         API2 --> PG2
@@ -356,9 +356,9 @@ flowchart TB
     end
 
     subgraph Phase3["Phase 3：API / Worker / Sync 三分"]
-        API3["dayu-topology-api"]
-        Worker3["dayu-topology-worker"]
-        Sync3["dayu-topology-sync"]
+        API3["wist-atlas-api"]
+        Worker3["wist-atlas-worker"]
+        Sync3["wist-atlas-sync"]
         PG3[("PostgreSQL")]
         OBJ3[("Object Storage")]
         API3 --> PG3
@@ -377,11 +377,11 @@ flowchart TB
 
 ```mermaid
 flowchart LR
-    Domain["topology-domain<br/>领域对象 / contract / DTO"]
-    Storage["topology-storage<br/>repository / migration / Postgres"]
-    API["topology-api<br/>ingest / query / view / explain"]
-    Sync["topology-sync<br/>connector / runner / cursor"]
-    App["topology-app<br/>config / role / process entry"]
+    Domain["atlas-domain<br/>领域对象 / contract / DTO"]
+    Storage["atlas-storage<br/>repository / migration / Postgres"]
+    API["atlas-api<br/>ingest / query / view / explain"]
+    Sync["atlas-sync<br/>connector / runner / cursor"]
+    App["atlas-app<br/>config / role / process entry"]
 
     Domain --> Storage
     Domain --> API
@@ -393,13 +393,13 @@ flowchart LR
     Storage --> App
 ```
 
-`topology-domain` 是领域语义单一来源，`topology-storage` 只做存储 contract 和实现，`topology-api` 提供 ingest 与 query，`topology-sync` 提供外部同步，`topology-app` 只做装配。
+`atlas-domain` 是领域语义单一来源，`atlas-storage` 只做存储 contract 和实现，`atlas-api` 提供 ingest 与 query，`atlas-sync` 提供外部同步，`atlas-app` 只做装配。
 
 ## 13. 第一版开发路线
 
 ```mermaid
 gantt
-    title dayu-topology 第一版开发路线
+    title wist-atlas 第一版开发路线
     dateFormat  YYYY-MM-DD
     axisFormat  W%W
 

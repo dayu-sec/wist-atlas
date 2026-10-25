@@ -1,8 +1,8 @@
-# dayu-topology External Sync 架构设计
+# wist-atlas External Sync 架构设计
 
 ## 1. 文档目的
 
-本文档定义 `dayu-topology` 第一版外部同步架构。
+本文档定义 `wist-atlas` 第一版外部同步架构。
 
 目标是固定：
 
@@ -160,7 +160,7 @@
 
 ## 8. Sync Service 运行建议
 
-建议 `dayu-topology-sync` 承担：
+建议 `wist-atlas-sync` 承担：
 
 - connector 调度
 - staged payload 管理

@@ -1,8 +1,8 @@
-# dayu-topology Host Inventory 与 Runtime State 设计
+# wist-atlas Host Inventory 与 Runtime State 设计
 
 ## 1. 文档目的
 
-本文档定义 `dayu-topology` 中主机层面的两类核心对象：
+本文档定义 `wist-atlas` 中主机层面的两类核心对象：
 
 - 主机资产库存
 - 主机运行时状态
@@ -470,4 +470,4 @@ SoftwareEvidence
 
 一句话总结：
 
-`dayu-topology` 应把主机设计成“一个稳定库存对象 + 多个运行态快照对象”，而不是一个不断被高频重写的大对象。
+`wist-atlas` 应把主机设计成“一个稳定库存对象 + 多个运行态快照对象”，而不是一个不断被高频重写的大对象。

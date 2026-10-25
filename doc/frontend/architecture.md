@@ -1,8 +1,8 @@
-# dayu-topology 拓扑可视化前端架构设计
+# wist-atlas 拓扑可视化前端架构设计
 
 ## 1. 文档目的
 
-本文档定义 `dayu-topology` 可视化前端在当前阶段的最小可落地架构。
+本文档定义 `wist-atlas` 可视化前端在当前阶段的最小可落地架构。
 
 本文档重点解决两个问题：
 
@@ -102,15 +102,15 @@ Browser
 
 HTTP JSON
 
-dayu-topology HTTP 单体入口
+wist-atlas HTTP 单体入口
   -> /api/topology/host/{id}
   -> /api/topology/network/{id}    (可选增强)
   -> /api/__mock/topology/host     (开发联调可选)
   -> static frontend assets        (部署方式可后定)
 
 Storage / Query
-  -> topology-api query service
-  -> topology-storage
+  -> atlas-api query service
+  -> atlas-storage
   -> PostgreSQL / mock backend
 ```
 
@@ -428,7 +428,7 @@ type TopologyApi = {
 
 当前不建议在架构文档里提前写死：
 
-- 必须放入 `topology-api/static/`
+- 必须放入 `atlas-api/static/`
 - 必须由某个特定 crate 单独 serve
 
 因为当前系统真正已落地的是单体装配方向，而不是独立 API server 形态。

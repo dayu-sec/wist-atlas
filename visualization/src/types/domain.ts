@@ -1,5 +1,5 @@
 // ============================================================
-// dayu-topology visualization — V1 domain types
+// wist-atlas visualization — V1 domain types
 // Aligned with topology-visualization-frontend-architecture.md
 // V1 scope: host + network + responsibility only
 // ============================================================

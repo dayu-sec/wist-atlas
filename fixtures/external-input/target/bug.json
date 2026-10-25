@@ -1,0 +1,26 @@
+{
+  "schema": "atlas.in.bug.v1",
+  "source": {
+    "system": "example",
+    "producer": "fixture-bug",
+    "tenant": "tenant-demo",
+    "env": "dev"
+  },
+  "collect": {
+    "mode": "window",
+    "observed_at": "2026-04-26T02:20:30Z",
+    "collected_at": "2026-04-26T02:20:31Z"
+  },
+  "payload": {
+    "window": {
+      "start": "2026-04-26T02:20:00Z",
+      "end": "2026-04-26T02:20:30Z"
+    },
+    "bugs": [
+      {
+        "external_id": "bug-1",
+        "signal": "panic"
+      }
+    ]
+  }
+}

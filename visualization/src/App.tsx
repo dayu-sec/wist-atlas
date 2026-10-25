@@ -252,7 +252,7 @@ export default function App() {
       {/* Header */}
       <header className="flex items-center gap-4 px-4 py-2 bg-white border-b border-gray-200 shrink-0">
         <h1 className="text-sm font-semibold text-gray-700 tracking-wide shrink-0">
-          dayu-topology
+          wist-atlas
         </h1>
 
         {/* Host ID query input */}

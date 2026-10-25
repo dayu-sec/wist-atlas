@@ -1,0 +1,21 @@
+{
+  "schema": "atlas.in.telemetry.v1",
+  "source": {
+    "system": "example",
+    "producer": "fixture-telemetry",
+    "tenant": "tenant-demo",
+    "env": "dev"
+  },
+  "collect": {
+    "mode": "window",
+    "observed_at": "2026-04-26T02:20:30Z",
+    "collected_at": "2026-04-26T02:20:31Z"
+  },
+  "payload": {
+    "window": {
+      "start": "2026-04-26T02:20:00Z",
+      "end": "2026-04-26T02:20:30Z"
+    },
+    "collection_kind": "host_metrics"
+  }
+}

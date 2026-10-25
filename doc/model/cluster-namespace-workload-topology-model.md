@@ -1,8 +1,8 @@
-# dayu-topology Cluster / Namespace / Workload Topology 子模型设计
+# wist-atlas Cluster / Namespace / Workload Topology 子模型设计
 
 ## 1. 文档目的
 
-本文档定义 `dayu-topology` 中心侧 `cluster / namespace / workload / pod` 之间的拓扑子模型。
+本文档定义 `wist-atlas` 中心侧 `cluster / namespace / workload / pod` 之间的拓扑子模型。
 
 目标是固定：
 

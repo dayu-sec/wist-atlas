@@ -1,0 +1,331 @@
+use atlas_domain::{
+    HostInventory, HostNetAssoc, HostRuntimeState, NetworkDomain, NetworkSegment, ObjectKind,
+    ProcessRuntimeState, ResponsibilityAssignment, RuntimeBinding, RuntimeObjectType,
+    ServiceEntity, ServiceInstance, Subject, TenantId,
+};
+use uuid::Uuid;
+
+use crate::memory::IngestJobEntry;
+use crate::{
+    AsyncCatalogStore, AsyncGovernanceStore, AsyncIngestStore, AsyncRuntimeStore, Page,
+    StorageResult, not_configured,
+};
+
+use super::super::{LivePostgresExecutor, PostgresTopologyStore, row_decode::*, sql};
+
+impl AsyncRuntimeStore for PostgresTopologyStore<LivePostgresExecutor> {
+    async fn insert_host_runtime_state(&self, state: &HostRuntimeState) -> StorageResult<()> {
+        self.executor
+            .exec_async(
+                sql::UPSERT_HOST_RUNTIME_STATE,
+                &[
+                    state.host_id.to_string(),
+                    state.observed_at.0.to_rfc3339(),
+                    state.boot_id.clone().unwrap_or_default(),
+                    state
+                        .uptime_seconds
+                        .map(|v| v.to_string())
+                        .unwrap_or_default(),
+                    state.loadavg_1m.map(|v| v.to_string()).unwrap_or_default(),
+                    state.loadavg_5m.map(|v| v.to_string()).unwrap_or_default(),
+                    state.loadavg_15m.map(|v| v.to_string()).unwrap_or_default(),
+                    state
+                        .cpu_usage_pct
+                        .map(|v| v.to_string())
+                        .unwrap_or_default(),
+                    state
+                        .memory_used_bytes
+                        .map(|v| v.to_string())
+                        .unwrap_or_default(),
+                    state
+                        .memory_available_bytes
+                        .map(|v| v.to_string())
+                        .unwrap_or_default(),
+                    state
+                        .process_count
+                        .map(|v| v.to_string())
+                        .unwrap_or_default(),
+                    state
+                        .container_count
+                        .map(|v| v.to_string())
+                        .unwrap_or_default(),
+                    format!("{:?}", state.agent_health),
+                ],
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn list_host_runtime_states(
+        &self,
+        host_id: Uuid,
+        page: Page,
+    ) -> StorageResult<Vec<HostRuntimeState>> {
+        let rows = self
+            .executor
+            .query_rows_async(
+                sql::LIST_HOST_RUNTIME_STATES,
+                &[
+                    host_id.to_string(),
+                    page.limit.to_string(),
+                    page.offset.to_string(),
+                ],
+            )
+            .await?;
+        rows.into_iter()
+            .map(|row| decode_host_runtime_state(&row))
+            .collect()
+    }
+
+    async fn upsert_process_runtime_state(&self, state: &ProcessRuntimeState) -> StorageResult<()> {
+        self.executor
+            .exec_async(
+                sql::UPSERT_PROCESS_RUNTIME_STATE,
+                &[
+                    state.process_id.to_string(),
+                    state.tenant_id.0.to_string(),
+                    state.host_id.to_string(),
+                    state
+                        .container_id
+                        .map(|v| v.to_string())
+                        .unwrap_or_default(),
+                    state.external_ref.clone().unwrap_or_default(),
+                    state.pid.to_string(),
+                    state.executable.clone(),
+                    state.command_line.clone().unwrap_or_default(),
+                    state.process_state.clone().unwrap_or_default(),
+                    state
+                        .memory_rss_kib
+                        .map(|v| v.to_string())
+                        .unwrap_or_default(),
+                    state.started_at.to_rfc3339(),
+                    state.observed_at.0.to_rfc3339(),
+                ],
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn list_process_runtime_states(
+        &self,
+        host_id: Uuid,
+        page: Page,
+    ) -> StorageResult<Vec<ProcessRuntimeState>> {
+        let rows = self
+            .executor
+            .query_rows_async(
+                sql::LIST_PROCESS_RUNTIME_STATES,
+                &[
+                    host_id.to_string(),
+                    page.limit.to_string(),
+                    page.offset.to_string(),
+                ],
+            )
+            .await?;
+        rows.into_iter()
+            .map(|row| decode_process_runtime_state(&row))
+            .collect()
+    }
+
+    async fn upsert_service_instance(&self, instance: &ServiceInstance) -> StorageResult<()> {
+        self.executor
+            .exec_async(
+                sql::UPSERT_SERVICE_INSTANCE,
+                &[
+                    instance.instance_id.to_string(),
+                    instance.tenant_id.0.to_string(),
+                    instance.service_id.to_string(),
+                    instance
+                        .workload_id
+                        .map(|v| v.to_string())
+                        .unwrap_or_default(),
+                    instance.started_at.to_rfc3339(),
+                    instance
+                        .ended_at
+                        .map(|v| v.to_rfc3339())
+                        .unwrap_or_default(),
+                    instance.last_seen_at.to_rfc3339(),
+                ],
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn get_service_instance(
+        &self,
+        instance_id: Uuid,
+    ) -> StorageResult<Option<ServiceInstance>> {
+        let rows = self
+            .executor
+            .query_rows_async(sql::GET_SERVICE_INSTANCE, &[instance_id.to_string()])
+            .await?;
+        Ok(rows
+            .into_iter()
+            .next()
+            .map(|row| decode_service_instance(&row))
+            .transpose()?)
+    }
+
+    async fn list_service_instances(
+        &self,
+        service_id: Uuid,
+        page: Page,
+    ) -> StorageResult<Vec<ServiceInstance>> {
+        let rows = self
+            .executor
+            .query_rows_async(
+                sql::LIST_SERVICE_INSTANCES,
+                &[
+                    service_id.to_string(),
+                    page.limit.to_string(),
+                    page.offset.to_string(),
+                ],
+            )
+            .await?;
+        rows.into_iter()
+            .map(|row| decode_service_instance(&row))
+            .collect()
+    }
+
+    async fn upsert_runtime_binding(&self, binding: &RuntimeBinding) -> StorageResult<()> {
+        self.executor
+            .exec_async(
+                sql::UPSERT_RUNTIME_BINDING,
+                &[
+                    binding.binding_id.to_string(),
+                    binding.instance_id.to_string(),
+                    format!("{:?}", binding.object_type),
+                    binding.object_id.to_string(),
+                    format!("{:?}", binding.scope),
+                    format!("{:?}", binding.confidence),
+                    binding.source.clone(),
+                    binding.validity.valid_from.to_rfc3339(),
+                    binding
+                        .validity
+                        .valid_to
+                        .map(|v| v.to_rfc3339())
+                        .unwrap_or_default(),
+                    binding.created_at.to_rfc3339(),
+                    binding.updated_at.to_rfc3339(),
+                ],
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn get_runtime_binding(&self, binding_id: Uuid) -> StorageResult<Option<RuntimeBinding>> {
+        let rows = self
+            .executor
+            .query_rows_async(sql::GET_RUNTIME_BINDING, &[binding_id.to_string()])
+            .await?;
+        Ok(rows
+            .into_iter()
+            .next()
+            .map(|row| decode_runtime_binding(&row))
+            .transpose()?)
+    }
+
+    async fn list_runtime_bindings_for_instance(
+        &self,
+        instance_id: Uuid,
+        page: Page,
+    ) -> StorageResult<Vec<RuntimeBinding>> {
+        let rows = self
+            .executor
+            .query_rows_async(
+                sql::LIST_RUNTIME_BINDINGS_FOR_INSTANCE,
+                &[
+                    instance_id.to_string(),
+                    page.limit.to_string(),
+                    page.offset.to_string(),
+                ],
+            )
+            .await?;
+        rows.into_iter()
+            .map(|row| decode_runtime_binding(&row))
+            .collect()
+    }
+
+    async fn list_runtime_bindings_for_object(
+        &self,
+        object_type: RuntimeObjectType,
+        object_id: Uuid,
+        page: Page,
+    ) -> StorageResult<Vec<RuntimeBinding>> {
+        let rows = self
+            .executor
+            .query_rows_async(
+                sql::LIST_RUNTIME_BINDINGS_FOR_OBJECT,
+                &[
+                    format!("{:?}", object_type),
+                    object_id.to_string(),
+                    page.limit.to_string(),
+                    page.offset.to_string(),
+                ],
+            )
+            .await?;
+        rows.into_iter()
+            .map(|row| decode_runtime_binding(&row))
+            .collect()
+    }
+
+    async fn list_host_net_assocs(
+        &self,
+        host_id: Uuid,
+        page: Page,
+    ) -> StorageResult<Vec<HostNetAssoc>> {
+        let rows = self
+            .executor
+            .query_rows_async(
+                sql::LIST_HOST_NET_ASSOCS,
+                &[
+                    host_id.to_string(),
+                    page.limit.to_string(),
+                    page.offset.to_string(),
+                ],
+            )
+            .await?;
+        rows.into_iter()
+            .map(|row| decode_host_net_assoc(&row))
+            .collect()
+    }
+
+    async fn upsert_host_net_assoc(&self, assoc: &HostNetAssoc) -> StorageResult<()> {
+        self.executor
+            .exec_async(
+                sql::UPSERT_HOST_NET_ASSOC,
+                &[
+                    assoc.assoc_id.to_string(),
+                    assoc.tenant_id.0.to_string(),
+                    assoc.host_id.to_string(),
+                    assoc.network_segment_id.to_string(),
+                    assoc.ip_addr.clone(),
+                    assoc.iface_name.clone().unwrap_or_default(),
+                    assoc.validity.valid_from.to_rfc3339(),
+                    assoc
+                        .validity
+                        .valid_to
+                        .map(|value| value.to_rfc3339())
+                        .unwrap_or_default(),
+                    assoc.created_at.to_rfc3339(),
+                    assoc.updated_at.to_rfc3339(),
+                ],
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn upsert_workload_pod_membership(
+        &self,
+        _membership: &atlas_domain::WorkloadPodMembership,
+    ) -> StorageResult<()> {
+        Err(not_configured())
+    }
+
+    async fn upsert_pod_placement(
+        &self,
+        _placement: &atlas_domain::PodPlacement,
+    ) -> StorageResult<()> {
+        Err(not_configured())
+    }
+}

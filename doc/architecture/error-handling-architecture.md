@@ -1,10 +1,10 @@
-# dayu-topology 错误处理架构设计
+# wist-atlas 错误处理架构设计
 
-> 状态：**Target** — 定义 `dayu-topology` Rust crate、ingest pipeline、外部 API 和治理观测的统一错误处理目标态。
+> 状态：**Target** — 定义 `wist-atlas` Rust crate、ingest pipeline、外部 API 和治理观测的统一错误处理目标态。
 
 ## 1. 文档目的
 
-本文档定义 `dayu-topology` 的错误处理体系，重点固定以下问题：
+本文档定义 `wist-atlas` 的错误处理体系，重点固定以下问题：
 
 - Rust 代码中如何表达领域错误、上下文、source chain 和跨层转换
 - ingest / normalize / resolve / persist / derive / query 各阶段的失败如何分类
@@ -35,7 +35,7 @@
 4. 热路径不得扩散 `anyhow::Error`、裸 `std::io::Error`、`Box<dyn Error>` 或字符串错误；这些错误必须在边界立即转换为 `StructError<R>`。
 5. 跨 crate 的错误转换分两类：仅改变 reason 类型用 `conv_err()`；建立新的语义边界用 `source_err(...)` 或 `source_raw_err(...)`。
 6. API、ingest job、dead letter 和 audit event 只携带稳定错误投影，不直接序列化 `StructError<R>`。
-7. `ErrorIdentity.code` 是内部稳定错误身份来源，并映射到 dayu 的协议错误码。
+7. `ErrorIdentity.code` 是内部稳定错误身份来源，并映射到 atlas 的协议错误码。
 8. pipeline 裁决必须由稳定 reason / code / stage / scope 决定，不能解析 detail 文本。
 9. 现有 `thiserror` / `Result<T, String>` 属于迁移对象；新热路径不得继续新增字符串错误返回。
 
@@ -51,7 +51,7 @@ Rust Domain Error
   负责本进程内传播、诊断和跨 crate 转换
 
 Error Identity / Code
-  ErrorIdentity.code + dayu protocol code
+  ErrorIdentity.code + atlas protocol code
   负责稳定分类、统计、幂等和 API 投影
 
 Pipeline Decision
@@ -78,11 +78,11 @@ External Projection
 
 | crate | 建议 reason | 职责范围 |
 |---|---|---|
-| `topology-domain` | `DomainReason` | schema 对象、领域约束、外部 input envelope 校验、DTO 转换 |
-| `topology-storage` | `StorageReason` | PostgreSQL、对象存储、migration、repository、transaction |
-| `topology-api` | `ApiReason` | ingest API、query API、API DTO、认证授权前置校验 |
-| `topology-sync` | `SyncReason` | connector、fetch、cursor、external sync job、回补同步 |
-| `topology-app` | `AppReason` | 单体编排、CLI、demo / file run、跨模块组合 |
+| `atlas-domain` | `DomainReason` | schema 对象、领域约束、外部 input envelope 校验、DTO 转换 |
+| `atlas-storage` | `StorageReason` | PostgreSQL、对象存储、migration、repository、transaction |
+| `atlas-api` | `ApiReason` | ingest API、query API、API DTO、认证授权前置校验 |
+| `atlas-sync` | `SyncReason` | connector、fetch、cursor、external sync job、回补同步 |
+| `atlas-app` | `AppReason` | 单体编排、CLI、demo / file run、跨模块组合 |
 
 每个 reason enum 必须包含一个透明 `General(UnifiedReason)` variant，用于复用配置、IO、权限、系统、数据和校验等通用类别。
 调用通用类别时优先使用 `#[derive(OrionError)]` 生成的 delegate constructor，例如 `ApiReason::validation_error()` 或 `StorageReason::system_error()`。
@@ -95,13 +95,13 @@ use orion_error::prelude::*;
 
 #[derive(Debug, Clone, PartialEq, From, OrionError)]
 pub enum ApiReason {
-    #[orion_error(identity = "dayu.api.payload_missing")]
+    #[orion_error(identity = "atlas.api.payload_missing")]
     PayloadMissing,
-    #[orion_error(identity = "dayu.api.schema_unsupported")]
+    #[orion_error(identity = "atlas.api.schema_unsupported")]
     SchemaUnsupported,
-    #[orion_error(identity = "dayu.api.ingest_rejected")]
+    #[orion_error(identity = "atlas.api.ingest_rejected")]
     IngestRejected,
-    #[orion_error(identity = "dayu.api.query_invalid")]
+    #[orion_error(identity = "atlas.api.query_invalid")]
     QueryInvalid,
     #[orion_error(transparent)]
     General(UnifiedReason),
@@ -238,7 +238,7 @@ ApiErrorBody {
 
 API 投影规则：
 
-- `code` 来自 `ErrorIdentity.code` 到 dayu protocol code 的映射。
+- `code` 来自 `ErrorIdentity.code` 到 atlas protocol code 的映射。
 - `message` 是可暴露短文本，不包含 SQL、连接串、token、完整 payload、内部路径或 stack trace。
 - `fields` 只包含可暴露字段，例如 `schema`、`source.system`、`collect.snap_id`、`field_path`。
 - `request_id` / `ingest_id` 用于排障关联。
@@ -298,13 +298,13 @@ Rust identity 到协议码示例：
 
 | `ErrorIdentity.code` | 协议码 |
 |---|---|
-| `dayu.api.payload_missing` | `input.payload_missing` |
-| `dayu.domain.envelope_invalid` | `input.envelope_invalid` |
-| `dayu.domain.field_missing` | `validate.field_missing` |
-| `dayu.domain.ref_unresolved` | `resolve.ref_unresolved` |
-| `dayu.storage.transaction_failed` | `persist.transaction_failed` |
-| `dayu.storage.constraint_conflict` | `persist.constraint_conflict` |
-| `dayu.sync.fetch_failed` | `sync.fetch_failed` |
+| `atlas.api.payload_missing` | `input.payload_missing` |
+| `atlas.domain.envelope_invalid` | `input.envelope_invalid` |
+| `atlas.domain.field_missing` | `validate.field_missing` |
+| `atlas.domain.ref_unresolved` | `resolve.ref_unresolved` |
+| `atlas.storage.transaction_failed` | `persist.transaction_failed` |
+| `atlas.storage.constraint_conflict` | `persist.constraint_conflict` |
+| `atlas.sync.fetch_failed` | `sync.fetch_failed` |
 
 协议码必须稳定、短小、可审计；不得使用 Rust enum variant 名、`Display` 文本或 Debug 文本作为协议码。
 
@@ -365,12 +365,12 @@ fn fetch_external_source() -> Result<(), SyncError> {
 | 维度 | 示例 |
 |---|---|
 | `error.code` | `resolve.identity_conflict` |
-| `error.identity` | `dayu.domain.identity_conflict` |
+| `error.identity` | `atlas.domain.identity_conflict` |
 | `pipeline.stage` | `resolve` |
 | `pipeline.action` | `unresolved` |
 | `component.name` | `identity_resolver` |
 | `tenant_id` | redacted or hashed |
-| `schema` | `dayu.in.edge.v1` |
+| `schema` | `atlas.in.edge.v1` |
 | `source.system` | `warp-insight` |
 | `retryable` | `false` |
 
@@ -382,11 +382,11 @@ fn fetch_external_source() -> Result<(), SyncError> {
 
 指标策略：
 
-- `dayu_pipeline_error_total{code,stage,action,component}`
-- `dayu_ingest_rejected_total{code,schema,source_system}`
-- `dayu_unresolved_total{code,object_kind}`
-- `dayu_persist_retry_total{code}`
-- `dayu_derived_view_failure_total{view,code}`
+- `atlas_pipeline_error_total{code,stage,action,component}`
+- `atlas_ingest_rejected_total{code,schema,source_system}`
+- `atlas_unresolved_total{code,object_kind}`
+- `atlas_persist_retry_total{code}`
+- `atlas_derived_view_failure_total{view,code}`
 
 Explain 策略：
 
@@ -400,7 +400,7 @@ Explain 策略：
 ### P0：错误基线
 
 - 在 workspace 增加 `orion-error` 依赖，启用 `derive`，按需要启用 `serde_json`。
-- 为 `topology-domain`、`topology-storage`、`topology-api` 定义首批 reason enum。
+- 为 `atlas-domain`、`atlas-storage`、`atlas-api` 定义首批 reason enum。
 - 增加 `ProtocolError`、`PipelineDecision` 和 code mapping 基础类型。
 - 增加热路径错误签名检查，禁止新增 `anyhow::Result`、裸 `io::Error`、`Box<dyn Error>` 和 `String` 错误返回。
 

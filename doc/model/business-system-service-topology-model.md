@@ -1,8 +1,8 @@
-# dayu-topology Business / System / Service Topology 子模型设计
+# wist-atlas Business / System / Service Topology 子模型设计
 
 ## 1. 文档目的
 
-本文档定义 `dayu-topology` 中心侧从业务到服务运行态的拓扑子模型。
+本文档定义 `wist-atlas` 中心侧从业务到服务运行态的拓扑子模型。
 
 目标是固定：
 

@@ -1,4 +1,4 @@
-# dayu-topology 执行计划
+# wist-atlas 执行计划
 
 ## 1. 文档目的
 
@@ -77,7 +77,7 @@ WP-03/WP-04 -> WP-08
 
 主要产出：
 
-- `topology-domain` 中的稳定领域对象
+- `atlas-domain` 中的稳定领域对象
 - 枚举和值对象定义
 - ingest / candidate / resolver / read-model 类型定义
 
@@ -411,7 +411,7 @@ WP-03/WP-04 -> WP-08
 - ingest 配置
 - auth 配置
 
-2. 实现 `topology-app` 启动入口
+2. 实现 `atlas-app` 启动入口
 - 单体模式
 - API only 模式占位
 - sync only 模式占位
@@ -553,7 +553,7 @@ WP-03/WP-04 -> WP-08
 
 ## 5. 按 crate 拆分任务
 
-## 5.1 `topology-domain`
+## 5.1 `atlas-domain`
 
 第一批任务：
 
@@ -566,7 +566,7 @@ WP-03/WP-04 -> WP-08
 
 - 其他 crate 不再自行定义领域语义
 
-## 5.2 `topology-storage`
+## 5.2 `atlas-storage`
 
 第一批任务：
 
@@ -579,7 +579,7 @@ WP-03/WP-04 -> WP-08
 
 - 所有主写路径与查询路径都能经由 storage 层访问数据库
 
-## 5.3 `topology-api`
+## 5.3 `atlas-api`
 
 第一批任务：
 
@@ -592,7 +592,7 @@ WP-03/WP-04 -> WP-08
 
 - 最小 API 可用于导入、查询、解释
 
-## 5.4 `topology-sync`
+## 5.4 `atlas-sync`
 
 第一批任务：
 
@@ -604,7 +604,7 @@ WP-03/WP-04 -> WP-08
 
 - P0 不要求同步真正可运行
 
-## 5.5 `topology-app`
+## 5.5 `atlas-app`
 
 第一批任务：
 

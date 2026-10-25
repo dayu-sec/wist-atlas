@@ -2,9 +2,9 @@
 
 ## 1. 文档目的
 
-本文档定义 `dayu-topology` 内部 adapter / resolver / materializer pipeline 使用的中间对象、短名和字段命名规则。
+本文档定义 `wist-atlas` 内部 adapter / resolver / materializer pipeline 使用的中间对象、短名和字段命名规则。
 
-本文档不是外部接口契约。外部系统无需构造本文档中的 `*Cand`、`*Ev`、lower_snake 字段集合或 dayu 内部处理链路 ID。
+本文档不是外部接口契约。外部系统无需构造本文档中的 `*Cand`、`*Ev`、lower_snake 字段集合或 atlas 内部处理链路 ID。
 
 相关文档：
 
@@ -39,7 +39,7 @@ External Raw Input
 
 ## 3. Adapter 输出短名
 
-| dayu 规范短名 | 全称 | lower_snake 字段名 | 中文名 | 来源 | 定义 |
+| atlas 规范短名 | 全称 | lower_snake 字段名 | 中文名 | 来源 | 定义 |
 | --- | --- | --- | --- | --- | --- |
 | `HostCand` | `HostCandidate` | `host_cands` | 主机候选 | adapter 输出 | 等待解析成 `HostInventory` 的候选 |
 | `NetSegCand` | `NetworkSegmentCandidate` | `net_seg_cands` | 网络段候选 | adapter 输出 | 等待解析成 `NetworkSegment` 的候选 |
@@ -65,7 +65,7 @@ External Raw Input
 | `BugFindingCand` | `SoftwareBugFindingCandidate` | `bug_finding_cands` | 软件 bug 发现候选 | adapter 输出 | 等待解析成 `SoftwareBugFinding` 的候选 |
 | `RiskCand` | `RiskCandidate` | `risk_cands` | 风险候选 | adapter 输出 | 等待解析成风险视图或风险事实的候选 |
 | `CorrectionCand` | `CorrectionCandidate` | `correction_cands` | 修正候选 | adapter 输出 | 等待解析成人工修正变更的候选 |
-| `ExtIdLinkCand` | `ExternalIdentityLinkCandidate` | `ext_id_link_cands` | 外部身份链接候选 | adapter 输出 | 保留外部系统对象与 dayu 候选对象之间的身份链接 |
+| `ExtIdLinkCand` | `ExternalIdentityLinkCandidate` | `ext_id_link_cands` | 外部身份链接候选 | adapter 输出 | 保留外部系统对象与 atlas 候选对象之间的身份链接 |
 | `SwEv` | `SoftwareEvidence` | `sw_ev` | 软件证据 | adapter 输出 | 支撑软件识别的进程、文件、包、镜像线索 |
 | `RtBindEv` | `RuntimeBindingEvidence` | `rt_bind_ev` | 运行绑定证据 | adapter 输出 | 支撑运行对象归属服务实例的证据 |
 | `RtBindCand` | `RuntimeBindingCandidate` | `rt_bind_cands` | 运行绑定候选 | adapter 输出 | 等待解析成 `RuntimeBinding` 的候选 |
@@ -74,7 +74,7 @@ External Raw Input
 | `BugEv` | `BugEvidence` | `bug_ev` | bug 证据 | adapter 输出 | 支撑软件 bug 识别和归因的证据 |
 | `ThreatEv` | `ThreatEvidence` | `threat_ev` | 威胁证据 | adapter 输出 | 支撑安全风险识别和归因的证据 |
 | `HostNetAssocCand` | `HostNetAssocCandidate` | `host_net_assoc_cands` | 主机网络关联候选 | adapter 输出 | 等待解析成 `HostNetAssoc` 的候选 |
-| `TargetEv` | `DiscoveryTargetEvidence` | `target_ev` | 发现目标证据 | adapter 输出 | dayu 对外部 target 的原始证据保留 |
+| `TargetEv` | `DiscoveryTargetEvidence` | `target_ev` | 发现目标证据 | adapter 输出 | atlas 对外部 target 的原始证据保留 |
 | `ResFactSnap` | `ResourceFactSnapshot` | `res_fact_snap` | 资源事实快照 | adapter 输出 | 某来源在某时间形成的一组资源事实 |
 
 ---
@@ -85,9 +85,9 @@ External Raw Input
 | --- | --- | --- | --- |
 | `HostInventory` | 主机目录对象 | resolver/materializer 输出 | 中心侧稳定主机目录对象 |
 | `ServiceEntity` | 逻辑服务对象 | resolver/materializer 输出 | 中心侧逻辑服务定义 |
-| `SvcEp` | 服务稳定入口 | resolver/materializer 输出 | dayu 中心服务的稳定访问入口 |
-| `InstEp` | 实例运行地址 | resolver/materializer 输出 | dayu 中心服务实例的运行时地址 |
-| `ServiceInstance` | 服务运行实例 | resolver/materializer 输出 | dayu 中心逻辑服务的一次运行副本会话 |
+| `SvcEp` | 服务稳定入口 | resolver/materializer 输出 | atlas 中心服务的稳定访问入口 |
+| `InstEp` | 实例运行地址 | resolver/materializer 输出 | atlas 中心服务实例的运行时地址 |
+| `ServiceInstance` | 服务运行实例 | resolver/materializer 输出 | atlas 中心逻辑服务的一次运行副本会话 |
 
 ---
 
@@ -95,13 +95,13 @@ External Raw Input
 
 | 术语 | 中文名 | 示例 | 规则 |
 | --- | --- | --- | --- |
-| `internal_id` | 内部主键 | `host_id`、`service_id` | source-of-truth 对象的内部主键，只能由 dayu 中心生成 |
+| `internal_id` | 内部主键 | `host_id`、`service_id` | source-of-truth 对象的内部主键，只能由 atlas 中心生成 |
 | `staged_payload_id` | 暂存载荷 ID | `stage_01J...` | staging 层处理链路 ID，不是中心主键 |
 | `candidate_id` | 候选对象 ID | `cand_01J...` | candidate 层处理链路 ID，不是中心主键 |
 | `evidence_id` | 证据 ID | `ev_01J...` | evidence 层处理链路 ID，不是中心主键 |
 
 规则：
 
-- adapter 输出必须保留来源 ID，但不得把来源 ID 写入 dayu 内部主键字段。
+- adapter 输出必须保留来源 ID，但不得把来源 ID 写入 atlas 内部主键字段。
 - staging、candidate、evidence 可以有自己的处理链路 ID。
-- 对外部输入去重时优先使用来源作用域幂等键，例如 `source.system + producer_id + snapshot_id`，不要依赖 dayu 中心主键。
+- 对外部输入去重时优先使用来源作用域幂等键，例如 `source.system + producer_id + snapshot_id`，不要依赖 atlas 中心主键。

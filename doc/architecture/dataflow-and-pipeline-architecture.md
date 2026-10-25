@@ -1,8 +1,8 @@
-# dayu-topology 数据流与 Pipeline 架构设计
+# wist-atlas 数据流与 Pipeline 架构设计
 
 ## 1. 文档目的
 
-本文档定义 `dayu-topology` 第一版主数据流与 pipeline 架构。
+本文档定义 `wist-atlas` 第一版主数据流与 pipeline 架构。
 
 目标是固定：
 
@@ -251,8 +251,8 @@
 
 输出特点：
 
-- 无论采用哪种方式，进入 `dayu-topology` 的都应是结构化 discovery 事实，而不是 runtime metrics、planner 结果或原始 telemetry。
-- 对 `dayu-topology` 最有价值的是稳定 identity 和来源证据字段，例如 `host.id`、`process.identity`、`container.id`、`k8s.pod.uid`、`origin_id`。
+- 无论采用哪种方式，进入 `wist-atlas` 的都应是结构化 discovery 事实，而不是 runtime metrics、planner 结果或原始 telemetry。
+- 对 `wist-atlas` 最有价值的是稳定 identity 和来源证据字段，例如 `host.id`、`process.identity`、`container.id`、`k8s.pod.uid`、`origin_id`。
 - 只要无法解析中心主键，就停留在 candidate / evidence，不写正式关系。
 
 实现映射：
@@ -625,7 +625,7 @@
 
 ### 8.1 为什么采用 multi-source ingest
 
-对于 `dayu-topology` 这类多来源、多协议、跨时间逐步补全对象的系统，第一版建议：
+对于 `wist-atlas` 这类多来源、多协议、跨时间逐步补全对象的系统，第一版建议：
 
 - 外部 producer 产出结构化输入
 - 输入可以通过 queue / stream，也可以通过 file / batch 进入系统
@@ -888,9 +888,9 @@ raw input (queue / file / batch)
 定位：
 
 - `wp-reactor` 是 CEP / window / rule engine，用于在时间窗口内聚合事件、评估规则、生成候选结论。
-- 它不负责 `dayu-topology` 的中心主键、对象归并、关系落库或 source-of-truth 决策。
-- 它的输出应进入 candidate / observation / finding / factor 层，再由 `dayu-topology` resolver / materializer 决定是否写入正式对象或关系。
-- 这里的使用目标是“计算支持”，不是把 `wp-reactor` 变成 dayu 的模型仓库或 resolver 替代品。
+- 它不负责 `wist-atlas` 的中心主键、对象归并、关系落库或 source-of-truth 决策。
+- 它的输出应进入 candidate / observation / finding / factor 层，再由 `wist-atlas` resolver / materializer 决定是否写入正式对象或关系。
+- 这里的使用目标是“计算支持”，不是把 `wp-reactor` 变成 atlas 的模型仓库或 resolver 替代品。
 
 适用场景：
 
@@ -902,7 +902,7 @@ raw input (queue / file / batch)
 
 输入边界：
 
-- 输入必须是 dayu 已归一的 evidence / observation / runtime snapshot / finding candidate。
+- 输入必须是 atlas 已归一的 evidence / observation / runtime snapshot / finding candidate。
 - 原始 payload、连接串、token、完整日志正文不直接送入规则引擎；只能传摘要、引用和脱敏字段。
 - 规则输入应带 `tenant_id`、`source`、`observed_at`、`evidence_ref`、`confidence` 等可追溯字段。
 - 未完成 identity resolution 的对象只能以 unresolved candidate 参与低置信推断，不能直接生成正式关系。
@@ -916,16 +916,16 @@ raw input (queue / file / batch)
 
 错误处理边界：
 
-- `wp-reactor v0.1.4` 已按 `orion-error 0.8.1` 方向治理，dayu 集成层应把其错误作为结构化 source 处理。
+- `wp-reactor v0.1.4` 已按 `orion-error 0.8.1` 方向治理，atlas 集成层应把其错误作为结构化 source 处理。
 - 若只是跨 crate reason 类型转换，使用 `conv_err()`。
-- 若 dayu 要建立新的语义边界，例如“规则计算失败导致派生视图不可用”，使用 `source_err(...)` 保留下层 source chain。
-- connector 生态中可能存在 `anyhow` 或旧版 `orion-error` 传递依赖，不能让这些错误类型穿透 dayu 热路径。
+- 若 atlas 要建立新的语义边界，例如“规则计算失败导致派生视图不可用”，使用 `source_err(...)` 保留下层 source chain。
+- connector 生态中可能存在 `anyhow` 或旧版 `orion-error` 传递依赖，不能让这些错误类型穿透 atlas 热路径。
 
 治理规则：
 
 - 规则 ID、规则版本和输入 evidence refs 是 explain 的稳定依据，不能使用错误 detail 或日志文本作为决策依据。
 - 规则计算失败不得回滚 source-of-truth 写入；失败进入 derive retry / alert / explain rebuild 队列。
-- 规则命中不等于最终事实。它只是候选结论，需要经过 dayu 的 resolver、置信度策略和冲突策略。
+- 规则命中不等于最终事实。它只是候选结论，需要经过 atlas 的 resolver、置信度策略和冲突策略。
 - 对安全、漏洞、业务健康类结论，必须保留从 evidence 到 rule hit 到 final conclusion 的链路。
 
 ---
@@ -1208,6 +1208,6 @@ runtime metrics / bug findings / vuln findings / dep observations / threat signa
 
 当前建议固定为：
 
-- `dayu-topology` 的 pipeline 设计应以“source of truth 优先”作为原则
+- `wist-atlas` 的 pipeline 设计应以“source of truth 优先”作为原则
 - ingest、normalize、persist、derive、query 必须显式分段
 - 后续代码实现也应围绕这五段来拆模块

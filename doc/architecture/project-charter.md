@@ -1,8 +1,8 @@
-# dayu-topology 项目 Charter
+# wist-atlas 项目 Charter
 
 ## 1. 项目目标
 
-`dayu-topology` 的目标是建立一套统一的中心侧对象模型与关系图谱，覆盖：
+`wist-atlas` 的目标是建立一套统一的中心侧对象模型与关系图谱，覆盖：
 
 - 业务与系统拓扑
 - 服务与实例拓扑

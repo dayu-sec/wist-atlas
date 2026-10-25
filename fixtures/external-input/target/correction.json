@@ -1,0 +1,18 @@
+{
+  "schema": "atlas.in.correction.v1",
+  "source": {
+    "system": "example",
+    "producer": "fixture-correction",
+    "tenant": "tenant-demo",
+    "env": "dev"
+  },
+  "collect": {
+    "mode": "correction",
+    "observed_at": "2026-04-26T02:20:30Z",
+    "collected_at": "2026-04-26T02:20:31Z"
+  },
+  "payload": {
+    "correction_id": "correction-1",
+    "target_ref": "host-1"
+  }
+}

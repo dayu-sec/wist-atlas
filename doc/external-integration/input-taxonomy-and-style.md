@@ -1,4 +1,4 @@
-# dayu-topology 输入分类、规范与样式
+# wist-atlas 输入分类、规范与样式
 
 ## 1. 文档目的
 
@@ -91,7 +91,7 @@ external raw input
 
 ```json
 {
-  "schema": "dayu.in.<family>.v1",
+  "schema": "atlas.in.<family>.v1",
   "source": {
     "kind": "edge",
     "system": "warp-insight",
@@ -395,7 +395,7 @@ payload 样式：
       "evidence": [
         {
           "type": "k8s_label_match",
-          "value": "dayu/service=svc-checkout-api"
+          "value": "atlas/service=svc-checkout-api"
         }
       ]
     }

@@ -1,0 +1,26 @@
+[package]
+name = "atlas-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "wist-atlas"
+path = "src/main.rs"
+
+[dependencies]
+axum.workspace = true
+chrono.workspace = true
+orion-error.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+atlas-api = { path = "../atlas-api" }
+atlas-domain = { path = "../atlas-domain" }
+atlas-storage = { path = "../atlas-storage" }
+atlas-sync = { path = "../atlas-sync" }
+tokio.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }

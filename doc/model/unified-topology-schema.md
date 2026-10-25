@@ -1,8 +1,8 @@
-# dayu-topology 统一 Schema 草案
+# wist-atlas 统一 Schema 草案
 
 ## 1. 文档目的
 
-本文档给出 `dayu-topology` 第一版统一 schema 草案，目标是把当前分散在多份模型文档中的核心对象收敛到一套中心存储视图中。
+本文档给出 `wist-atlas` 第一版统一 schema 草案，目标是把当前分散在多份模型文档中的核心对象收敛到一套中心存储视图中。
 
 本文重点回答：
 

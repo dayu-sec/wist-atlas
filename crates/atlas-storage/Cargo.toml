@@ -1,0 +1,14 @@
+[package]
+name = "atlas-storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+chrono.workspace = true
+orion-error.workspace = true
+atlas-domain = { path = "../atlas-domain" }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "net"] }
+tokio-postgres = { version = "0.7.17", features = ["with-chrono-0_4", "with-uuid-1"] }
+uuid.workspace = true

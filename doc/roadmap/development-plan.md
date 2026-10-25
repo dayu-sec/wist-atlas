@@ -1,8 +1,8 @@
-# dayu-topology 开发计划
+# wist-atlas 开发计划
 
 ## 1. 文档目的
 
-本文档基于当前 `dayu-topology/doc` 下的架构与模型文档，整理第一版可执行开发计划。
+本文档基于当前 `wist-atlas/doc` 下的架构与模型文档，整理第一版可执行开发计划。
 
 目标是明确：
 
@@ -182,9 +182,9 @@
 
 主要工作：
 
-- 扩充 `topology-domain`
+- 扩充 `atlas-domain`
 - 落 PostgreSQL schema 与 migration
-- 实现 `topology-storage` 的 repository 接口和 Postgres 版本
+- 实现 `atlas-storage` 的 repository 接口和 Postgres 版本
 - 为主对象、关系对象和运行态对象建立存储测试
 
 建议优先落地的领域对象：
@@ -347,7 +347,7 @@
 
 主要工作：
 
-- 实现 `topology-sync` 基础执行框架
+- 实现 `atlas-sync` 基础执行框架
 - 拆分 connector / fetch-stage / normalize-resolve / persist-cursor
 - 落地 staged payload 存储与重放机制
 - 构建 `business_overview_view`
@@ -384,7 +384,7 @@
 
 ## 6. 按 crate 的落地建议
 
-### 6.1 `topology-domain`
+### 6.1 `atlas-domain`
 
 负责：
 
@@ -399,7 +399,7 @@
 - resolver 输入输出类型
 - 文件导入模式类型
 
-### 6.2 `topology-storage`
+### 6.2 `atlas-storage`
 
 负责：
 
@@ -414,7 +414,7 @@
 - ingest job repository
 - 最小读查询
 
-### 6.3 `topology-api`
+### 6.3 `atlas-api`
 
 负责：
 
@@ -430,7 +430,7 @@
 - network view handler
 - governance query handler
 
-### 6.4 `topology-sync`
+### 6.4 `atlas-sync`
 
 负责：
 
@@ -444,7 +444,7 @@
 - 仅保留接口边界与最小占位
 - 不作为 P0 前置交付
 
-### 6.5 `topology-app`
+### 6.5 `atlas-app`
 
 负责：
 

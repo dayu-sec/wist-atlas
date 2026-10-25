@@ -1,22 +1,22 @@
 services:
   postgres:
     image: postgres:16
-    container_name: dayu-topology-postgres
+    container_name: wist-atlas-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_DB: dayu_topology
-      POSTGRES_USER: dayu
-      POSTGRES_PASSWORD: dayu
+      POSTGRES_DB: wist_atlas
+      POSTGRES_USER: atlas
+      POSTGRES_PASSWORD: atlas
       PGDATA: /var/lib/postgresql/data/pgdata
     ports:
       - "55432:5432"
     volumes:
-      - dayu_topology_pgdata:/var/lib/postgresql/data
+      - wist_atlas_pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U dayu -d dayu_topology"]
+      test: ["CMD-SHELL", "pg_isready -U atlas -d wist_atlas"]
       interval: 5s
       timeout: 5s
       retries: 20
 
 volumes:
-  dayu_topology_pgdata:
+  wist_atlas_pgdata:

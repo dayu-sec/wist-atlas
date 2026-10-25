@@ -1,4 +1,4 @@
-# dayu-topology Rust 端可视化对接规范
+# wist-atlas Rust 端可视化对接规范
 
 ## 1. 文档目的
 
@@ -536,7 +536,7 @@ read model / query service
 
 当前不在本文档中提前写死：
 
-- 静态文件必须位于 `topology-api/static/`
+- 静态文件必须位于 `atlas-api/static/`
 - 必须由某个特定 crate 承担 HTTP serve
 
 因为这些是实现装配决策，不是前后端契约本身。

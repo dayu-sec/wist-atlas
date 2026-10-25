@@ -1,0 +1,43 @@
+{
+  "schema": "atlas.in.edge.v1",
+  "source": {
+    "system": "warp-insight",
+    "producer": "agent-office-01",
+    "tenant": "tenant-demo",
+    "env": "office"
+  },
+  "collect": {
+    "mode": "snapshot",
+    "snap_id": "edge-snap-20260426-office-01",
+    "observed_at": "2026-04-26T02:20:30Z",
+    "collected_at": "2026-04-26T02:20:31Z",
+    "res_ver": "1"
+  },
+  "payload": {
+    "hosts": [
+      {
+        "hostname": "office-build-01",
+        "machine_id": "machine-office-build-01",
+        "os": {
+          "name": "linux",
+          "version": "6.8"
+        }
+      }
+    ],
+    "interfaces": [
+      {
+        "host_ref": "office-build-01",
+        "name": "eth0",
+        "mac": "00:11:22:33:44:55",
+        "addresses": [
+          {
+            "family": "ipv4",
+            "ip": "192.168.10.52",
+            "prefix": 24,
+            "gateway": "192.168.10.1"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,8 +1,8 @@
-# dayu-topology Endpoint 与 Dependency Observation 子模型设计
+# wist-atlas Endpoint 与 Dependency Observation 子模型设计
 
 ## 1. 文档目的
 
-本文档定义 `dayu-topology` 中心侧 `service endpoint`、`instance endpoint` 以及依赖观测对象的子模型。
+本文档定义 `wist-atlas` 中心侧 `service endpoint`、`instance endpoint` 以及依赖观测对象的子模型。
 
 目标是固定：
 

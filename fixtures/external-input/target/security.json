@@ -1,0 +1,26 @@
+{
+  "schema": "atlas.in.security.v1",
+  "source": {
+    "system": "example",
+    "producer": "fixture-security",
+    "tenant": "tenant-demo",
+    "env": "dev"
+  },
+  "collect": {
+    "mode": "window",
+    "observed_at": "2026-04-26T02:20:30Z",
+    "collected_at": "2026-04-26T02:20:31Z"
+  },
+  "payload": {
+    "window": {
+      "start": "2026-04-26T02:20:00Z",
+      "end": "2026-04-26T02:20:30Z"
+    },
+    "events": [
+      {
+        "external_id": "sec-1",
+        "severity": "low"
+      }
+    ]
+  }
+}

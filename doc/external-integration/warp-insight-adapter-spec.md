@@ -2,13 +2,13 @@
 
 ## 1. 文档目的
 
-本文档定义 `dayu-topology` 如何接入 `warp-insight` 输出的边缘 discovery 事实。
+本文档定义 `wist-atlas` 如何接入 `warp-insight` 输出的边缘 discovery 事实。
 
 它重点固定：
 
-- `warp-insight` 哪些对象可作为 `dayu-topology` 外部输入
-- `ReportDiscoverySnapshot`（`WiDiscReport`）如何进入 `dayu.in.edge.v1`
-- `DiscoveredResource / DiscoveredTarget` 如何映射到 dayu 的 cand / ev / obs
+- `warp-insight` 哪些对象可作为 `wist-atlas` 外部输入
+- `ReportDiscoverySnapshot`（`WiDiscReport`）如何进入 `atlas.in.edge.v1`
+- `DiscoveredResource / DiscoveredTarget` 如何映射到 atlas 的 cand / ev / obs
 - 当前可落地范围与暂不接入范围
 
 相关文档：
@@ -31,26 +31,26 @@
 
 第一版固定以下结论：
 
-- `warp-insight` 是 `dayu-topology` 的外部事实来源之一。
-- `dayu-topology` 不直接读取 `warp-insightd` 本地 `state/discovery/*.json` 作为线上协议。
+- `warp-insight` 是 `wist-atlas` 的外部事实来源之一。
+- `wist-atlas` 不直接读取 `warp-insightd` 本地 `state/discovery/*.json` 作为线上协议。
 - 线上接入对象应是 `ReportDiscoverySnapshot`（`WiDiscReport`），其中携带完整 `DiscoverySnapshot`（`DiscSnap`）。
-- `DiscSnap.resources[] / targets[]` 是边缘本地事实，不是 dayu 中心资源目录。
-- dayu adapter 负责把这些事实转换为 cand / ev。
-- dayu resolver 负责跨来源 identity resolution 和主对象归并。
+- `DiscSnap.resources[] / targets[]` 是边缘本地事实，不是 atlas 中心资源目录。
+- atlas adapter 负责把这些事实转换为 cand / ev。
+- atlas resolver 负责跨来源 identity resolution 和主对象归并。
 
 对外术语必须遵循 [`external-glossary.md`](./external-glossary.md)。内部 adapter 输出短名和字段名遵循 [`../internal/processing-glossary.md`](../internal/processing-glossary.md)：
 
-- `DiscoveredResource` 在 dayu 侧只等价于 `ResFact`。
-- `DiscoveredTarget` 在 dayu 侧只等价于 `TargetEv`。
-- resource 之间的绑定、归属、监听等关系在 dayu 侧先进入 `RelFact` / ev，不直接写最终 topology relation。
-- `resource_id / target_id` 是来源侧标识，不是 dayu 内部主键。
+- `DiscoveredResource` 在 atlas 侧只等价于 `ResFact`。
+- `DiscoveredTarget` 在 atlas 侧只等价于 `TargetEv`。
+- resource 之间的绑定、归属、监听等关系在 atlas 侧先进入 `RelFact` / ev，不直接写最终 topology relation。
+- `resource_id / target_id` 是来源侧标识，不是 atlas 内部主键。
 
 不允许：
 
-- 把 `DiscoveredResource.resource_id` 直接当作 dayu 内部主键。
+- 把 `DiscoveredResource.resource_id` 直接当作 atlas 内部主键。
 - 把 `DiscoveredTarget` 直接当作采集配置或服务实例。
 - 把 discovery sync 与 telemetry record 混成同一种 payload。
-- 让 `warp-insight` 边缘节点决定 dayu 的最终业务、服务、责任关系。
+- 让 `warp-insight` 边缘节点决定 atlas 的最终业务、服务、责任关系。
 
 ---
 
@@ -90,13 +90,13 @@ snapshot: DiscoverySnapshot {
 }
 ```
 
-### 3.2 dayu 外部输入 envelope
+### 3.2 atlas 外部输入 envelope
 
-进入 dayu staging 时使用：
+进入 atlas staging 时使用：
 
 ```json
 {
-  "schema": "dayu.in.edge.v1",
+  "schema": "atlas.in.edge.v1",
   "source": {
     "kind": "edge",
     "system": "warp-insight",
@@ -117,13 +117,13 @@ snapshot: DiscoverySnapshot {
 }
 ```
 
-`payload.warp_insight` 保存完整 `ReportDiscoverySnapshot` 原始对象；dayu 文档可简称为 `WiDiscReport`。
+`payload.warp_insight` 保存完整 `ReportDiscoverySnapshot` 原始对象；atlas 文档可简称为 `WiDiscReport`。
 
 ---
 
 ## 4. Envelope 映射
 
-| warp-insight 字段 | dayu 字段 | 说明 |
+| warp-insight 字段 | atlas 字段 | 说明 |
 | --- | --- | --- |
 | `agent_id` | `source.producer` | 产生 discovery 快照的 agent |
 | `snapshot_id` | `collect.snap_id` | 快照幂等键之一 |
@@ -132,7 +132,7 @@ snapshot: DiscoverySnapshot {
 | `reported_at` | `collect.collected_at` | 上送对象形成时间 |
 | full object | `payload.warp_insight` | 保留原始协议对象用于回放 |
 
-dayu ingest 建议幂等键：
+atlas ingest 建议幂等键：
 
 ```text
 source.system + source.producer + collect.snap_id
@@ -161,7 +161,7 @@ source.system + source.producer + collect.res_ver
 
 ### 5.2 预留但不作为 P0
 
-以下对象在 `warp-insight` 设计中存在，但不作为 dayu adapter P0 前置：
+以下对象在 `warp-insight` 设计中存在，但不作为 atlas adapter P0 前置：
 
 - `k8s_node`
 - `k8s_pod`
@@ -172,7 +172,7 @@ source.system + source.producer + collect.res_ver
 原因：
 
 - 当前 `warp-insightd` 主循环尚未稳定产出这些 discovery 类型。
-- dayu 侧需要先固定 host/process/container 到 candidate/evidence 的基本链路。
+- atlas 侧需要先固定 host/process/container 到 candidate/evidence 的基本链路。
 
 ---
 
@@ -213,7 +213,7 @@ DiscoveredResource.kind = host
 
 关键字段：
 
-| warp-insight attribute | dayu candidate 字段 | 说明 |
+| warp-insight attribute | atlas candidate 字段 | 说明 |
 | --- | --- | --- |
 | `host.name` | `HostCand.host_name` | 主机名 |
 | `host.id` | `HostCand.external_ref` | 边缘本地 host 标识 |
@@ -234,7 +234,7 @@ identity 规则：
 注意：
 
 - `host.name` 不应作为全局唯一主键。
-- `host.id = hostname:<name>` 仍然是来源侧标识，不是 dayu 内部 ID。
+- `host.id = hostname:<name>` 仍然是来源侧标识，不是 atlas 内部 ID。
 
 ### 7.2 `process` resource
 
@@ -246,7 +246,7 @@ DiscoveredResource.kind = process
 
 关键字段：
 
-| warp-insight key | dayu 输出 | 说明 |
+| warp-insight key | atlas 输出 | 说明 |
 | --- | --- | --- |
 | `host.id` | host 外部引用 | 用于绑定到 host candidate |
 | `process.pid` | `ProcRtCand` | 进程 PID |
@@ -278,7 +278,7 @@ DiscoveredResource.kind = container
 
 关键字段：
 
-| warp-insight key | dayu 输出 | 说明 |
+| warp-insight key | atlas 输出 | 说明 |
 | --- | --- | --- |
 | `container.id` | container runtime external id | 容器强标识 |
 | `container.name` | container runtime attribute | 容器名 |
@@ -309,9 +309,9 @@ DiscoveredResource.kind = container
 
 ## 8. Target 映射
 
-`DiscoveredTarget` 表示边缘发现到的候选采集对象线索，在 dayu 侧接收为 `TargetEv`。
+`DiscoveredTarget` 表示边缘发现到的候选采集对象线索，在 atlas 侧接收为 `TargetEv`。
 
-dayu 处理原则：
+atlas 处理原则：
 
 - 可保存为 `TargetEv` 或 raw ev。
 - 不直接创建 `ServiceEntity`。
@@ -321,7 +321,7 @@ dayu 处理原则：
 
 映射建议：
 
-| target kind | dayu 用途 |
+| target kind | atlas 用途 |
 | --- | --- |
 | `host` | host metrics target ev |
 | `process` | process metrics target ev |
@@ -404,7 +404,7 @@ adapter 不理解的 `attributes`、`runtime_facts`、`labels` 必须保留到 r
 当前阶段固定：
 
 - `warp-insight` 对接以 `ReportDiscoverySnapshot`（`WiDiscReport`）为输入。
-- dayu external input 中保留完整 `payload.warp_insight` 以支持回放。
+- atlas external input 中保留完整 `payload.warp_insight` 以支持回放。
 - P0 只解析 `host / process / container` resource 和 target。
 - `host` 转 `HostCand`。
 - `process` 转 `ProcRtCand + SwEv`；在代码模型落地前，`ProcRtCand` 可降级为 process resource ev。

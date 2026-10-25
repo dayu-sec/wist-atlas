@@ -1,0 +1,23 @@
+{
+  "schema": "atlas.in.oncall.v1",
+  "source": {
+    "system": "example",
+    "producer": "fixture-oncall",
+    "tenant": "tenant-demo",
+    "env": "dev"
+  },
+  "collect": {
+    "mode": "snapshot",
+    "observed_at": "2026-04-26T02:20:30Z",
+    "collected_at": "2026-04-26T02:20:31Z",
+    "snap_id": "snap-oncall-001"
+  },
+  "payload": {
+    "schedules": [
+      {
+        "external_id": "oncall-1",
+        "name": "primary"
+      }
+    ]
+  }
+}

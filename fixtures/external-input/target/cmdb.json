@@ -1,0 +1,23 @@
+{
+  "schema": "atlas.in.cmdb.v1",
+  "source": {
+    "system": "example",
+    "producer": "fixture-cmdb",
+    "tenant": "tenant-demo",
+    "env": "dev"
+  },
+  "collect": {
+    "mode": "snapshot",
+    "observed_at": "2026-04-26T02:20:30Z",
+    "collected_at": "2026-04-26T02:20:31Z",
+    "snap_id": "snap-cmdb-001"
+  },
+  "payload": {
+    "biz_units": [
+      {
+        "external_id": "bu-1",
+        "name": "demo"
+      }
+    ]
+  }
+}

@@ -1,8 +1,8 @@
-# dayu-topology 外部输入数据规范
+# wist-atlas 外部输入数据规范
 
 ## 1. 文档目的
 
-本文档定义 `dayu-topology` 第一版接收外部系统数据时的原始输入格式。
+本文档定义 `wist-atlas` 第一版接收外部系统数据时的原始输入格式。
 
 这里的“外部输入”指进入 adapter / connector 之前或刚进入 staging 区的结构化事实，不是中心侧已经归一后的内部候选、证据或主事实对象。
 
@@ -31,9 +31,9 @@ Target 示例数据集：
 - 外部输入必须带来源、采集时间和 schema。
 - 外部 ID 必须保留，不能提前替换成内部 UUID。
 - 外部输入可以包含来源系统自己的字段名和结构，但必须是结构化 JSON。
-- adapter 负责把外部输入转换成 dayu 内部处理对象。
+- adapter 负责把外部输入转换成 atlas 内部处理对象。
 - resolver 负责把内部处理对象归并到内部稳定对象。
-- 无法解析的外部事实应停留在 dayu 内部 staging / unresolved 层。
+- 无法解析的外部事实应停留在 atlas 内部 staging / unresolved 层。
 
 不允许：
 
@@ -53,7 +53,7 @@ Target 示例数据集：
 | 长名 | 规范短名 | 说明 |
 | --- | --- | --- |
 | `schema_version` | `schema` | 外部输入 schema 标识 |
-| `dayu.external_input` | `dayu.in` | schema 前缀 |
+| `atlas.external_input` | `atlas.in` | schema 前缀 |
 | `source_family` | `family` | schema 中的来源族 |
 | `producer_id` | `producer` | 产生 payload 的 agent / job / connector |
 | `tenant_external_ref` | `tenant_ref` | 外部租户引用 |
@@ -64,13 +64,13 @@ Target 示例数据集：
 | `window_start` | `win_start` | 时间窗口开始 |
 | `window_end` | `win_end` | 时间窗口结束 |
 
-payload 内推荐把冗长引用字段缩短为 `*_ref`，例如 `service_external_ref -> service_ref`、`owner_subject_external_id -> owner_ref`。外部系统原生字段名可以保留，但 dayu 示例和规范优先使用短名。
+payload 内推荐把冗长引用字段缩短为 `*_ref`，例如 `service_external_ref -> service_ref`、`owner_subject_external_id -> owner_ref`。外部系统原生字段名可以保留，但 atlas 示例和规范优先使用短名。
 
 所有外部输入文件或 staged payload 都应遵循统一 envelope：
 
 ```json
 {
-  "schema": "dayu.in.<family>.v1",
+  "schema": "atlas.in.<family>.v1",
   "source": {},
   "collect": {},
   "payload": {}
@@ -82,7 +82,7 @@ payload 内推荐把冗长引用字段缩短为 `*_ref`，例如 `service_extern
 格式：
 
 ```text
-dayu.in.<family>.v<major>
+atlas.in.<family>.v<major>
 ```
 
 第一版建议的 `<family>`：
@@ -363,7 +363,7 @@ Target 示例：
 
 ---
 
-## 8. 从外部输入到 dayu 内部处理
+## 8. 从外部输入到 atlas 内部处理
 
 外部输入进入中心模型前必须经过 adapter。
 
@@ -373,14 +373,14 @@ Target 示例：
 external input
   -> schema validation
   -> source-specific adapter
-  -> dayu internal processing object
+  -> atlas internal processing object
   -> identity resolver
   -> materializer
 ```
 
 适配示例：
 
-| 外部输入 | dayu 内部处理方向 |
+| 外部输入 | atlas 内部处理方向 |
 | --- | --- |
 | `edge.payload.host` | host identity / host inventory |
 | `edge.payload.net_ifaces[].addresses[]` | network fact / host network association |
@@ -409,7 +409,7 @@ external input
 
 - envelope 缺失或 schema 不支持：整批 rejected。
 - 单行字段非法：写 rejected row，整批是否失败由来源策略决定。
-- 引用暂不可解析：进入 dayu 内部 unresolved 状态，不写正式关系。
+- 引用暂不可解析：进入 atlas 内部 unresolved 状态，不写正式关系。
 
 ---
 

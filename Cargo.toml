@@ -1,10 +1,10 @@
 [workspace]
 members = [
-  "crates/topology-domain",
-  "crates/topology-storage",
-  "crates/topology-api",
-  "crates/topology-sync",
-  "crates/topology-app",
+  "crates/atlas-domain",
+  "crates/atlas-storage",
+  "crates/atlas-api",
+  "crates/atlas-sync",
+  "crates/atlas-app",
 ]
 resolver = "2"
 
@@ -12,7 +12,7 @@ resolver = "2"
 edition = "2024"
 license = "Apache-2.0"
 version = "0.1.0"
-authors = ["dayu-topology contributors"]
+authors = ["wist-atlas contributors"]
 
 [workspace.dependencies]
 axum = "0.8"

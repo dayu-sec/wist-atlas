@@ -1,0 +1,21 @@
+{
+  "schema": "atlas.in.k8s.v1",
+  "source": {
+    "system": "example",
+    "producer": "fixture-k8s",
+    "tenant": "tenant-demo",
+    "env": "dev"
+  },
+  "collect": {
+    "mode": "snapshot",
+    "observed_at": "2026-04-26T02:20:30Z",
+    "collected_at": "2026-04-26T02:20:31Z",
+    "snap_id": "snap-k8s-001"
+  },
+  "payload": {
+    "cluster": {
+      "external_id": "cluster-1",
+      "name": "demo"
+    }
+  }
+}

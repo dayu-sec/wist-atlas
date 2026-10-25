@@ -2,8 +2,8 @@
 """
 replay_pg_jsonl.py
 
-Reset the local dayu-topology PostgreSQL schema, replay one or more JSONL files
-through topology-app postgres-live mode, then query core row counts for quick
+Reset the local wist-atlas PostgreSQL schema, replay one or more JSONL files
+through atlas-app postgres-live mode, then query core row counts for quick
 verification.
 
 Usage:
@@ -22,9 +22,9 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_DB_CONTAINER = "dayu-topology-postgres"
-DEFAULT_DB_NAME = "dayu_topology"
-DEFAULT_DB_USER = "dayu"
+DEFAULT_DB_CONTAINER = "wist-atlas-postgres"
+DEFAULT_DB_NAME = "wist_atlas"
+DEFAULT_DB_USER = "atlas"
 
 
 def run(cmd: list[str], *, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
@@ -56,17 +56,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("jsonl", nargs="+", help="JSONL files to replay")
     parser.add_argument(
         "--container",
-        default=os.environ.get("DAYU_PG_CONTAINER", DEFAULT_DB_CONTAINER),
+        default=os.environ.get("WIST_ATLAS_PG_CONTAINER")
+        or os.environ.get("DAYU_PG_CONTAINER", DEFAULT_DB_CONTAINER),
         help=f"PostgreSQL container name, default: {DEFAULT_DB_CONTAINER}",
     )
     parser.add_argument(
         "--db",
-        default=os.environ.get("DAYU_PG_DB", DEFAULT_DB_NAME),
+        default=os.environ.get("WIST_ATLAS_PG_DB")
+        or os.environ.get("DAYU_PG_DB", DEFAULT_DB_NAME),
         help=f"PostgreSQL database name, default: {DEFAULT_DB_NAME}",
     )
     parser.add_argument(
         "--user",
-        default=os.environ.get("DAYU_PG_USER", DEFAULT_DB_USER),
+        default=os.environ.get("WIST_ATLAS_PG_USER")
+        or os.environ.get("DAYU_PG_USER", DEFAULT_DB_USER),
         help=f"PostgreSQL user, default: {DEFAULT_DB_USER}",
     )
     parser.add_argument(
@@ -95,7 +98,7 @@ def reset_schema(container: str, user: str, db: str) -> None:
         f"postgres://{user}:{user}@127.0.0.1:55432/{db}",
     )
     must_run(
-        ["cargo", "run", "-q", "-p", "topology-app", "--", "postgres-live", "reset-public"],
+        ["cargo", "run", "-q", "-p", "atlas-app", "--", "postgres-live", "reset-public"],
         cwd=REPO_ROOT,
     )
 
@@ -107,7 +110,7 @@ def replay_jsonl(files: list[str]) -> None:
             "run",
             "-q",
             "-p",
-            "topology-app",
+            "atlas-app",
             "--",
             "postgres-live",
             "import-jsonl",

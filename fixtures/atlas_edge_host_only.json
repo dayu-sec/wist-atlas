@@ -1,0 +1,22 @@
+{
+  "schema": "atlas.in.edge.v1",
+  "source": {
+    "kind": "edge",
+    "system": "warp-insight",
+    "producer": "agent-local-01",
+    "tenant_ref": "tenant-demo",
+    "env_ref": "office"
+  },
+  "collect": {
+    "mode": "snapshot",
+    "snap_id": "edge-snap-local-01",
+    "observed_at": "2026-05-12T03:16:04Z",
+    "collected_at": "2026-05-12T03:16:05Z",
+    "res_ver": "4"
+  },
+  "payload": {
+    "host_name": "local-host",
+    "machine_id": "hostname:local-host",
+    "external_ref": "hostname:local-host"
+  }
+}

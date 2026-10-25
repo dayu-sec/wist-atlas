@@ -1,8 +1,8 @@
-# dayu-topology Runtime Binding 子模型设计
+# wist-atlas Runtime Binding 子模型设计
 
 ## 1. 文档目的
 
-本文档定义 `dayu-topology` 中心侧 `process / container / pod / service instance` 之间的绑定子模型。
+本文档定义 `wist-atlas` 中心侧 `process / container / pod / service instance` 之间的绑定子模型。
 
 目标是固定：
 

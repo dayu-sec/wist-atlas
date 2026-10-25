@@ -1,8 +1,8 @@
-# dayu-topology Security 与 Access Control 架构设计
+# wist-atlas Security 与 Access Control 架构设计
 
 ## 1. 文档目的
 
-本文档定义 `dayu-topology` 第一版安全与访问控制架构。
+本文档定义 `wist-atlas` 第一版安全与访问控制架构。
 
 目标是固定：
 

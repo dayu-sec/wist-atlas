@@ -1,8 +1,8 @@
-# dayu-topology 系统架构设计
+# wist-atlas 系统架构设计
 
 ## 1. 文档目的
 
-本文档定义 `dayu-topology` 第一版系统架构。
+本文档定义 `wist-atlas` 第一版系统架构。
 
 目标是固定：
 
@@ -23,7 +23,7 @@
 
 ## 2. 核心结论
 
-第一版建议把 `dayu-topology` 定义为一个中心侧拓扑目录系统，逻辑上拆成六个模块：
+第一版建议把 `wist-atlas` 定义为一个中心侧拓扑目录系统，逻辑上拆成六个模块：
 
 - Ingest Gateway
 - Normalization Engine
@@ -179,7 +179,7 @@
 ### 6.1 单体起步
 
 ```text
-dayu-topology-server
+wist-atlas-server
   = ingest gateway
   + normalization engine
   + query api
@@ -194,9 +194,9 @@ dayu-topology-server
 ### 6.2 小规模拆分
 
 ```text
-dayu-topology-api
-dayu-topology-worker
-dayu-topology-sync
+wist-atlas-api
+wist-atlas-worker
+wist-atlas-sync
 ```
 
 适用于：
@@ -211,7 +211,7 @@ dayu-topology-sync
 
 ### 7.1 与边缘发现系统
 
-`dayu-topology` 不直接承担边缘 discovery。
+`wist-atlas` 不直接承担边缘 discovery。
 
 它只接收：
 
@@ -222,7 +222,7 @@ dayu-topology-sync
 
 ### 7.2 与控制中心
 
-`dayu-topology` 不负责：
+`wist-atlas` 不负责：
 
 - 审批
 - 编译

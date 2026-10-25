@@ -1,8 +1,8 @@
-# dayu-topology Host / Pod / Network Topology 子模型设计
+# wist-atlas Host / Pod / Network Topology 子模型设计
 
 ## 1. 文档目的
 
-本文档定义 `dayu-topology` 中心侧 `host / pod / network` 之间的拓扑子模型。
+本文档定义 `wist-atlas` 中心侧 `host / pod / network` 之间的拓扑子模型。
 
 目标不是另起一套新体系，而是在现有中心对象模型上补齐：
 

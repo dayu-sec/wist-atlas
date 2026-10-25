@@ -1,4 +1,4 @@
-# dayu-topology Host Inventory 与 Runtime State 存储设计草案
+# wist-atlas Host Inventory 与 Runtime State 存储设计草案
 
 ## 1. 文档目的
 
