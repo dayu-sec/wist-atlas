@@ -368,13 +368,44 @@ function ServiceCard({ node }: { node: HostProcessTopologyNode }) {
   const instanceCount = numericProperty(node.properties, 'instanceCount');
   const name = String(node.properties.name ?? node.properties.serviceName ?? node.label);
   const endpoints = endpointLabels(node.properties);
-  // 副标题优先给「在哪儿听」：服务卡片上最想知道的就是这个，
-  // 实例数是次要信息（点开右侧抽屉能看全）。
-  const subtitle = endpoints.length > 0
-    ? endpoints.join(' · ')
+
+  // 溢出节点：图只放 TopN，剩下的一起用这一张卡表示。
+  if (node.properties.collapsed === true) {
+    const hidden = numericProperty(node.properties, 'hiddenServices');
+    const total = numericProperty(node.properties, 'totalServices');
+    return (
+      <div className="flex h-full items-center gap-2.5 px-3.5">
+        <span
+          className="grid size-[30px] shrink-0 place-items-center rounded-[9px] border border-dashed"
+          style={{ borderColor: '#D6BBFB', color: '#7A5AF8' }}
+          aria-hidden
+        >
+          <KindGlyph kind="ServiceEntity" className="size-[16px]" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-[12px] font-semibold leading-4 text-[#101828]">
+            {name}
+          </div>
+          <div className="mt-1 truncate text-[9.5px] leading-3 text-[#667085]">
+            {hidden > 0 ? `共 ${total} 个服务 · 点开查看` : `共 ${total} 个服务 · 点收起`}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // 副标题优先给「在哪儿听」。卡片宽度只有 232px，多个端点挤不下：
+  // 只展示对外暴露的那个（没有就取第一个），剩下的折成 `+N`，完整列表放 tooltip。
+  const primaryEndpoint =
+    endpoints.find((endpoint) => endpoint.external) ?? endpoints[0] ?? null;
+  const subtitle = primaryEndpoint
+    ? endpoints.length > 1
+      ? `${primaryEndpoint.label} +${endpoints.length - 1}`
+      : primaryEndpoint.label
     : instanceCount > 0
       ? `${instanceCount} 个实例`
       : '服务';
+  const subtitleTitle = endpoints.map((endpoint) => endpoint.label).join(' · ') || subtitle;
 
   return (
     <div className="flex h-full items-center gap-2.5 px-3.5">
@@ -391,7 +422,7 @@ function ServiceCard({ node }: { node: HostProcessTopologyNode }) {
         </div>
         <div
           className="mt-1 truncate font-mono text-[9.5px] leading-3 text-[#667085]"
-          title={subtitle}
+          title={subtitleTitle}
         >
           {subtitle}
         </div>
@@ -401,7 +432,9 @@ function ServiceCard({ node }: { node: HostProcessTopologyNode }) {
 }
 
 /** `endpoints` 是后端按 `{protocol, address, port}` 给的全集。 */
-function endpointLabels(properties: Record<string, unknown>): string[] {
+type EndpointLabel = { label: string; external: boolean };
+
+function endpointLabels(properties: Record<string, unknown>): EndpointLabel[] {
   const raw = properties.endpoints;
   if (!Array.isArray(raw)) return [];
 
@@ -410,10 +443,15 @@ function endpointLabels(properties: Record<string, unknown>): string[] {
       typeof item === 'object' && item !== null ? (item as Record<string, unknown>) : null,
     )
     .filter((item): item is Record<string, unknown> => Boolean(item))
-    .map((item) =>
-      `${String(item.protocol ?? 'tcp')}/${String(item.port ?? '')} ${String(item.address ?? '')}`.trim(),
-    )
-    .filter(Boolean);
+    .map((item) => {
+      const address = String(item.address ?? '');
+      return {
+        label: `${String(item.protocol ?? 'tcp')}/${String(item.port ?? '')} ${address}`.trim(),
+        // 通配地址才是「对外」；127.0.0.1 / ::1 只有本机能访问。
+        external: address === '0.0.0.0' || address === '::',
+      };
+    })
+    .filter((item) => Boolean(item.label));
 }
 
 function SubjectCard({ node }: { node: HostProcessTopologyNode }) {

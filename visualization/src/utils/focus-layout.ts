@@ -18,7 +18,7 @@ export type FocusLayout = {
   annotations: LaneAnnotation[];
 };
 
-const FOCUS_LEAF_LIMIT = 16;
+const FOCUS_LEAF_LIMIT = 20;
 const LANE_GAP = 132;
 
 /**

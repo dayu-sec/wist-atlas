@@ -31,6 +31,9 @@ import type {
 const PROCESS_SUMMARY_PREFIX = 'process-summary:';
 const PROCESS_GROUP_PREFIX = 'process-group:';
 const PROCESS_GROUP_OVERFLOW_PREFIX = 'process-group-overflow:';
+/** 服务也走 TopN + 溢出节点：一台机器 28 个监听服务时，全铺在画布上没人看得清。 */
+const SERVICE_OVERFLOW_PREFIX = 'service-overflow:';
+const SERVICE_DISPLAY_LIMIT = 6;
 const PROCESS_EXPAND_LIMIT = 20;
 const PROCESS_GROUP_DISPLAY_LIMIT = 12;
 const PROCESS_GROUP_PAGE_SIZE = 20;
@@ -43,6 +46,7 @@ export default function App() {
   const [networkId, setNetworkId] = useState('');
   const [expandedHosts, setExpandedHosts] = useState<Set<string>>(new Set());
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  const [expandedServices, setExpandedServices] = useState<Set<string>>(new Set());
   const [overviewGroupsByHost, setOverviewGroupsByHost] = useState<Record<string, HostProcessGroupDto[]>>({});
   const [truncatedGroupsByHost, setTruncatedGroupsByHost] = useState<Record<string, number>>({});
   const [loadedGroupsByHost, setLoadedGroupsByHost] = useState<Record<string, LoadedProcessGroupsState>>({});
@@ -129,6 +133,7 @@ export default function App() {
         state.graph,
         expandedHosts,
         expandedGroups,
+        expandedServices,
         overviewGroupsByHost,
         truncatedGroupsByHost,
         loadedGroupsByHost,
@@ -138,6 +143,7 @@ export default function App() {
       state.graph,
       expandedHosts,
       expandedGroups,
+      expandedServices,
       overviewGroupsByHost,
       truncatedGroupsByHost,
       loadedGroupsByHost,
@@ -208,6 +214,21 @@ export default function App() {
   const handleSelectNode = useCallback((nodeId: string | null) => {
     if (nodeId && nodeId.startsWith(PROCESS_SUMMARY_PREFIX)) {
       dispatch({ type: 'SELECT_NODE', nodeId });
+      return;
+    }
+    if (nodeId && nodeId.startsWith(SERVICE_OVERFLOW_PREFIX)) {
+      // 服务数据已全量在内存里，展开/收起都是本地行为，不用取接口。
+      const hostNodeId = nodeId.slice(SERVICE_OVERFLOW_PREFIX.length);
+      setExpandedServices((current) => {
+        const next = new Set(current);
+        if (next.has(hostNodeId)) {
+          next.delete(hostNodeId);
+        } else {
+          next.add(hostNodeId);
+        }
+        return next;
+      });
+      dispatch({ type: 'SELECT_NODE', nodeId: null });
       return;
     }
     if (nodeId && nodeId.startsWith(PROCESS_GROUP_OVERFLOW_PREFIX)) {
@@ -513,6 +534,7 @@ function buildDisplayGraph(
   source: HostProcessTopologyGraph | null,
   expandedHosts: Set<string>,
   expandedGroups: Set<string>,
+  expandedServices: Set<string>,
   overviewGroupsByHost: Record<string, HostProcessGroupDto[]>,
   truncatedGroupsByHost: Record<string, number>,
   loadedGroupsByHost: Record<string, LoadedProcessGroupsState>,
@@ -752,14 +774,63 @@ function buildDisplayGraph(
   }
 
   for (const hostNodeId of visibleHostNodeIds) {
-    const serviceEdges = hostServiceEdgesByHost.get(hostNodeId) ?? [];
-    for (const serviceEdge of serviceEdges) {
-      if (runtimeBoundServiceNodeIds.has(serviceEdge.target)) {
-        continue;
+    const hostNode = nodesById.get(hostNodeId);
+    const serviceEdges = (hostServiceEdgesByHost.get(hostNodeId) ?? []).filter(
+      (edge) => !runtimeBoundServiceNodeIds.has(edge.target),
+    );
+    if (serviceEdges.length === 0) continue;
+
+    // 画布是概览，不是清单：只放最值得看的几个，剩下的收进溢出节点。
+    // 排序按「对外暴露的端点数」优先（0.0.0.0 / ::）—— 监听在回环上的服务再重要，
+    // 也不如一个对外开的端口值得占画布。
+    const ranked = [...serviceEdges].sort((left, right) => {
+      const leftRank = serviceExposureRank(nodesById.get(left.target));
+      const rightRank = serviceExposureRank(nodesById.get(right.target));
+      if (rightRank.external !== leftRank.external) {
+        return rightRank.external - leftRank.external;
       }
-      const serviceNode = nodesById.get(serviceEdge.target);
-      addNode(serviceNode);
+      if (rightRank.total !== leftRank.total) {
+        return rightRank.total - leftRank.total;
+      }
+      return (nodesById.get(left.target)?.label ?? '').localeCompare(
+        nodesById.get(right.target)?.label ?? '',
+        'en',
+      );
+    });
+
+    const expanded = expandedServices.has(hostNodeId);
+    const visible = expanded ? ranked : ranked.slice(0, SERVICE_DISPLAY_LIMIT);
+    for (const serviceEdge of visible) {
+      addNode(nodesById.get(serviceEdge.target));
       addEdge(serviceEdge);
+    }
+
+    const hiddenCount = ranked.length - visible.length;
+    const needsOverflow = hiddenCount > 0 || (expanded && ranked.length > SERVICE_DISPLAY_LIMIT);
+    if (needsOverflow) {
+      const overflowNodeId = `${SERVICE_OVERFLOW_PREFIX}${hostNodeId}`;
+      const label = hiddenCount > 0 ? `+ ${hiddenCount} 个服务` : '收起列表';
+      addNode({
+        id: overflowNodeId,
+        objectKind: 'ServiceEntity',
+        objectId: hostNode?.objectId ?? '',
+        layer: 'resource',
+        label,
+        properties: {
+          collapsed: true,
+          name: label,
+          hiddenServices: hiddenCount,
+          totalServices: ranked.length,
+          displayLimit: SERVICE_DISPLAY_LIMIT,
+        },
+      });
+      addEdge({
+        id: `edge:${hostNodeId}:${overflowNodeId}`,
+        edgeKind: 'host_service_assoc',
+        source: hostNodeId,
+        target: overflowNodeId,
+        properties: { collapsed: true },
+      });
     }
   }
 
@@ -768,6 +839,26 @@ function buildDisplayGraph(
     edges: displayEdges,
     metadata: source.metadata,
   };
+}
+
+/**
+ * 服务的「暴露程度」：对外（`0.0.0.0` / `::`）的端口数优先，其次总数。
+ * 只按端点数排会把一堆回环监听顶上来 —— 那恰恰是最不值得先看的。
+ */
+function serviceExposureRank(node: HostProcessTopologyNode | undefined): {
+  external: number;
+  total: number;
+} {
+  const raw = node?.properties.endpoints;
+  if (!Array.isArray(raw)) return { external: 0, total: 0 };
+
+  let external = 0;
+  for (const item of raw) {
+    if (typeof item !== 'object' || item === null) continue;
+    const address = String((item as Record<string, unknown>).address ?? '');
+    if (address === '0.0.0.0' || address === '::') external += 1;
+  }
+  return { external, total: raw.length };
 }
 
 function getProcessViewMode(
