@@ -45,7 +45,13 @@ fn sink_line(snap_id: &str, observed_at: &str, pids: &[i32]) -> String {
         "resource_id": "machine-ingest-01",
         "kind": "host",
         "origin_idx": 0,
-        "attributes": {"host.id": "machine-ingest-01", "host.name": HOST_NAME},
+        "attributes": {
+            "host.id": "machine-ingest-01",
+            "host.name": HOST_NAME,
+            "os.name": "macOS",
+            "os.type": "macos",
+            "os.version": "26.6.2"
+        },
         "discovered_at": observed_at,
         "last_seen_at": observed_at,
         "health": "healthy",
@@ -256,6 +262,27 @@ fn a_corrupt_line_is_skippable_and_does_not_block_the_next_frame() {
     let hosts =
         CatalogStore::list_hosts(service.store(), tenant_id, Page::default()).expect("list");
     assert_eq!(hosts.len(), 1, "坏行不应影响后面的正常帧");
+}
+
+#[test]
+fn the_os_attributes_reach_the_host_inventory() {
+    // 链路最末端：`os.*` 从快照 → 适配器 → 入库 → `HostInventory.os_name/os_version`。
+    // 中间任何一环漏了，资产卡片的系统信息就是空的。
+    let dir = TempDir::new("os");
+    let service = TopologyIngestService::new_in_memory();
+    let tenant_id = TenantId(uuid::Uuid::new_v4());
+    append(&dir, &sink_line("snap-os", "2026-10-25T09:00:00Z", &[100]));
+
+    let mut tail = DiscoveryLogTail::open(dir.log(), dir.checkpoint()).expect("open");
+    assert_eq!(drain(&mut tail, &service, tenant_id), (1, 0));
+
+    let host = CatalogStore::list_hosts(service.store(), tenant_id, Page::default())
+        .expect("list hosts")
+        .into_iter()
+        .find(|host| host.host_name == HOST_NAME)
+        .expect("host materialized");
+    assert_eq!(host.os_name.as_deref(), Some("macOS"));
+    assert_eq!(host.os_version.as_deref(), Some("26.6.2"));
 }
 
 #[test]

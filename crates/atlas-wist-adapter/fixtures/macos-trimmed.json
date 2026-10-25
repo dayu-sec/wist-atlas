@@ -30,7 +30,10 @@
         "origin_idx": 0,
         "attributes": {
           "host.id": "machine-abc123",
-          "host.name": "mac-01"
+          "host.name": "mac-01",
+          "os.name": "macOS",
+          "os.type": "macos",
+          "os.version": "26.6.2"
         },
         "discovered_at": "2026-10-25T07:56:34.061342Z",
         "last_seen_at": "2026-10-25T07:56:34.061342Z",

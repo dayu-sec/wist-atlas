@@ -110,6 +110,40 @@ fn a_snapshot_without_a_host_resource_is_rejected() {
     assert!(matches!(err, AdapterError::MissingHost), "{err}");
 }
 
+#[test]
+fn os_attributes_are_mapped_onto_the_host() {
+    // 没有这两个字段，中心侧的资产卡片就只有「一台叫 node-1 的机器」。
+    let built = envelope(
+        &[resource(
+            "machine-abc",
+            HOST_KIND,
+            &[
+                ("host.id", "machine-abc"),
+                ("host.name", "node-1"),
+                ("os.name", "macOS"),
+                ("os.version", "26.6.2"),
+                ("os.type", "macos"),
+            ],
+        )],
+        &[],
+    );
+    let host = &built.payload.hosts[0];
+    assert_eq!(host.os_name.as_deref(), Some("macOS"));
+    assert_eq!(host.os_version.as_deref(), Some("26.6.2"));
+}
+
+#[test]
+fn a_host_before_os_collection_still_converts() {
+    // `os.*` 是后加的：旧 agentd 的快照没有这几个键，不能因此报错，也不能输出空串。
+    let built = envelope(&[host_resource()], &[]);
+    let host = &built.payload.hosts[0];
+    assert_eq!(host.os_name, None);
+    assert_eq!(host.os_version, None);
+
+    let rendered = serde_json::to_string(host).expect("serialize");
+    assert!(!rendered.contains("os_name"), "{rendered}");
+}
+
 // ── 网卡与地址 ────────────────────────────────────────
 
 #[test]

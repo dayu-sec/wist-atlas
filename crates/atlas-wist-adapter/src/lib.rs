@@ -160,6 +160,15 @@ pub struct Host {
     pub external_ref: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub machine_id: Option<String>,
+    /// 产品名（`macOS` / `Ubuntu`）。来自快照的 `os.name`。
+    ///
+    /// agentd 在 macOS 上特意发产品名而不是 sysinfo 的内核名（`Darwin`）—— 资产卡片
+    /// 显示 `Darwin / 26.6.2` 没人看得懂。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub os_name: Option<String>,
+    /// 来自快照的 `os.version`。Linux 上这是**内核**版本（sysinfo 语义）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub os_version: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -474,10 +483,16 @@ fn build_host(
     });
     let machine_id = is_real_machine_id(&host_id).then(|| host_id.clone());
 
+    // `os.*` 是后加的：老快照没有这几个键，所以是可选的，不能因为缺失就判坏。
+    let os_name = attr(&resource.attributes, "os.name");
+    let os_version = attr(&resource.attributes, "os.version");
+
     let host = Host {
         hostname: host_name.clone(),
         external_ref: host_id,
         machine_id: machine_id.clone(),
+        os_name,
+        os_version,
     };
     Ok((host, host_name, machine_id))
 }
