@@ -51,6 +51,7 @@ pub(crate) fn materialize_processes<S>(
     store: &S,
     catalog: &mut InMemoryCatalog,
     processes: Vec<ProcessRuntimeCandidate>,
+    known_containers: &BTreeSet<Uuid>,
     now: DateTime<Utc>,
     scope: &str,
 ) -> StorageResult<ProcessSweep>
@@ -90,7 +91,12 @@ where
             ),
             tenant_id: candidate.tenant_id,
             host_id: host.host_id,
-            container_id: None,
+            // 采集侧直接给了容器 id 就用；没采到的容器不写悬空引用。
+            container_id: candidate
+                .container_ref
+                .as_deref()
+                .map(|key| super::container_uuid(candidate.tenant_id, key))
+                .filter(|container_id| known_containers.contains(container_id)),
             external_ref: candidate
                 .machine_id
                 .as_ref()
@@ -124,6 +130,7 @@ pub(crate) async fn materialize_processes_async<S>(
     store: &S,
     catalog: &mut InMemoryCatalog,
     processes: Vec<ProcessRuntimeCandidate>,
+    known_containers: &BTreeSet<Uuid>,
     now: DateTime<Utc>,
     scope: &str,
 ) -> StorageResult<ProcessSweep>
@@ -163,7 +170,11 @@ where
             ),
             tenant_id: candidate.tenant_id,
             host_id: host.host_id,
-            container_id: None,
+            container_id: candidate
+                .container_ref
+                .as_deref()
+                .map(|key| super::container_uuid(candidate.tenant_id, key))
+                .filter(|container_id| known_containers.contains(container_id)),
             external_ref: candidate
                 .machine_id
                 .as_ref()

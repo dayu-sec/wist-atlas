@@ -422,6 +422,9 @@ fn process_candidate_from_row(
         executable,
         command_line: optional_string(row, "command_line")?,
         identity: optional_string(row, "identity")?,
+        // 容器归属：`container_id` 与 `containers[].id` 是同一个采集侧 id。
+        container_ref: optional_string(row, "container_id")?
+            .or_else(|| optional_string_lossy(row, "container_ref")),
         service_ref: optional_string(row, "service_ref")?,
         instance_key: optional_string(row, "instance_key")?,
         observed_at,

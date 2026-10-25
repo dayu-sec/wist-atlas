@@ -535,48 +535,7 @@ pub(in crate::graph) fn append_container_graph(
 
     for container in containers {
         let container_node_id = format!("container:{}", container.container_id);
-        let mut props = serde_json::Map::new();
-        if let Some(name) = &container.container_name {
-            props.insert("containerName".to_string(), Value::String(name.clone()));
-        }
-        props.insert(
-            "runtimeType".to_string(),
-            Value::String(format!("{:?}", container.runtime_type)),
-        );
-        if let Some(image) = &container.image_ref {
-            props.insert("imageRef".to_string(), Value::String(image.clone()));
-        }
-        if let Some(namespace) = &container.runtime_namespace {
-            props.insert(
-                "runtimeNamespace".to_string(),
-                Value::String(namespace.clone()),
-            );
-        }
-        if let Some(pod_name) = &container.pod_name {
-            props.insert("podName".to_string(), Value::String(pod_name.clone()));
-        }
-        if let Some(namespace) = &container.k8s_namespace {
-            props.insert("k8sNamespace".to_string(), Value::String(namespace.clone()));
-        }
-        if let Some(external_ref) = &container.external_ref {
-            props.insert(
-                "externalRef".to_string(),
-                Value::String(external_ref.clone()),
-            );
-        }
-
-        nodes.push(HostProcessTopologyNode {
-            id: container_node_id.clone(),
-            object_kind: "ContainerRuntime",
-            object_id: container.container_id.to_string(),
-            layer: "resource",
-            // 卡片标题用容器名；没采到名字时退回 id 前 12 位，至少能区分两个容器。
-            label: container
-                .container_name
-                .clone()
-                .unwrap_or_else(|| container.container_id.to_string()[..12].to_string()),
-            properties: props,
-        });
+        nodes.push(container_node(container));
         edges.push(HostProcessTopologyEdge {
             id: format!("edge:{}:{}", host_node_id, container.container_id),
             edge_kind: "host_container_assoc",
@@ -603,6 +562,55 @@ pub(in crate::graph) fn append_container_graph(
                 properties: serde_json::Map::new(),
             });
         }
+    }
+}
+
+/// 容器节点的构造。主机视图与服务焦点视图都用它 —— 两处的属性必须一模一样，
+/// 否则同一张卡片在两个视图里显示不同的信息。
+pub(in crate::graph) fn container_node(
+    container: &atlas_domain::ContainerRuntime,
+) -> HostProcessTopologyNode {
+    let mut props = serde_json::Map::new();
+    if let Some(name) = &container.container_name {
+        props.insert("containerName".to_string(), Value::String(name.clone()));
+    }
+    props.insert(
+        "runtimeType".to_string(),
+        Value::String(format!("{:?}", container.runtime_type)),
+    );
+    if let Some(image) = &container.image_ref {
+        props.insert("imageRef".to_string(), Value::String(image.clone()));
+    }
+    if let Some(namespace) = &container.runtime_namespace {
+        props.insert(
+            "runtimeNamespace".to_string(),
+            Value::String(namespace.clone()),
+        );
+    }
+    if let Some(pod_name) = &container.pod_name {
+        props.insert("podName".to_string(), Value::String(pod_name.clone()));
+    }
+    if let Some(namespace) = &container.k8s_namespace {
+        props.insert("k8sNamespace".to_string(), Value::String(namespace.clone()));
+    }
+    if let Some(external_ref) = &container.external_ref {
+        props.insert(
+            "externalRef".to_string(),
+            Value::String(external_ref.clone()),
+        );
+    }
+
+    HostProcessTopologyNode {
+        id: format!("container:{}", container.container_id),
+        object_kind: "ContainerRuntime",
+        object_id: container.container_id.to_string(),
+        layer: "resource",
+        // 卡片标题用容器名；没采到名字时退回 id 前 12 位，至少能区分两个容器。
+        label: container
+            .container_name
+            .clone()
+            .unwrap_or_else(|| container.container_id.to_string()[..12].to_string()),
+        properties: props,
     }
 }
 

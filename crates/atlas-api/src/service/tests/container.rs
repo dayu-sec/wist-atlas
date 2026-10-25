@@ -382,3 +382,72 @@ fn an_endpoint_referencing_an_unreported_container_gets_no_link() {
     );
     assert_eq!(view.processes[0].container_id, None);
 }
+
+#[test]
+fn a_process_reported_with_container_id_links_without_listening_ports() {
+    // 不监听端口的容器化进程（批处理、sidecar）拿不到端口证据，
+    // 只能靠进程探针自己报的容器 id。
+    let service = TopologyIngestService::new_in_memory();
+    let tenant_id = TenantId(Uuid::new_v4());
+    seed_host(&service, tenant_id);
+
+    service
+        .submit_and_materialize(envelope(
+            "ing-process-container",
+            tenant_id,
+            "2026-10-25T09:18:00Z",
+            json!({
+                "processes": [
+                    {"pid": 4100, "executable": "/usr/bin/worker", "host_ref": "node-c",
+                     "identity": "ps_lstart:Sat Oct 25 09:11:00 2026",
+                     "container_id": "3f2c9f3c1b8e"}
+                ],
+                "containers": [{
+                    "id": "3f2c9f3c1b8e",
+                    "name": "worker",
+                    "runtime": "containerd",
+                    "host_ref": "node-c"
+                }]
+            }),
+        ))
+        .unwrap();
+
+    let view = TopologyQueryService::new(service.store().clone())
+        .host_topology_view(host_id(&service, tenant_id))
+        .unwrap()
+        .unwrap();
+    let container = &view.containers[0];
+    let process = view
+        .processes
+        .iter()
+        .find(|item| item.pid == 4100)
+        .expect("process materialized");
+    assert_eq!(process.container_id, Some(container.container_id));
+}
+
+#[test]
+fn a_process_pointing_at_an_unreported_container_stays_unlinked() {
+    let service = TopologyIngestService::new_in_memory();
+    let tenant_id = TenantId(Uuid::new_v4());
+    seed_host(&service, tenant_id);
+
+    service
+        .submit_and_materialize(envelope(
+            "ing-process-dangling",
+            tenant_id,
+            "2026-10-25T09:18:00Z",
+            json!({
+                "processes": [
+                    {"pid": 4100, "executable": "/usr/bin/worker", "host_ref": "node-c",
+                     "container_id": "deadbeefcafe"}
+                ]
+            }),
+        ))
+        .unwrap();
+
+    let view = TopologyQueryService::new(service.store().clone())
+        .host_topology_view(host_id(&service, tenant_id))
+        .unwrap()
+        .unwrap();
+    assert_eq!(view.processes[0].container_id, None);
+}

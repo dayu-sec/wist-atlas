@@ -9,6 +9,9 @@ import { formatAddressFamily, parseTopPrograms } from '../utils/presentation';
 import { basename, formatCount, formatRelative, truncate } from '../utils/format';
 import { ArrowRightIcon, CloseIcon, KindGlyph } from './icons';
 
+/** 容器详情里最多列多少个进程。节点上几十个进程是常态，面板不是清单。 */
+const CONTAINER_PROCESS_LIMIT = 8;
+
 type Props = {
   node: HostProcessTopologyNode | null;
   graph: HostProcessTopologyGraph | null;
@@ -83,7 +86,7 @@ export default function NodeDetailPanel({
         ) : node.objectKind === 'ServiceEntity' ? (
           <ServiceDetail node={node} graph={graph} />
         ) : node.objectKind === 'ContainerRuntime' ? (
-          <ContainerDetail node={node} graph={graph} />
+          <ContainerDetail node={node} graph={graph} hostTopology={hostTopology} />
         ) : node.objectKind === 'ProcessSummary' ? (
           <RuntimeDetail
             node={node}
@@ -386,13 +389,15 @@ function ServiceDetail({
   );
 }
 
-/** 容器详情：它自己是什么（运行时/镜像/K8s 位置），以及它里挂了哪些服务实例。 */
+/** 容器详情：它自己是什么（运行时/镜像/K8s 位置），里面挂了哪些服务实例与进程。 */
 function ContainerDetail({
   node,
   graph,
+  hostTopology,
 }: {
   node: HostProcessTopologyNode;
   graph: HostProcessTopologyGraph | null;
+  hostTopology: HostTopologyDto | null;
 }) {
   const runtimeType = asString(node.properties.runtimeType);
   const imageRef = asString(node.properties.imageRef);
@@ -410,6 +415,19 @@ function ContainerDetail({
       .map((edge) => edge.target),
   );
   const instances = (graph?.nodes ?? []).filter((item) => instanceIds.has(item.id));
+
+  // 进程不从图上找：进程节点只有展开分组后才上画布。
+  // 主机的进程表已经在内存里（`process_runtime_state.container_id`），直接筛就行。
+  const processes = (hostTopology?.processes ?? []).flatMap((item) => {
+    const record = item as Record<string, unknown>;
+    if (record.container_id !== node.objectId) return [];
+    return [
+      {
+        pid: typeof record.pid === 'number' ? record.pid : null,
+        executable: typeof record.executable === 'string' ? record.executable : '',
+      },
+    ];
+  });
 
   return (
     <div className="space-y-5">
@@ -441,6 +459,34 @@ function ContainerDetail({
           </ul>
         )}
       </Section>
+
+      {processes.length > 0 && (
+        <Section title={`进程（${processes.length}）`}>
+          <ul className="space-y-1">
+            {processes.slice(0, CONTAINER_PROCESS_LIMIT).map((process, index) => (
+              <li
+                key={`${process.pid ?? 'unknown'}-${index}`}
+                className="flex items-baseline justify-between gap-2"
+              >
+                <span
+                  className="truncate font-mono text-[10.5px] text-[#475467]"
+                  title={process.executable}
+                >
+                  {process.executable ? basename(process.executable) : '—'}
+                </span>
+                <span className="tnum shrink-0 text-[9.5px] text-[#98a2b3]">
+                  {process.pid ?? '—'}
+                </span>
+              </li>
+            ))}
+          </ul>
+          {processes.length > CONTAINER_PROCESS_LIMIT && (
+            <p className="mt-1 text-[9.5px] text-[#b4bcc8]">
+              还有 {processes.length - CONTAINER_PROCESS_LIMIT} 个进程未列出
+            </p>
+          )}
+        </Section>
+      )}
 
       <Section title="标识">
         <Field label="对象 ID">

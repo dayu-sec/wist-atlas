@@ -44,6 +44,9 @@ pub struct ProcessRuntimeCandidate {
     pub executable: String,
     pub command_line: Option<String>,
     pub identity: Option<String>,
+    /// 采集侧直接报的容器 id（`/proc/<pid>/cgroup` 推出来的）。
+    /// 没有时仍可由端口证据反推，但那对不监听端口的进程不成立。
+    pub container_ref: Option<String>,
     pub service_ref: Option<String>,
     pub instance_key: Option<String>,
     pub observed_at: Option<ObservedAt>,

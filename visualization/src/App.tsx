@@ -1090,6 +1090,13 @@ function buildServiceFocusDisplay(
       addEdge(edge);
     }
   }
+  // 服务焦点图里的容器只经由「容器 → 实例」出现：它回答的是「这个实例跑在哪个容器里」。
+  for (const edge of source.edges) {
+    if (edge.edgeKind === 'container_service_assoc') {
+      addNode(nodesById.get(edge.source));
+      addEdge(edge);
+    }
+  }
   for (const edge of source.edges) {
     if (edge.edgeKind === 'host_service_assoc' && edge.target === serviceNodeId) {
       addNode(nodesById.get(edge.source));

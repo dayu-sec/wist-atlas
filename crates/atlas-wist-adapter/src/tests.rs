@@ -803,3 +803,40 @@ fn containers_are_omitted_when_the_snapshot_has_none() {
     let json = serde_json::to_string(&built).expect("serialize");
     assert!(!json.contains("\"containers\""));
 }
+
+#[test]
+fn a_process_carries_the_container_it_runs_in() {
+    // 进程探针从 cgroup 推出了容器 id：投影成 `processes[].container_id`，
+    // 中心侧据此把进程挂到容器上（不监听端口的容器化进程只能靠这条路）。
+    let resources = vec![
+        host_resource(),
+        resource(
+            "machine-abc:pid:4100",
+            PROCESS_KIND,
+            &[
+                ("process.pid", "4100"),
+                ("process.executable.name", "/usr/bin/worker"),
+                ("container.id", "3f2c9f3c1b8e"),
+            ],
+        ),
+        resource(
+            "machine-abc:pid:4200",
+            PROCESS_KIND,
+            &[
+                ("process.pid", "4200"),
+                ("process.executable.name", "/usr/sbin/sshd"),
+            ],
+        ),
+    ];
+
+    let built = envelope(&resources, &[]);
+    assert_eq!(built.payload.processes.len(), 2);
+    assert_eq!(
+        built.payload.processes[0].container_id.as_deref(),
+        Some("3f2c9f3c1b8e")
+    );
+    // 宿主进程没有容器线索：字段直接不出现，不能写成空串。
+    assert!(built.payload.processes[1].container_id.is_none());
+    let json = serde_json::to_string(&built).expect("serialize");
+    assert_eq!(json.matches("\"container_id\"").count(), 1);
+}

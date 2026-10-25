@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use atlas_domain::{AtlasInputEnvelope, IngestEnvelope};
 use atlas_storage::AsyncIngestStore;
 use atlas_storage::{
@@ -7,6 +9,7 @@ use atlas_storage::{
 use chrono::{DateTime, Utc};
 use orion_error::conversion::ConvErr;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::error::ApiResult;
 use crate::ingest::{
@@ -83,6 +86,13 @@ where
 
         let mut catalog = hydrate_catalog(&self.store, envelope.tenant_id).conv_err()?;
         let scope = envelope.ingest_scope();
+        // 容器 id 是确定性的：在物化进程之前就能算出本轮「确实采到的容器」集合，
+        // 进程与端口共用它来判断容器归属，避免写出指向不存在容器的引用。
+        let known_containers: BTreeSet<Uuid> = container_extraction
+            .candidates
+            .iter()
+            .map(|candidate| container_uuid(candidate.tenant_id, &candidate.container_key))
+            .collect();
         materialize_business_catalog(&self.store, business_catalog, accepted_at).conv_err()?;
         let materialized = materialize_candidates(
             &self.store,
@@ -96,9 +106,15 @@ where
         let host_stale_count =
             sweep_stale_hosts(&self.store, &envelope, &materialized, &scope, accepted_at)
                 .conv_err()?;
-        let process_sweep =
-            materialize_processes(&self.store, &mut catalog, processes, accepted_at, &scope)
-                .conv_err()?;
+        let process_sweep = materialize_processes(
+            &self.store,
+            &mut catalog,
+            processes,
+            &known_containers,
+            accepted_at,
+            &scope,
+        )
+        .conv_err()?;
         let stale_process_count =
             sweep_stale_processes(&self.store, &envelope, &process_sweep, &scope, accepted_at)
                 .conv_err()?;
@@ -121,7 +137,7 @@ where
             &catalog,
             endpoint_extraction.candidates,
             endpoint_extraction.reported,
-            &container_sweep.seen,
+            &known_containers,
             &materialized.host_ids,
             accepted_at,
         )
@@ -204,6 +220,11 @@ where
             .await
             .conv_err()?;
         let scope = envelope.ingest_scope();
+        let known_containers: BTreeSet<Uuid> = containers
+            .candidates
+            .iter()
+            .map(|candidate| container_uuid(candidate.tenant_id, &candidate.container_key))
+            .collect();
         materialize_business_catalog_async(&self.store, business_catalog, accepted_at)
             .await
             .conv_err()?;
@@ -221,10 +242,16 @@ where
             sweep_stale_hosts_async(&self.store, &envelope, &materialized, &scope, accepted_at)
                 .await
                 .conv_err()?;
-        let process_sweep =
-            materialize_processes_async(&self.store, &mut catalog, processes, accepted_at, &scope)
-                .await
-                .conv_err()?;
+        let process_sweep = materialize_processes_async(
+            &self.store,
+            &mut catalog,
+            processes,
+            &known_containers,
+            accepted_at,
+            &scope,
+        )
+        .await
+        .conv_err()?;
         let stale_process_count = sweep_stale_processes_async(
             &self.store,
             &envelope,
@@ -256,7 +283,7 @@ where
             &catalog,
             endpoints.candidates,
             endpoints.reported,
-            &container_sweep.seen,
+            &known_containers,
             &materialized.host_ids,
             accepted_at,
         )
@@ -316,12 +343,12 @@ where
 
 mod materialize;
 use materialize::{
-    ContainerSweep, MaterializedHosts, ProcessSweep, hydrate_catalog, hydrate_catalog_async,
-    mark_stale_containers, mark_stale_containers_async, mark_stale_hosts, mark_stale_hosts_async,
-    mark_stale_processes, mark_stale_processes_async, materialize_business_catalog,
-    materialize_business_catalog_async, materialize_candidates, materialize_candidates_async,
-    materialize_containers, materialize_containers_async, materialize_host_telemetry,
-    materialize_host_telemetry_async, materialize_process_telemetry,
+    ContainerSweep, MaterializedHosts, ProcessSweep, container_uuid, hydrate_catalog,
+    hydrate_catalog_async, mark_stale_containers, mark_stale_containers_async, mark_stale_hosts,
+    mark_stale_hosts_async, mark_stale_processes, mark_stale_processes_async,
+    materialize_business_catalog, materialize_business_catalog_async, materialize_candidates,
+    materialize_candidates_async, materialize_containers, materialize_containers_async,
+    materialize_host_telemetry, materialize_host_telemetry_async, materialize_process_telemetry,
     materialize_process_telemetry_async, materialize_processes, materialize_processes_async,
     materialize_service_endpoints, materialize_service_endpoints_async,
     materialize_subjects_and_assignments, materialize_subjects_and_assignments_async,

@@ -43,6 +43,7 @@ where
 
     // 先收集需要解析的 id，再一次性把进程/主机表读出来，避免每个实例各查一遍。
     let mut processes_by_instance: BTreeMap<Uuid, BTreeSet<Uuid>> = BTreeMap::new();
+    let mut containers_by_instance: BTreeMap<Uuid, Vec<Uuid>> = BTreeMap::new();
     let mut endpoints_by_instance: BTreeMap<Uuid, Vec<(String, String, i32)>> = BTreeMap::new();
     let mut needed_processes: BTreeSet<Uuid> = BTreeSet::new();
 
@@ -56,6 +57,14 @@ where
             .collect();
         needed_processes.extend(process_ids.iter().copied());
         processes_by_instance.insert(instance.instance_id, process_ids);
+        // 容器绑定来自端口证据（`container_service_assoc` 的另一端）。
+        let container_ids: Vec<Uuid> = bindings
+            .iter()
+            .filter(|binding| binding.object_type == RuntimeObjectType::Container)
+            .filter(|binding| binding.validity.valid_to.is_none())
+            .map(|binding| binding.object_id)
+            .collect();
+        containers_by_instance.insert(instance.instance_id, container_ids);
 
         let endpoints = list_endpoints(&store, instance.instance_id).await?;
         endpoints_by_instance.insert(
@@ -73,12 +82,15 @@ where
         );
     }
 
-    let (hosts, process_rows) = load_hosts_and_processes(&store).await?;
+    let (hosts, process_rows, containers) = load_hosts_and_processes(&store).await?;
 
     let mut nodes = Vec::new();
     let mut edges = Vec::new();
     let mut host_node_ids: BTreeSet<String> = BTreeSet::new();
     let mut resolved_hosts: BTreeSet<Uuid> = BTreeSet::new();
+    // 实例 → 容器：端口证据写的 Container 绑定。服务视图里容器是「实例落脚的地方」，
+    // 所以挂在实例旁边（容器 → 实例），不单独拉一条主机边。
+    let mut instance_nodes_by_container: BTreeMap<Uuid, Vec<String>> = BTreeMap::new();
 
     // 服务节点：把端点全集摊平放在这里，卡片一眼能看出暴露面。
     let mut all_endpoints: Vec<(String, String, i32)> =
@@ -177,6 +189,16 @@ where
                 "hostName".to_string(),
                 Value::String(host.host_name.clone()),
             );
+        }
+        for container_id in containers_by_instance
+            .get(&instance.instance_id)
+            .into_iter()
+            .flatten()
+        {
+            instance_nodes_by_container
+                .entry(*container_id)
+                .or_default()
+                .push(instance_node_id.clone());
         }
         instance_props.insert(
             "lastSeenAt".to_string(),
@@ -287,14 +309,35 @@ where
         }
     }
 
+    // 容器节点只给「有实例落在里面」的容器：服务视图问的是「这个服务在哪」，
+    // 不是「主机上还跑着什么」。
+    for (container_id, instance_node_ids) in &instance_nodes_by_container {
+        let Some(container) = containers.get(container_id) else {
+            continue;
+        };
+        let container_node = super::container_node(container);
+        let container_node_id = container_node.id.clone();
+        nodes.push(container_node);
+        for instance_node_id in instance_node_ids {
+            edges.push(HostProcessTopologyEdge {
+                id: format!("edge:{}:{}", container_node_id, instance_node_id),
+                edge_kind: "container_service_assoc",
+                source: container_node_id.clone(),
+                target: instance_node_id.clone(),
+                label: None,
+                properties: serde_json::Map::new(),
+            });
+        }
+    }
+
     Ok(Some(HostProcessTopologyGraph {
+        nodes,
+        edges,
         metadata: HostProcessTopologyMetadata {
             query_time: Utc::now().to_rfc3339(),
             host_count: resolved_hosts.len(),
             process_count: needed_processes.len(),
         },
-        nodes,
-        edges,
     }))
 }
 
@@ -389,7 +432,7 @@ where
     Ok(items)
 }
 
-/// 读主机表与全量进程表（按 process_id 建索引）。
+/// 读主机表、全量进程表、以及这些主机上的容器（均按 id 建索引）。
 ///
 /// 实例→主机没有直接外键，只能靠进程行的 `host_id` 反查；与其为每个进程 id 单独
 /// 查一次，不如按主机拉一遍进程表 —— 主机数与单机进程量都在可控范围内。
@@ -398,12 +441,14 @@ async fn load_hosts_and_processes<S>(
 ) -> AppResult<(
     BTreeMap<Uuid, atlas_domain::HostInventory>,
     BTreeMap<Uuid, atlas_domain::ProcessRuntimeState>,
+    BTreeMap<Uuid, atlas_domain::ContainerRuntime>,
 )>
 where
     S: AsyncCatalogStore + AsyncRuntimeStore,
 {
     let mut hosts = BTreeMap::new();
     let mut processes = BTreeMap::new();
+    let mut containers = BTreeMap::new();
     let mut offset = 0;
     loop {
         let batch = AsyncCatalogStore::list_all_hosts(
@@ -423,6 +468,9 @@ where
             for process in process_rows {
                 processes.insert(process.process_id, process);
             }
+            for container in list_containers_async(store, host.host_id).await? {
+                containers.insert(container.container_id, container);
+            }
             hosts.insert(host.host_id, host);
         }
         if len < PAGE_LIMIT as usize {
@@ -430,5 +478,35 @@ where
         }
         offset += len as u32;
     }
-    Ok((hosts, processes))
+    Ok((hosts, processes, containers))
+}
+
+async fn list_containers_async<S>(
+    store: &S,
+    host_id: Uuid,
+) -> AppResult<Vec<atlas_domain::ContainerRuntime>>
+where
+    S: AsyncRuntimeStore,
+{
+    let mut items = Vec::new();
+    let mut offset = 0;
+    loop {
+        let batch = AsyncRuntimeStore::list_container_runtimes_for_host(
+            store,
+            host_id,
+            Page {
+                limit: PAGE_LIMIT,
+                offset,
+            },
+        )
+        .await
+        .conv_err()?;
+        let len = batch.len();
+        items.extend(batch);
+        if len < PAGE_LIMIT as usize {
+            break;
+        }
+        offset += len as u32;
+    }
+    Ok(items)
 }

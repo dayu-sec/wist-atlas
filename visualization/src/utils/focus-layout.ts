@@ -351,6 +351,14 @@ export function computeServiceLayout(graph: HostProcessTopologyGraph): FocusLayo
     bucket.push(process);
     processesByInstance.set(edge.target, bucket);
   }
+  // 实例跑在哪个容器里：容器与实例同列、上下相临，不单独开一条车道 ——
+  // 多一条车道会让「服务 → 实例」的阅读方向多一次拐弯。
+  const containerByInstance = new Map<string, HostProcessTopologyNode>();
+  for (const edge of graph.edges) {
+    if (edge.edgeKind !== 'container_service_assoc') continue;
+    const container = nodesById.get(edge.source);
+    if (container) containerByInstance.set(edge.target, container);
+  }
 
   const serviceDims = nodeDims(service.objectKind);
   const positions: Record<string, GraphPoint> = { [service.id]: { x: 0, y: 0 } };
@@ -378,16 +386,24 @@ export function computeServiceLayout(graph: HostProcessTopologyGraph): FocusLayo
   // 右栏：实例竖向排，每个实例的监听进程紧贴在它右边。
   const instanceDims = nodeDims('ServiceInstance');
   const processDims = nodeDims('ProcessRuntime');
+  const containerDims = nodeDims('ContainerRuntime');
   const instanceX = serviceDims.width / 2 + LANE_GAP + instanceDims.width / 2;
   const processX =
     instanceX + instanceDims.width / 2 + LANE_GAP * 0.6 + processDims.width / 2;
   const blockGap = 24;
   const processGap = 10;
+  const containerGap = 12;
 
   const blocks = instances.map((instance) => {
     const bound = processesByInstance.get(instance.id) ?? [];
     const boundHeight = stackSpan(bound.length, processDims.height, processGap);
-    return { instance, bound, height: Math.max(instanceDims.height, boundHeight) };
+    const container = containerByInstance.get(instance.id);
+    // 实例 + 容器竖排成一块；容器放在实例下面（同一列），
+    // 容器→实例的边短且不穿过进程列。
+    const selfHeight = container
+      ? instanceDims.height + containerGap + containerDims.height
+      : instanceDims.height;
+    return { instance, bound, container, selfHeight, height: Math.max(selfHeight, boundHeight) };
   });
   const totalHeight =
     blocks.reduce((sum, block) => sum + block.height, 0) +
@@ -396,7 +412,14 @@ export function computeServiceLayout(graph: HostProcessTopologyGraph): FocusLayo
   let cursor = -totalHeight / 2;
   for (const block of blocks) {
     const center = cursor + block.height / 2;
-    positions[block.instance.id] = { x: instanceX, y: center };
+    const selfTop = center - block.selfHeight / 2;
+    positions[block.instance.id] = { x: instanceX, y: selfTop + instanceDims.height / 2 };
+    if (block.container) {
+      positions[block.container.id] = {
+        x: instanceX,
+        y: selfTop + instanceDims.height + containerGap + containerDims.height / 2,
+      };
+    }
     const boundHeight = stackSpan(block.bound.length, processDims.height, processGap);
     let processCursor = center - boundHeight / 2;
     for (const process of block.bound) {
@@ -406,11 +429,12 @@ export function computeServiceLayout(graph: HostProcessTopologyGraph): FocusLayo
     cursor += block.height + blockGap;
   }
 
+  const instanceLaneWidth = Math.max(instanceDims.width, containerDims.width);
   annotations.push({
     id: 'lane-service-instances',
-    x: instanceX - instanceDims.width / 2,
+    x: instanceX - instanceLaneWidth / 2,
     y: -totalHeight / 2 - 36,
-    width: instanceDims.width,
+    width: instanceLaneWidth,
     text: '服务实例',
     count: String(instances.length),
   });

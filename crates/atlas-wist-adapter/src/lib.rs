@@ -218,6 +218,9 @@ pub struct Process {
     pub machine_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity: Option<String>,
+    /// 进程所属容器（采集侧 `/proc/<pid>/cgroup` 推出来的），与 `containers[].id` 同一个 id。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_id: Option<String>,
 }
 
 /// 一个正在监听的地址。
@@ -735,6 +738,7 @@ fn build_processes(
             observed_at,
             machine_id: machine_id.map(str::to_string),
             identity,
+            container_id: attr(&resource.attributes, "container.id"),
         };
         upsert(&mut processes, key, process);
     }

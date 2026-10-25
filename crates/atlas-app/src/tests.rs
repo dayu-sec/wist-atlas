@@ -404,6 +404,69 @@ async fn http_router_returns_network_topology_for_a_segment() {
 }
 
 #[tokio::test]
+async fn service_topology_includes_the_container_holding_the_instance() {
+    let app = TopologyMonolith::new_in_memory();
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/atlas_edge_container_sample.jsonl");
+    app.replay_jsonl(fixture).unwrap();
+
+    let store = app.store().unwrap();
+    let service_id = store
+        .list_all_hosts(Page::default())
+        .unwrap()
+        .into_iter()
+        .next()
+        .map(|host| host.tenant_id)
+        .map(|tenant_id| {
+            store
+                .list_services(tenant_id, Page::default())
+                .unwrap()
+                .into_iter()
+                .find(|service| service.name == "nginx")
+                .unwrap()
+                .service_id
+        })
+        .unwrap();
+
+    let router = build_http_router(HttpAppState::new(app));
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/topology/service/{service_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let payload: Value = serde_json::from_slice(&body).unwrap();
+    let nodes = payload["data"]["nodes"].as_array().unwrap();
+    let edges = payload["data"]["edges"].as_array().unwrap();
+
+    let container_nodes: Vec<&Value> = nodes
+        .iter()
+        .filter(|node| node["objectKind"] == "ContainerRuntime")
+        .collect();
+    assert_eq!(container_nodes.len(), 1);
+    assert_eq!(container_nodes[0]["label"], "nginx");
+
+    let container_edges: Vec<&Value> = edges
+        .iter()
+        .filter(|edge| edge["edgeKind"] == "container_service_assoc")
+        .collect();
+    assert_eq!(container_edges.len(), 1);
+    let instance_node = nodes
+        .iter()
+        .find(|node| node["id"] == container_edges[0]["target"])
+        .unwrap();
+    assert_eq!(instance_node["objectKind"], "ServiceInstance");
+}
+
+#[tokio::test]
 async fn http_router_draws_the_container_layer_with_service_edges() {
     let app = TopologyMonolith::new_in_memory();
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
