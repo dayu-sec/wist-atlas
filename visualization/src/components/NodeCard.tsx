@@ -126,6 +126,9 @@ function HostCard({ node, stats }: { node: HostProcessTopologyNode; stats?: Host
   const os = [node.properties.osName, node.properties.osVersion].filter(Boolean).join(' ');
   const arch =
     stats?.arch ?? (typeof node.properties.arch === 'string' ? node.properties.arch : '');
+  // 网段视图里没有「当前主机」的聚合可借，规模数据挂在节点上；两者取有值的那个。
+  const segments = stats?.segments ?? optionalNumber(node.properties, 'segmentCount');
+  const processes = stats?.processes ?? optionalNumber(node.properties, 'processCount');
 
   return (
     <div className="flex h-full flex-col px-4 pb-3.5 pt-4">
@@ -160,12 +163,21 @@ function HostCard({ node, stats }: { node: HostProcessTopologyNode; stats?: Host
       </div>
 
       <div className="mt-auto grid grid-cols-3 gap-2 border-t border-[#f2f4f7] pt-3">
-        <HostStat value={stats?.segments} label="网段" />
-        <HostStat value={stats?.processes} label="进程" />
+        <HostStat value={segments} label="网段" />
+        <HostStat value={processes} label="进程" />
         <HostStat value={stats?.groups} label="分组" />
       </div>
     </div>
   );
+}
+
+/** 节点属性里的可选数字：没有这个键就返回 undefined（而不是 0）——
+ * 「没测」和「测出来是 0」在资产界面上是两件事。 */
+function optionalNumber(properties: Record<string, unknown>, key: string): number | undefined {
+  const raw = properties[key];
+  if (raw === undefined || raw === null) return undefined;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : undefined;
 }
 
 function HostStat({ value, label }: { value?: number; label: string }) {

@@ -12,7 +12,10 @@ use uuid::Uuid;
 
 use crate::TopologyMonolith;
 use crate::cli::parse_uuid_arg;
-use crate::graph::{HostProcessTopologyGraph, build_host_process_topology_graph_async};
+use crate::graph::{
+    HostProcessTopologyGraph, build_host_process_topology_graph_async,
+    build_network_topology_graph_async,
+};
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct VisualizationEnvelope {
@@ -408,6 +411,52 @@ where
     }
 }
 
+async fn get_network_topology(
+    State(state): State<HttpAppState>,
+    AxumPath(segment_id): AxumPath<String>,
+) -> Response {
+    let segment_id = match parse_uuid_arg(&segment_id) {
+        Ok(segment_id) => segment_id,
+        Err(err) => return json_error(StatusCode::BAD_REQUEST, err.to_string()),
+    };
+
+    match &state.app {
+        TopologyMonolith::Memory(store) => {
+            network_topology_response(store.clone(), segment_id).await
+        }
+        TopologyMonolith::PostgresMock(store) => {
+            network_topology_response(store.clone(), segment_id).await
+        }
+        TopologyMonolith::PostgresLive(store) => {
+            network_topology_response(store.clone(), segment_id).await
+        }
+    }
+}
+
+/// 网段焦点图：一个网段 + 连在它上面的主机。
+///
+/// 与主机焦点图方向相反（那边是「这台机接在哪些网段」），但共用同一套图形状，
+/// 前端不需要新的节点类型。
+async fn network_topology_response<S>(store: S, segment_id: Uuid) -> Response
+where
+    S: Clone + AsyncCatalogStore + AsyncRuntimeStore + AsyncGovernanceStore,
+{
+    match build_network_topology_graph_async(store, segment_id).await {
+        Ok(Some(graph)) => {
+            let payload = VisualizationEnvelope {
+                status: "ok",
+                data: graph,
+            };
+            (StatusCode::OK, Json(payload)).into_response()
+        }
+        Ok(None) => json_error(
+            StatusCode::NOT_FOUND,
+            format!("network segment {segment_id} not found"),
+        ),
+        Err(err) => json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+    }
+}
+
 fn json_error(status: StatusCode, message: String) -> Response {
     (
         status,
@@ -506,5 +555,6 @@ pub(crate) fn build_http_router(state: HttpAppState) -> Router {
             "/api/topology/host/{id}/processes",
             get(get_host_process_topology),
         )
+        .route("/api/topology/network/{id}", get(get_network_topology))
         .with_state(state)
 }

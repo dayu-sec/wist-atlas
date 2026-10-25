@@ -9,6 +9,7 @@ use uuid::Uuid;
 use crate::{AppResult, materialization_missing};
 
 mod async_build;
+mod network;
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct HostProcessTopologyGraph {
@@ -48,6 +49,7 @@ pub(crate) struct HostProcessTopologyMetadata {
 }
 
 pub(crate) use async_build::build_host_process_topology_graph_async;
+pub(crate) use network::build_network_topology_graph_async;
 
 pub(crate) fn build_visualization_graph<S>(store: S) -> AppResult<HostProcessTopologyGraph>
 where

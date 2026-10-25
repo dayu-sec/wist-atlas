@@ -160,6 +160,12 @@ export default function TopologyCanvas({
 
   const hostStats = useMemo<HostStats | undefined>(() => {
     if (!visibleGraph) return undefined;
+    // 这些数字是「当前这张图的汇总」，不是「某一台主机的指标」。图上多于一台主机时
+    // （网段视图 / 总览）它们描不进某一张卡，不如不传 —— 卡片会回退到节点自带的属性。
+    const hostCount = visibleGraph.nodes.filter(
+      (node) => node.objectKind === 'HostInventory',
+    ).length;
+    if (hostCount !== 1) return undefined;
     const summary = visibleGraph.nodes.find((node) => node.objectKind === 'ProcessSummary');
     return {
       segments: visibleGraph.nodes.filter((node) => node.objectKind === 'NetworkSegment').length,

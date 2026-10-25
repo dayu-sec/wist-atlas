@@ -17,6 +17,10 @@ type Props = {
   loadedProcessGroups: LoadedProcessGroupsState | null;
   onClose: () => void;
   onExpand: (nodeId: string) => void;
+  /** 网段节点：切到「这个网段里有哪些机器」。 */
+  onOpenNetwork?: (segmentObjectId: string) => void;
+  /** 主机节点：在网段视图里反着切回那台主机的聚焦图。 */
+  onFocusHost?: (hostObjectId: string) => void;
 };
 
 export default function NodeDetailPanel({
@@ -27,6 +31,8 @@ export default function NodeDetailPanel({
   loadedProcessGroups,
   onClose,
   onExpand,
+  onOpenNetwork,
+  onFocusHost,
 }: Props) {
   if (!node) return null;
 
@@ -86,8 +92,32 @@ export default function NodeDetailPanel({
         ) : (
           <PropertiesDetail node={node} />
         )}
+
+        {node.objectKind === 'NetworkSegment' && onOpenNetwork ? (
+          <DrillButton onClick={() => onOpenNetwork(node.objectId)}>
+            查看该网段里的主机
+          </DrillButton>
+        ) : null}
+        {node.objectKind === 'HostInventory' && onFocusHost ? (
+          <DrillButton onClick={() => onFocusHost(node.objectId)}>
+            聚焦这台主机
+          </DrillButton>
+        ) : null}
       </div>
     </aside>
+  );
+}
+
+function DrillButton({ children, onClick }: { children: React.ReactNode; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="mt-4 flex w-full items-center justify-between rounded-lg border border-line bg-[#fcfcfd] px-3 py-2 text-[11.5px] font-medium text-[#344054] transition-colors hover:border-brand/40 hover:bg-white hover:text-brand"
+    >
+      {children}
+      <ArrowRightIcon className="size-3.5" />
+    </button>
   );
 }
 

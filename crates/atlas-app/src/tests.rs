@@ -331,6 +331,95 @@ fn print_first_host_process_topology_prints_service_endpoints() {
 }
 
 #[tokio::test]
+async fn http_router_returns_network_topology_for_a_segment() {
+    let app = TopologyMonolith::new_in_memory();
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/atlas_edge_network_hosts_sample.jsonl");
+    app.replay_jsonl(fixture).unwrap();
+
+    // 同一网段上的两台主机：网段视图应该把两台都带出来。
+    let store = app.store().unwrap();
+    let tenant_id = store
+        .list_all_hosts(Page::default())
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap()
+        .tenant_id;
+    let segment_id = store
+        .list_network_segments(tenant_id, Page::default())
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap()
+        .network_segment_id;
+
+    let router = build_http_router(HttpAppState::new(app));
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/topology/network/{segment_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let payload: Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(payload["status"], "ok");
+    assert_eq!(payload["data"]["metadata"]["hostCount"], 2);
+    let nodes = payload["data"]["nodes"].as_array().unwrap();
+    assert_eq!(
+        nodes
+            .iter()
+            .filter(|node| node["objectKind"] == "NetworkSegment")
+            .count(),
+        1
+    );
+    assert_eq!(
+        nodes
+            .iter()
+            .filter(|node| node["objectKind"] == "HostInventory")
+            .count(),
+        2
+    );
+    // 每个主机到网段一条关联边，边上带接口名（界面靠它显示 eth0 而不是 CIDR）。
+    let edges = payload["data"]["edges"].as_array().unwrap();
+    assert_eq!(edges.len(), 2);
+    assert!(
+        edges
+            .iter()
+            .all(|edge| edge["edgeKind"] == "host_network_assoc")
+    );
+    assert!(
+        edges
+            .iter()
+            .all(|edge| edge["properties"]["ifaceName"] == "eth0")
+    );
+}
+
+#[tokio::test]
+async fn http_router_returns_404_for_unknown_network() {
+    let app = TopologyMonolith::new_in_memory();
+    let router = build_http_router(HttpAppState::new(app));
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/topology/network/{}", uuid::Uuid::new_v4()))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn http_router_lists_hosts_with_scale_metrics() {
     let app = TopologyMonolith::new_in_memory();
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

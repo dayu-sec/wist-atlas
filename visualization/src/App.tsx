@@ -128,24 +128,37 @@ export default function App() {
     });
   }, [hostQueryId, dispatch]);
 
+  /** 切到「这个网段里有哪些机器」。直接从节点点进来时拿节点上的 objectId，
+   * 走表单时拿输入框的值。 */
+  const openNetwork = useCallback(
+    (segmentObjectId: string) => {
+      const trimmed = segmentObjectId.trim();
+      if (!trimmed) return;
+      setNetworkId(trimmed);
+      dispatch({ type: 'FETCH_GRAPH_START' });
+      fetchNetworkTopology(trimmed).then((res) => {
+        if (res.status === 'ok') {
+          setExpandedHosts(new Set());
+          setExpandedGroups(new Set());
+          setExpandedServices(new Set());
+          setOverviewGroupsByHost({});
+          setTruncatedGroupsByHost({});
+          setLoadedGroupsByHost({});
+          setGroupPageLoadingByHost({});
+          dispatch({ type: 'FETCH_GRAPH_SUCCESS', graph: res.data });
+        } else {
+          dispatch({ type: 'FETCH_GRAPH_ERROR', error: `[${res.code}] ${res.message}` });
+        }
+      });
+    },
+    [dispatch],
+  );
+
   const queryNetwork = useCallback(() => {
     const trimmed = networkId.trim();
     if (!trimmed) return;
-    dispatch({ type: 'FETCH_GRAPH_START' });
-    fetchNetworkTopology(trimmed).then((res) => {
-      if (res.status === 'ok') {
-        setExpandedHosts(new Set());
-        setExpandedGroups(new Set());
-        setOverviewGroupsByHost({});
-        setTruncatedGroupsByHost({});
-        setLoadedGroupsByHost({});
-        setGroupPageLoadingByHost({});
-        dispatch({ type: 'FETCH_GRAPH_SUCCESS', graph: res.data });
-      } else {
-        dispatch({ type: 'FETCH_GRAPH_ERROR', error: `[${res.code}] ${res.message}` });
-      }
-    });
-  }, [networkId, dispatch]);
+    openNetwork(trimmed);
+  }, [networkId, openNetwork]);
 
   // 关键：选中节点/输入搜索词都会让 App 重渲染，如果把 displayGraph 每次重建，
   // 画布的「图结构签名」就每次都变，点一下节点就会重新布局。
@@ -509,6 +522,8 @@ export default function App() {
             processViewMode={getProcessViewMode(selectedNode, loadedGroupsByHost, groupPageLoadingByHost)}
             loadedProcessGroups={getSelectedLoadedProcessGroups(selectedNode, loadedGroupsByHost)}
             onClose={() => dispatch({ type: 'SELECT_NODE', nodeId: null })}
+            onOpenNetwork={openNetwork}
+            onFocusHost={(hostObjectId) => setHostId(hostObjectId)}
             onExpand={handleExpandNode}
           />
 
