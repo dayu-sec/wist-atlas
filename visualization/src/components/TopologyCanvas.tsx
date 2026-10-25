@@ -5,7 +5,12 @@ import coseBilkent from 'cytoscape-cose-bilkent';
 import type { HostProcessTopologyGraph, LayerKind, NodeKind } from '../types/domain';
 import { graphToCyElements } from '../utils/graph-to-cy';
 import { buildSearchIndex } from '../utils/search';
-import { computeFocusLayout, computeRuntimeLayout, type LaneAnnotation } from '../utils/focus-layout';
+import {
+  computeFocusLayout,
+  computeRuntimeLayout,
+  computeServiceLayout,
+  type LaneAnnotation,
+} from '../utils/focus-layout';
 import { nodeDims } from '../utils/presentation';
 import NodeCard, { type GraphNodeHint, type HostStats } from './NodeCard';
 import { FitIcon, MinusIcon, PlusIcon } from './icons';
@@ -312,7 +317,10 @@ export default function TopologyCanvas({
     cy.elements().remove();
     cy.add(graphToCyElements(current));
 
-    const focus = computeFocusLayout(current) ?? computeRuntimeLayout(current);
+    const focus =
+      computeFocusLayout(current) ??
+      computeServiceLayout(current) ??
+      computeRuntimeLayout(current);
     // 先写进 ref 再 fit：fit 时 React 还没提交 setAnnotations，拿 state 会慢一帧。
     annotationsRef.current = focus?.annotations ?? [];
     setAnnotations(focus?.annotations ?? []);

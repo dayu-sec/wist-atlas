@@ -6,7 +6,7 @@ import type {
 } from '../types/domain';
 import { getNodeStyle } from '../utils/colors';
 import { formatAddressFamily, parseTopPrograms } from '../utils/presentation';
-import { basename, formatCount, truncate } from '../utils/format';
+import { basename, formatCount, formatRelative, truncate } from '../utils/format';
 import { ArrowRightIcon, CloseIcon, KindGlyph } from './icons';
 
 type Props = {
@@ -19,6 +19,8 @@ type Props = {
   onExpand: (nodeId: string) => void;
   /** 网段节点：切到「这个网段里有哪些机器」。 */
   onOpenNetwork?: (segmentObjectId: string) => void;
+  /** 服务节点：切到「这个服务跑在哪些主机上」。 */
+  onOpenService?: (serviceObjectId: string) => void;
   /** 主机节点：在网段视图里反着切回那台主机的聚焦图。 */
   onFocusHost?: (hostObjectId: string) => void;
 };
@@ -32,6 +34,7 @@ export default function NodeDetailPanel({
   onClose,
   onExpand,
   onOpenNetwork,
+  onOpenService,
   onFocusHost,
 }: Props) {
   if (!node) return null;
@@ -77,6 +80,8 @@ export default function NodeDetailPanel({
           <HostDetail topology={hostTopology} />
         ) : node.objectKind === 'NetworkSegment' ? (
           <NetworkDetail node={node} graph={graph} />
+        ) : node.objectKind === 'ServiceEntity' ? (
+          <ServiceDetail node={node} graph={graph} />
         ) : node.objectKind === 'ProcessSummary' ? (
           <RuntimeDetail
             node={node}
@@ -96,6 +101,11 @@ export default function NodeDetailPanel({
         {node.objectKind === 'NetworkSegment' && onOpenNetwork ? (
           <DrillButton onClick={() => onOpenNetwork(node.objectId)}>
             查看该网段里的主机
+          </DrillButton>
+        ) : null}
+        {node.objectKind === 'ServiceEntity' && onOpenService ? (
+          <DrillButton onClick={() => onOpenService(node.objectId)}>
+            查看监听详情
           </DrillButton>
         ) : null}
         {node.objectKind === 'HostInventory' && onFocusHost ? (
@@ -229,6 +239,107 @@ function NetworkDetail({ node, graph }: { node: HostProcessTopologyNode; graph: 
           <span className="font-mono text-[10px] break-all">{node.objectId}</span>
         </Field>
       </Section>
+    </div>
+  );
+}
+
+function ServiceDetail({
+  node,
+  graph,
+}: {
+  node: HostProcessTopologyNode;
+  graph: HostProcessTopologyGraph | null;
+}) {
+  const endpoints = endpointStrings(node.properties);
+  const instanceCount = asNumber(node.properties.instanceCount);
+
+  // 实例和主机都从图里反查，不从节点属性重建：属性只保证「这个节点自己知道什么」，
+  // 而「还跑在哪些主机上」本来就是图上的事实。
+  const instanceIds = new Set(
+    (graph?.edges ?? [])
+      .filter((edge) => edge.edgeKind === 'service_instance_assoc' && edge.target === node.id)
+      .map((edge) => edge.source),
+  );
+  const instances = (graph?.nodes ?? []).filter((item) => instanceIds.has(item.id));
+  const hostCount = (graph?.nodes ?? []).filter((item) => item.objectKind === 'HostInventory').length;
+
+  return (
+    <div className="space-y-5">
+      <Section title="服务">
+        <Field label="类型">{asString(node.properties.serviceType) ?? '—'}</Field>
+        <Field label="边界">{asString(node.properties.boundary) ?? '—'}</Field>
+        <Field label="外部引用">
+          <span className="font-mono text-[10px] break-all">
+            {asString(node.properties.externalRef) ?? '—'}
+          </span>
+        </Field>
+      </Section>
+
+      <Section title="规模">
+        <div className="grid grid-cols-2 gap-2">
+          <Metric label="实例" value={instanceCount ?? instances.length} />
+          <Metric label="主机" value={hostCount} />
+        </div>
+      </Section>
+
+      <Section title="监听端点">
+        {endpoints.length === 0 ? (
+          <p className="text-[11px] text-[#98a2b3]">没有采集到监听地址</p>
+        ) : (
+          <ul className="space-y-1">
+            {endpoints.map((endpoint) => (
+              <li key={endpoint} className="font-mono text-[10.5px] text-[#475467]">
+                {endpoint}
+              </li>
+            ))}
+          </ul>
+        )}
+      </Section>
+
+      <Section title={`运行主机（${instances.length}）`}>
+        {instances.length === 0 ? (
+          <p className="text-[11px] text-[#98a2b3]">没有实例，可能已停止监听</p>
+        ) : (
+          <ul className="space-y-1.5">
+            {instances.map((instance) => {
+              const hostName = asString(instance.properties.hostName);
+              const instanceEndpoints = endpointStrings(instance.properties);
+              const lastSeenAt = asString(instance.properties.lastSeenAt);
+              return (
+                <li
+                  key={instance.id}
+                  className="rounded-[8px] border border-[#f2f4f7] bg-[#f9fafb] px-2.5 py-1.5"
+                >
+                  <div className="flex items-baseline justify-between gap-2">
+                    <span
+                      className="truncate text-[11px] font-medium text-[#344054]"
+                      title={hostName ?? undefined}
+                    >
+                      {hostName ?? '未知主机'}
+                    </span>
+                    <span className="shrink-0 text-[9.5px] text-[#98a2b3]">
+                      {formatRelative(lastSeenAt)}
+                    </span>
+                  </div>
+                  {instanceEndpoints.length > 0 && (
+                    <div className="mt-0.5 font-mono text-[9.5px] leading-3 text-[#98a2b3]">
+                      {instanceEndpoints.join(' · ')}
+                    </div>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </Section>
+
+      <Section title="标识">
+        <Field label="对象 ID">
+          <span className="font-mono text-[10px] break-all">{node.objectId}</span>
+        </Field>
+      </Section>
+
+      <GraphId id={node.id} />
     </div>
   );
 }
@@ -466,6 +577,21 @@ function formatValue(value: unknown) {
 function asString(value: unknown): string | null {
   if (typeof value !== 'string' || value.length === 0) return null;
   return value;
+}
+
+/** `endpoints` 是后端摊平后的 `{protocol, address, port}` 全集。 */
+function endpointStrings(properties: Record<string, unknown>): string[] {
+  const raw = properties.endpoints;
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((item) =>
+      typeof item === 'object' && item !== null ? (item as Record<string, unknown>) : null,
+    )
+    .filter((item): item is Record<string, unknown> => Boolean(item))
+    .map((item) =>
+      `${String(item.protocol ?? 'tcp')}/${String(item.port ?? '')} ${String(item.address ?? '')}`.trim(),
+    )
+    .filter((label) => label.length > 0);
 }
 
 function asNumber(value: unknown): number | null {

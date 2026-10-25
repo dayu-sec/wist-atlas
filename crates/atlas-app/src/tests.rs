@@ -420,6 +420,127 @@ async fn http_router_returns_404_for_unknown_network() {
 }
 
 #[tokio::test]
+async fn http_router_returns_service_topology_across_hosts() {
+    let app = TopologyMonolith::new_in_memory();
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/atlas_edge_service_shared_sample.jsonl");
+    app.replay_jsonl(fixture).unwrap();
+
+    // 同一套 sshd 跑在两台主机上：服务视图要把两台主机、两个实例、两个监听进程都带出来。
+    let store = app.store().unwrap();
+    let tenant_id = store
+        .list_all_hosts(Page::default())
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap()
+        .tenant_id;
+    let service_id = store
+        .list_services(tenant_id, Page::default())
+        .unwrap()
+        .into_iter()
+        .find(|service| service.name == "sshd")
+        .unwrap()
+        .service_id;
+
+    let router = build_http_router(HttpAppState::new(app));
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/topology/service/{service_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let payload: Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(payload["status"], "ok");
+    assert_eq!(payload["data"]["metadata"]["hostCount"], 2);
+    let nodes = payload["data"]["nodes"].as_array().unwrap();
+    assert_eq!(
+        nodes
+            .iter()
+            .filter(|node| node["objectKind"] == "ServiceEntity")
+            .count(),
+        1
+    );
+    assert_eq!(
+        nodes
+            .iter()
+            .filter(|node| node["objectKind"] == "ServiceInstance")
+            .count(),
+        2
+    );
+    assert_eq!(
+        nodes
+            .iter()
+            .filter(|node| node["objectKind"] == "HostInventory")
+            .count(),
+        2
+    );
+    assert_eq!(
+        nodes
+            .iter()
+            .filter(|node| node["objectKind"] == "ProcessRuntime")
+            .count(),
+        2
+    );
+
+    let edges = payload["data"]["edges"].as_array().unwrap();
+    for edge_kind in [
+        "host_service_assoc",
+        "service_instance_assoc",
+        "process_service_assoc",
+    ] {
+        assert_eq!(
+            edges
+                .iter()
+                .filter(|edge| edge["edgeKind"] == edge_kind)
+                .count(),
+            2,
+            "{edge_kind} should appear once per host/instance"
+        );
+    }
+
+    // 服务节点上的端点取所有实例的并集并去重：0.0.0.0:22 两台各一份合成一个。
+    let service_node = nodes
+        .iter()
+        .find(|node| node["objectKind"] == "ServiceEntity")
+        .unwrap();
+    let endpoints = service_node["properties"]["endpoints"].as_array().unwrap();
+    assert_eq!(endpoints.len(), 2);
+    assert!(
+        endpoints
+            .iter()
+            .any(|endpoint| endpoint["port"] == 22 && endpoint["address"] == "10.30.0.11")
+    );
+    // nginx 是另一个服务，不该被卷进 sshd 的视图。
+    assert!(!endpoints.iter().any(|endpoint| endpoint["port"] == 8080));
+}
+
+#[tokio::test]
+async fn http_router_returns_404_for_unknown_service() {
+    let app = TopologyMonolith::new_in_memory();
+    let router = build_http_router(HttpAppState::new(app));
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/topology/service/{}", uuid::Uuid::new_v4()))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn http_router_lists_hosts_with_scale_metrics() {
     let app = TopologyMonolith::new_in_memory();
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

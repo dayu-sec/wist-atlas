@@ -17,6 +17,7 @@ import {
   fetchHosts,
   fetchHostTopology,
   fetchNetworkTopology,
+  fetchServiceTopology,
   loadFixture,
 } from './api/client';
 import type {
@@ -48,6 +49,7 @@ export default function App() {
   const [hostQueryId, setHostQueryId] = useState('');
   const [hosts, setHosts] = useState<HostSummaryDto[]>([]);
   const [networkId, setNetworkId] = useState('');
+  const [serviceId, setServiceId] = useState('');
   const [expandedHosts, setExpandedHosts] = useState<Set<string>>(new Set());
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const [expandedServices, setExpandedServices] = useState<Set<string>>(new Set());
@@ -159,6 +161,38 @@ export default function App() {
     if (!trimmed) return;
     openNetwork(trimmed);
   }, [networkId, openNetwork]);
+
+  /** 切到「这个服务跑在哪些主机上」：服务卡上写着 `tcp/22 0.0.0.0`，
+   * 点进去才看得到是谁在监听、同一套服务还有哪几台机在跑。 */
+  const openService = useCallback(
+    (serviceObjectId: string) => {
+      const trimmed = serviceObjectId.trim();
+      if (!trimmed) return;
+      setServiceId(trimmed);
+      dispatch({ type: 'FETCH_GRAPH_START' });
+      fetchServiceTopology(trimmed).then((res) => {
+        if (res.status === 'ok') {
+          setExpandedHosts(new Set());
+          setExpandedGroups(new Set());
+          setExpandedServices(new Set());
+          setOverviewGroupsByHost({});
+          setTruncatedGroupsByHost({});
+          setLoadedGroupsByHost({});
+          setGroupPageLoadingByHost({});
+          dispatch({ type: 'FETCH_GRAPH_SUCCESS', graph: res.data });
+        } else {
+          dispatch({ type: 'FETCH_GRAPH_ERROR', error: `[${res.code}] ${res.message}` });
+        }
+      });
+    },
+    [dispatch],
+  );
+
+  const queryService = useCallback(() => {
+    const trimmed = serviceId.trim();
+    if (!trimmed) return;
+    openService(trimmed);
+  }, [serviceId, openService]);
 
   // 关键：选中节点/输入搜索词都会让 App 重渲染，如果把 displayGraph 每次重建，
   // 画布的「图结构签名」就每次都变，点一下节点就会重新布局。
@@ -472,6 +506,34 @@ export default function App() {
                   </button>
                 </div>
               </form>
+
+              <form
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  queryService();
+                }}
+                className="space-y-1.5"
+              >
+                <label className="block text-[9.5px] text-[#98a2b3]" htmlFor="service-id-input">
+                  服务对象 ID
+                </label>
+                <div className="flex gap-1.5">
+                  <input
+                    id="service-id-input"
+                    type="text"
+                    placeholder="UUID"
+                    value={serviceId}
+                    onChange={(event) => setServiceId(event.target.value)}
+                    className="h-7 min-w-0 flex-1 rounded-[7px] border border-line bg-[#f9fafb] px-2 font-mono text-[10.5px] text-ink placeholder:text-[#b4bcc8] focus:border-brand focus:bg-surface focus:outline-none focus:ring-2 focus:ring-brand/15"
+                  />
+                  <button
+                    type="submit"
+                    className="h-7 shrink-0 rounded-[7px] border border-line bg-surface px-2.5 text-[10.5px] font-medium text-[#475467] transition-colors hover:border-[#d0d5dd] hover:bg-[#f9fafb]"
+                  >
+                    查询
+                  </button>
+                </div>
+              </form>
             </div>
           </details>
 
@@ -523,6 +585,7 @@ export default function App() {
             loadedProcessGroups={getSelectedLoadedProcessGroups(selectedNode, loadedGroupsByHost)}
             onClose={() => dispatch({ type: 'SELECT_NODE', nodeId: null })}
             onOpenNetwork={openNetwork}
+            onOpenService={openService}
             onFocusHost={(hostObjectId) => setHostId(hostObjectId)}
             onExpand={handleExpandNode}
           />
@@ -581,6 +644,11 @@ function buildDisplayGraph(
   groupPageLoadingByHost: Record<string, boolean>,
 ): HostProcessTopologyGraph | null {
   if (!source) return null;
+
+  // 服务焦点图（服务 → 实例 → 进程 → 主机）没有进程树可顺，
+  // 跟着主机视图那套走会把实例和监听进程全过滤掉，只剩「主机 — 服务」一条边。
+  const serviceFocus = findServiceFocus(source);
+  if (serviceFocus) return buildServiceFocusDisplay(source, serviceFocus.id);
 
   const nodesById = new Map(source.nodes.map((node) => [node.id, node]));
   const processSummaryEdgesByHost = new Map<string, HostProcessTopologyEdge[]>();
@@ -879,6 +947,76 @@ function buildDisplayGraph(
     edges: displayEdges,
     metadata: source.metadata,
   };
+}
+
+/**
+ * 服务焦点图的识别：整张图没有进程汇总/分组（那是主机视图），
+ * 且恰好一个服务节点带实例。网段焦点图没有服务节点，不会误判。
+ */
+function findServiceFocus(graph: HostProcessTopologyGraph): HostProcessTopologyNode | null {
+  if (
+    graph.nodes.some(
+      (node) => node.objectKind === 'ProcessSummary' || node.objectKind === 'ProcessGroup',
+    )
+  ) {
+    return null;
+  }
+  const services = graph.nodes.filter((node) => node.objectKind === 'ServiceEntity');
+  if (services.length !== 1) return null;
+  const service = services[0];
+  const hasInstance = graph.edges.some(
+    (edge) => edge.edgeKind === 'service_instance_assoc' && edge.target === service.id,
+  );
+  return hasInstance ? service : null;
+}
+
+/**
+ * 服务焦点图的装配：服务 + 它的全部实例 + 监听进程 + 所在主机，一个都不筛。
+ *
+ * 主机视图要按 TopN 收服务（一台开发机 28 个），这里反过来：用户点进来就是想看全，
+ * 实例和进程就是这张图的主题，不能再藏。
+ */
+function buildServiceFocusDisplay(
+  source: HostProcessTopologyGraph,
+  serviceNodeId: string,
+): HostProcessTopologyGraph {
+  const nodesById = new Map(source.nodes.map((node) => [node.id, node]));
+  const nodes: HostProcessTopologyNode[] = [];
+  const edges: HostProcessTopologyEdge[] = [];
+  const included = new Set<string>();
+
+  const addNode = (node: HostProcessTopologyNode | undefined) => {
+    if (!node || included.has(node.id)) return;
+    nodes.push(node);
+    included.add(node.id);
+  };
+  const addEdge = (edge: HostProcessTopologyEdge) => {
+    if (!included.has(edge.source) || !included.has(edge.target)) return;
+    if (edges.some((item) => item.id === edge.id)) return;
+    edges.push(edge);
+  };
+
+  addNode(nodesById.get(serviceNodeId));
+  for (const edge of source.edges) {
+    if (edge.edgeKind === 'service_instance_assoc' && edge.target === serviceNodeId) {
+      addNode(nodesById.get(edge.source));
+      addEdge(edge);
+    }
+  }
+  for (const edge of source.edges) {
+    if (edge.edgeKind === 'process_service_assoc') {
+      addNode(nodesById.get(edge.source));
+      addEdge(edge);
+    }
+  }
+  for (const edge of source.edges) {
+    if (edge.edgeKind === 'host_service_assoc' && edge.target === serviceNodeId) {
+      addNode(nodesById.get(edge.source));
+      addEdge(edge);
+    }
+  }
+
+  return { nodes, edges, metadata: source.metadata };
 }
 
 /**

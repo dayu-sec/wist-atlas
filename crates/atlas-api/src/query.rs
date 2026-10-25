@@ -430,8 +430,10 @@ mod helpers;
 use helpers::{
     build_host_process_groups_page_view, build_host_process_overview_view, build_host_services,
     build_host_services_async, build_process_groups, list_all_process_runtime_states,
-    list_all_process_runtime_states_async,
 };
+// 焦点图的组装在 `atlas-app`，但「一台机的现役进程」这条读取语义只该有一份实现，
+// 所以在 crate 根上重新导出，避免两边各写一遍 stale 过滤和翻页口径。
+pub use helpers::list_all_process_runtime_states_async;
 
 /// 一次取多少个主机的进程计数。主机数通常个位数，但这个查询也要翻页 ——
 /// 只取第一页会让第 101 台之后的主机在列表里显示成「0 进程」。

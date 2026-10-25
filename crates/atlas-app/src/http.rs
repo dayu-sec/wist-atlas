@@ -14,7 +14,7 @@ use crate::TopologyMonolith;
 use crate::cli::parse_uuid_arg;
 use crate::graph::{
     HostProcessTopologyGraph, build_host_process_topology_graph_async,
-    build_network_topology_graph_async,
+    build_network_topology_graph_async, build_service_topology_graph_async,
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -457,6 +457,52 @@ where
     }
 }
 
+async fn get_service_topology(
+    State(state): State<HttpAppState>,
+    AxumPath(service_id): AxumPath<String>,
+) -> Response {
+    let service_id = match parse_uuid_arg(&service_id) {
+        Ok(service_id) => service_id,
+        Err(err) => return json_error(StatusCode::BAD_REQUEST, err.to_string()),
+    };
+
+    match &state.app {
+        TopologyMonolith::Memory(store) => {
+            service_topology_response(store.clone(), service_id).await
+        }
+        TopologyMonolith::PostgresMock(store) => {
+            service_topology_response(store.clone(), service_id).await
+        }
+        TopologyMonolith::PostgresLive(store) => {
+            service_topology_response(store.clone(), service_id).await
+        }
+    }
+}
+
+/// 服务焦点图：一个服务 + 它的实例 + 监听进程 + 所在主机。
+///
+/// 与主机焦点图方向相反（那边是「这台机上有哪些服务」），但共用同一套节点 id
+/// 约定与边类型，前端不需要新的渲染分支。
+async fn service_topology_response<S>(store: S, service_id: Uuid) -> Response
+where
+    S: Clone + AsyncCatalogStore + AsyncRuntimeStore + AsyncGovernanceStore,
+{
+    match build_service_topology_graph_async(store, service_id).await {
+        Ok(Some(graph)) => {
+            let payload = VisualizationEnvelope {
+                status: "ok",
+                data: graph,
+            };
+            (StatusCode::OK, Json(payload)).into_response()
+        }
+        Ok(None) => json_error(
+            StatusCode::NOT_FOUND,
+            format!("service {service_id} not found"),
+        ),
+        Err(err) => json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+    }
+}
+
 fn json_error(status: StatusCode, message: String) -> Response {
     (
         status,
@@ -556,5 +602,6 @@ pub(crate) fn build_http_router(state: HttpAppState) -> Router {
             get(get_host_process_topology),
         )
         .route("/api/topology/network/{id}", get(get_network_topology))
+        .route("/api/topology/service/{id}", get(get_service_topology))
         .with_state(state)
 }

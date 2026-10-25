@@ -183,6 +183,122 @@ export function computeRuntimeLayout(graph: HostProcessTopologyGraph): FocusLayo
   return { positions, annotations };
 }
 
+/**
+ * 服务焦点版式：主机（左栏）← 服务（中）→ 实例（右栏）→ 监听进程（最右）。
+ *
+ * 这张图回答的是「谁在监听、这套服务还跑在哪些主机上」，所以服务必须居中：
+ * 左边是它落到哪台机器，右边是实例与持有 socket 的进程。
+ * 实例与它的进程按块对齐（而不是两栏各自竖向排），否则连线会全体交叉。
+ */
+export function computeServiceLayout(graph: HostProcessTopologyGraph): FocusLayout | null {
+  const service = graph.nodes.find((node) => node.objectKind === 'ServiceEntity');
+  if (!service) return null;
+  // 主机视图也有服务节点，但它带运行时汇总/分组；服务焦点图没有进程树。
+  if (
+    graph.nodes.some(
+      (node) => node.objectKind === 'ProcessSummary' || node.objectKind === 'ProcessGroup',
+    )
+  ) {
+    return null;
+  }
+  // 溢出卡片是伪节点，它的图不套这个版式。
+  if (service.properties.collapsed === true) return null;
+
+  const hosts = graph.nodes.filter((node) => node.objectKind === 'HostInventory');
+  const instances = graph.nodes.filter((node) => node.objectKind === 'ServiceInstance');
+  if (hosts.length === 0 || instances.length === 0) return null;
+
+  const processes = graph.nodes.filter((node) => node.objectKind === 'ProcessRuntime');
+  if (hosts.length + instances.length + processes.length > FOCUS_LEAF_LIMIT) return null;
+
+  const nodesById = new Map(graph.nodes.map((node) => [node.id, node]));
+  const processesByInstance = new Map<string, HostProcessTopologyNode[]>();
+  for (const edge of graph.edges) {
+    if (edge.edgeKind !== 'process_service_assoc') continue;
+    const process = nodesById.get(edge.source);
+    if (!process) continue;
+    const bucket = processesByInstance.get(edge.target) ?? [];
+    bucket.push(process);
+    processesByInstance.set(edge.target, bucket);
+  }
+
+  const serviceDims = nodeDims(service.objectKind);
+  const positions: Record<string, GraphPoint> = { [service.id]: { x: 0, y: 0 } };
+  const annotations: LaneAnnotation[] = [];
+
+  // 左栏：主机。数量通常一两位，竖向堆叠足够。
+  const hostDims = nodeDims('HostInventory');
+  const hostX = -(serviceDims.width / 2 + LANE_GAP + hostDims.width / 2);
+  const hostSpan = stackSpan(hosts.length, hostDims.height, 16);
+  hosts.forEach((node, index) => {
+    positions[node.id] = {
+      x: hostX,
+      y: -hostSpan / 2 + hostDims.height / 2 + index * (hostDims.height + 16),
+    };
+  });
+  annotations.push({
+    id: 'lane-service-hosts',
+    x: hostX - hostDims.width / 2,
+    y: -hostSpan / 2 - 36,
+    width: hostDims.width,
+    text: '运行主机',
+    count: String(hosts.length),
+  });
+
+  // 右栏：实例竖向排，每个实例的监听进程紧贴在它右边。
+  const instanceDims = nodeDims('ServiceInstance');
+  const processDims = nodeDims('ProcessRuntime');
+  const instanceX = serviceDims.width / 2 + LANE_GAP + instanceDims.width / 2;
+  const processX =
+    instanceX + instanceDims.width / 2 + LANE_GAP * 0.6 + processDims.width / 2;
+  const blockGap = 24;
+  const processGap = 10;
+
+  const blocks = instances.map((instance) => {
+    const bound = processesByInstance.get(instance.id) ?? [];
+    const boundHeight = stackSpan(bound.length, processDims.height, processGap);
+    return { instance, bound, height: Math.max(instanceDims.height, boundHeight) };
+  });
+  const totalHeight =
+    blocks.reduce((sum, block) => sum + block.height, 0) +
+    blockGap * Math.max(0, blocks.length - 1);
+
+  let cursor = -totalHeight / 2;
+  for (const block of blocks) {
+    const center = cursor + block.height / 2;
+    positions[block.instance.id] = { x: instanceX, y: center };
+    const boundHeight = stackSpan(block.bound.length, processDims.height, processGap);
+    let processCursor = center - boundHeight / 2;
+    for (const process of block.bound) {
+      positions[process.id] = { x: processX, y: processCursor + processDims.height / 2 };
+      processCursor += processDims.height + processGap;
+    }
+    cursor += block.height + blockGap;
+  }
+
+  annotations.push({
+    id: 'lane-service-instances',
+    x: instanceX - instanceDims.width / 2,
+    y: -totalHeight / 2 - 36,
+    width: instanceDims.width,
+    text: '服务实例',
+    count: String(instances.length),
+  });
+  if (processes.length > 0) {
+    annotations.push({
+      id: 'lane-service-processes',
+      x: processX - processDims.width / 2,
+      y: -totalHeight / 2 - 36,
+      width: processDims.width,
+      text: '监听进程',
+      count: String(processes.length),
+    });
+  }
+
+  centerComposition(positions, annotations, graph);
+  return { positions, annotations };
+}
+
 function placeNetworkLane(
   segments: HostProcessTopologyNode[],
   hostDims: { width: number; height: number },

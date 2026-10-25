@@ -47,6 +47,11 @@ export async function fetchNetworkTopology(networkId: string): Promise<ApiRespon
   return get<HostProcessTopologyGraph>(`/topology/network/${networkId}`);
 }
 
+/** 服务焦点图：谁在监听、这套服务还跑在哪些主机上。 */
+export async function fetchServiceTopology(serviceId: string): Promise<ApiResponse<HostProcessTopologyGraph>> {
+  return get<HostProcessTopologyGraph>(`/topology/service/${serviceId}`);
+}
+
 // Dev-only mock (against Rust mock endpoint)
 export async function fetchMockHostTopology(): Promise<ApiResponse<HostProcessTopologyGraph>> {
   return get<HostProcessTopologyGraph>('/__mock/topology/host');

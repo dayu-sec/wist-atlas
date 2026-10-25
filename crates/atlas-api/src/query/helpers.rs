@@ -58,7 +58,7 @@ where
 /// 不是为了让它们继续出现在现役视图里。
 ///
 /// 分页必须按**原始**批大小算（`batch_len`）——按过滤后的算会跳过一大批活进程。
-pub(super) async fn list_all_process_runtime_states_async<S>(
+pub async fn list_all_process_runtime_states_async<S>(
     store: &S,
     host_id: Uuid,
 ) -> ApiResult<Vec<atlas_domain::ProcessRuntimeState>>
