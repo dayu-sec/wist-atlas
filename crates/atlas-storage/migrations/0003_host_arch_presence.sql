@@ -29,3 +29,8 @@ CREATE INDEX IF NOT EXISTS idx_host_inventory_live
 CREATE INDEX IF NOT EXISTS idx_host_inventory_scope_live
     ON host_inventory(tenant_id, ingest_scope)
     WHERE stale_at IS NULL;
+
+-- 记一笔，让 `schema_migrations` 说真话。
+INSERT INTO schema_migrations(version)
+VALUES ('0003_host_arch_presence')
+ON CONFLICT (version) DO NOTHING;

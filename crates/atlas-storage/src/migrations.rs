@@ -93,6 +93,24 @@ mod tests {
     }
 
     #[test]
+    fn every_migration_records_its_own_version() {
+        // `schema_migrations` 是「库里到底应用了哪些」的唯一凭据。0001 是在自己的 SQL 里
+        // 插的，后来的迁移漏掉过一次 —— 查库会以为只应用了第一版。
+        for migration in super::MIGRATIONS {
+            assert!(
+                migration.sql.contains(migration.version),
+                "{} 没有把自己记进 schema_migrations",
+                migration.version
+            );
+            assert!(
+                migration.sql.contains("ON CONFLICT"),
+                "{} 的版本插入必须幂等（迁移每次启动都会重放）",
+                migration.version
+            );
+        }
+    }
+
+    #[test]
     fn the_miss_counter_defaults_to_zero_so_legacy_rows_are_live() {
         // 升级前的存量主机没有计数：默认 0 = 存活，不能因为缺失列就把老资产全标退役。
         let sql = super::HOST_ARCH_PRESENCE_SQL;

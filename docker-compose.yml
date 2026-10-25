@@ -9,7 +9,9 @@ services:
       POSTGRES_PASSWORD: atlas
       PGDATA: /var/lib/postgresql/data/pgdata
     ports:
-      - "55432:5432"
+      # 主机端口可覆盖：本机已有其它产品的 postgres 占着 55432 时用
+      # `ATLAS_PG_PORT=55437 docker compose up -d`，同时记得给 DATABASE_URL 对应端口。
+      - "${ATLAS_PG_PORT:-55432}:5432"
     volumes:
       - wist_atlas_pgdata:/var/lib/postgresql/data
     healthcheck:

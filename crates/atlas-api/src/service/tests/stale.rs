@@ -691,3 +691,133 @@ fn incremental_mode_never_accumulates_host_misses() {
         "部分观测不能当成「主机不在了」"
     );
 }
+
+// ── 描述字段刷新（主机匹配到已有行时）──────────────────────────
+//
+// 这条是 4 帧真实数据跑出来的：`resolve_host_candidate` 匹配到已有主机时是**克隆旧行**，
+// 不显式刷新的话 `os_name` / `arch` 会永远停在第一次被看到时的值 —— 而那一次往往来自
+// 还没采这些属性的旧 agentd。单帧 E2E 发现不了，必须「先没有、后有」。
+
+#[test]
+fn descriptive_fields_are_refreshed_when_an_existing_host_is_seen_again() {
+    let service = TopologyIngestService::new_in_memory();
+    let tenant_id = TenantId(Uuid::new_v4());
+
+    // 第一帧：老 agentd，没有 os.* / arch。
+    service
+        .submit_and_materialize(envelope(
+            "ing-old",
+            "agent-1",
+            IngestMode::Snapshot,
+            tenant_id,
+            json!({
+                "hosts": [{
+                    "hostname": HOST_A,
+                    "machine_id": "machine-a",
+                    "external_ref": "machine-a"
+                }]
+            }),
+        ))
+        .expect("first ingest");
+
+    let before = host_snapshot(&service, tenant_id, HOST_A);
+    assert_eq!(before.0, None, "老 agentd 不报 os");
+
+    // 第二帧：升级后的 agentd，带 os.* 与 arch。
+    service
+        .submit_and_materialize(envelope(
+            "ing-new",
+            "agent-1",
+            IngestMode::Snapshot,
+            tenant_id,
+            json!({
+                "hosts": [{
+                    "hostname": HOST_A,
+                    "machine_id": "machine-a",
+                    "external_ref": "machine-a",
+                    "os_name": "macOS",
+                    "os_version": "26.6.2",
+                    "arch": "aarch64"
+                }]
+            }),
+        ))
+        .expect("second ingest");
+
+    let after = host_snapshot(&service, tenant_id, HOST_A);
+    assert_eq!(
+        after,
+        (
+            Some("macOS".to_string()),
+            Some("26.6.2".to_string()),
+            Some("aarch64".to_string()),
+            1
+        ),
+        "已有主机必须被新的观测刷新，且不能变成两台"
+    );
+}
+
+#[test]
+fn a_later_snapshot_without_os_does_not_erase_known_values() {
+    // 升级后又被降级 / 换了老版本 agentd：不能用 None 把已知值擦掉。
+    let service = TopologyIngestService::new_in_memory();
+    let tenant_id = TenantId(Uuid::new_v4());
+
+    service
+        .submit_and_materialize(envelope(
+            "ing-new",
+            "agent-1",
+            IngestMode::Snapshot,
+            tenant_id,
+            json!({
+                "hosts": [{
+                    "hostname": HOST_A,
+                    "machine_id": "machine-a",
+                    "external_ref": "machine-a",
+                    "os_name": "macOS",
+                    "os_version": "26.6.2",
+                    "arch": "aarch64"
+                }]
+            }),
+        ))
+        .expect("first ingest");
+
+    service
+        .submit_and_materialize(envelope(
+            "ing-old",
+            "agent-1",
+            IngestMode::Snapshot,
+            tenant_id,
+            json!({
+                "hosts": [{
+                    "hostname": HOST_A,
+                    "machine_id": "machine-a",
+                    "external_ref": "machine-a"
+                }]
+            }),
+        ))
+        .expect("second ingest");
+
+    let after = host_snapshot(&service, tenant_id, HOST_A);
+    assert_eq!(
+        after.0.as_deref(),
+        Some("macOS"),
+        "缺字段的快照不能把已知值擦成空"
+    );
+    assert_eq!(after.2.as_deref(), Some("aarch64"));
+}
+
+/// `(os_name, os_version, arch, 该租户的主机总数)`
+fn host_snapshot(
+    service: &TopologyIngestService<atlas_storage::InMemoryTopologyStore>,
+    tenant_id: TenantId,
+    host_name: &str,
+) -> (Option<String>, Option<String>, Option<String>, usize) {
+    let hosts =
+        CatalogStore::list_hosts(service.store(), tenant_id, Page::default()).expect("list hosts");
+    let total = hosts.len();
+    let host = hosts
+        .into_iter()
+        .find(|host| host.host_name == host_name)
+        .expect("host");
+    (host.os_name, host.os_version, host.arch, total)
+}

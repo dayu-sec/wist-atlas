@@ -27,3 +27,8 @@ CREATE INDEX IF NOT EXISTS idx_process_runtime_state_host_live
 CREATE INDEX IF NOT EXISTS idx_process_runtime_state_scope_live
     ON process_runtime_state(tenant_id, ingest_scope)
     WHERE stale_at IS NULL;
+
+-- 记一笔，让 `schema_migrations` 说真话（0001 是在自己的 SQL 里插的）。
+INSERT INTO schema_migrations(version)
+VALUES ('0002_presence_stale')
+ON CONFLICT (version) DO NOTHING;

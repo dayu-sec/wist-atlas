@@ -263,11 +263,23 @@ pub(crate) fn upsert_catalog_host(
 
 /// 把「本次快照看到了它」写进这条主机记录。
 ///
-/// 四件事：架构取候选值（候选没有就保留已知值，不用空值擦掉）、作用域归属、缺失计数归零、
-/// 清掉 stale —— 也就是「重新出现即复活」。
+/// 五件事：**刷新描述字段**、作用域归属、缺失计数归零、清掉 stale —— 也就是「重新出现即复活」。
+///
+/// 为什么必须显式刷新：`resolve_host_candidate` 匹配到已有主机时是**克隆旧行**的，
+/// 不刷新的话一条主机记录的 `os_name` / `arch` 会永远停在它**第一次**被看到时的值 ——
+/// 升级 agentd 补了新属性也永远进不来（第一次看到它的往往是老版本）。
+///
+/// 只覆盖**候选给了值**的字段：老 agentd 不报 `os.*` / `arch`，用 `None` 擦掉已知值
+/// 比不刷新更糟（会把一次降级安装变成一次数据丢失）。
 ///
 /// `stale_at` 只由清扫写（连续缺失达到阈值才写），这里一律写 `None`。
 fn mark_seen(host: &mut HostInventory, candidate: &HostCandidate, scope: &str) {
+    if candidate.os_name.is_some() {
+        host.os_name = candidate.os_name.clone();
+    }
+    if candidate.os_version.is_some() {
+        host.os_version = candidate.os_version.clone();
+    }
     if candidate.arch.is_some() {
         host.arch = candidate.arch.clone();
     }
