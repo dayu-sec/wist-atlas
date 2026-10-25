@@ -1,11 +1,12 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useAppState } from './hooks/useAppState';
 import TopologyCanvas from './components/TopologyCanvas';
-import FilterBar from './components/FilterBar';
-import LayerLegend from './components/LayerLegend';
+import CanvasToolbar from './components/CanvasToolbar';
+import LegendCard from './components/LegendCard';
+import HostSummaryCard from './components/HostSummaryCard';
+import StatusBar from './components/StatusBar';
 import NodeDetailPanel from './components/NodeDetailPanel';
 import {
-  fetchFirstHostTopology,
   fetchHostProcessGroupsPage,
   fetchHostProcessOverview,
   fetchFirstHostProcessTopology,
@@ -20,6 +21,7 @@ import type {
   HostProcessTopologyEdge,
   HostProcessTopologyGraph,
   HostProcessTopologyNode,
+  NodeKind,
 } from './types/domain';
 
 const PROCESS_SUMMARY_PREFIX = 'process-summary:';
@@ -127,33 +129,25 @@ export default function App() {
   const selectedNode =
     displayGraph?.nodes.find((n) => n.id === state.selectedNodeId) ?? null;
 
+  // 左栏的资产卡要的是「当前这张图的主机」，不是「当前选中的节点」。
+  // 之前 `hostTopology` 绑在选中项上：一点网段，资产卡就跟着空了。
+  const primaryHostNode =
+    displayGraph?.nodes.find((node) => node.objectKind === 'HostInventory') ?? null;
+
   useEffect(() => {
-    const node = selectedNode;
-    if (!node || node.objectKind !== 'HostInventory') {
+    const hostObjectId = primaryHostNode?.objectId;
+    if (!hostObjectId) {
       dispatch({ type: 'FETCH_HOST_TOPOLOGY_SUCCESS', hostTopology: null });
       return;
     }
+    if (state.hostTopology?.host.id === hostObjectId) return;
 
-    fetchHostTopology(node.objectId).then((res) => {
+    fetchHostTopology(hostObjectId).then((res) => {
       if (res.status === 'ok') {
         dispatch({ type: 'FETCH_HOST_TOPOLOGY_SUCCESS', hostTopology: res.data });
       }
     });
-  }, [selectedNode, dispatch]);
-
-  useEffect(() => {
-    if (USE_FIXTURE) return;
-    if (state.hostTopology) return;
-    if (selectedNode) return;
-
-    const host = hostId.trim() || DEFAULT_HOST_ID;
-    const loader = host ? fetchHostTopology(host) : fetchFirstHostTopology();
-    loader.then((res) => {
-      if (res.status === 'ok') {
-        dispatch({ type: 'FETCH_HOST_TOPOLOGY_SUCCESS', hostTopology: res.data });
-      }
-    });
-  }, [dispatch, hostId, selectedNode, state.hostTopology]);
+  }, [primaryHostNode?.objectId, state.hostTopology?.host.id, dispatch]);
 
   useEffect(() => {
     if (USE_FIXTURE) return;
@@ -247,119 +241,236 @@ export default function App() {
     dispatch({ type: 'SELECT_NODE', nodeId });
   }, [dispatch, groupPageLoadingByHost, loadedGroupsByHost, overviewGroupsByHost, state.graph]);
 
+  const railHost = state.hostTopology?.host ?? (primaryHostNode
+    ? {
+        id: primaryHostNode.objectId,
+        hostName: primaryHostNode.label,
+        machineId: null,
+        osName: (primaryHostNode.properties.osName as string | undefined) ?? null,
+        osVersion: (primaryHostNode.properties.osVersion as string | undefined) ?? null,
+        arch: null,
+      }
+    : null);
+
+  const graphNodes = displayGraph?.nodes ?? [];
+  const graphEdges = displayGraph?.edges ?? [];
+  const presentKinds: NodeKind[] = [];
+  for (const node of graphNodes) {
+    if (!presentKinds.includes(node.objectKind)) presentKinds.push(node.objectKind);
+  }
+
+  const segmentCount = state.hostTopology?.networkSegments.length
+    ?? graphNodes.filter((node) => node.objectKind === 'NetworkSegment').length;
+  const processCount = state.hostTopology?.processes.length
+    ?? Number(displayGraph?.metadata?.processCount ?? 0);
+  const groupCount = state.hostTopology?.processGroups.length
+    ?? graphNodes.filter((node) => node.objectKind === 'ProcessGroup').length;
+  const serviceCount = state.hostTopology?.services.length
+    ?? graphNodes.filter((node) => node.objectKind === 'ServiceEntity').length;
+  const hostCount = Number(displayGraph?.metadata?.hostCount ?? (primaryHostNode ? 1 : 0));
+
+  const query = state.searchQuery.trim().toLowerCase();
+  const matchCount = query
+    ? graphNodes.filter((node) => {
+        const haystack = [node.label, ...Object.values(node.properties).map(String)]
+          .join(' ')
+          .toLowerCase();
+        return haystack.includes(query);
+      }).length
+    : null;
+
   return (
-    <div className="h-screen flex flex-col bg-gray-50">
-      {/* Header */}
-      <header className="flex items-center gap-4 px-4 py-2 bg-white border-b border-gray-200 shrink-0">
-        <h1 className="text-sm font-semibold text-gray-700 tracking-wide shrink-0">
-          wist-atlas
-        </h1>
+    <div className="flex h-screen flex-col overflow-hidden">
+      <header className="flex h-14 shrink-0 items-center gap-3 bg-slate-900 px-5 text-slate-100">
+        <div className="flex items-center gap-2">
+          <svg viewBox="0 0 20 20" className="size-5 text-indigo-400" fill="none" aria-hidden>
+            <path d="M10 1.6 18.4 10 10 18.4 1.6 10Z" stroke="currentColor" strokeWidth="1.4" />
+            <circle cx="10" cy="10" r="2.4" fill="currentColor" />
+          </svg>
+          <span className="text-[13px] font-semibold tracking-wide">wist-atlas</span>
+        </div>
 
-        {/* Host ID query input */}
-        <form
-          onSubmit={(e) => { e.preventDefault(); queryHost(); }}
-          className="flex items-center gap-1"
-        >
-          <input
-            type="text"
-            placeholder="Host object ID..."
-            value={hostId}
-            onChange={(e) => setHostId(e.target.value)}
-            className="px-2 py-1 text-xs border border-gray-300 rounded w-56 focus:outline-none focus:ring-2 focus:ring-blue-400"
-          />
-          <button
-            type="submit"
-            className="px-3 py-1 text-xs bg-blue-500 text-white rounded hover:bg-blue-600"
-          >
-            Query
-          </button>
-        </form>
+        <span className="h-5 w-px bg-slate-700" aria-hidden />
 
-        {/* Network ID query input */}
-        <form
-          onSubmit={(e) => { e.preventDefault(); queryNetwork(); }}
-          className="flex items-center gap-1"
-        >
-          <input
-            type="text"
-            placeholder="Network object ID..."
-            value={networkId}
-            onChange={(e) => setNetworkId(e.target.value)}
-            className="px-2 py-1 text-xs border border-gray-300 rounded w-56 focus:outline-none focus:ring-2 focus:ring-blue-400"
-          />
-          <button
-            type="submit"
-            className="px-3 py-1 text-xs bg-green-500 text-white rounded hover:bg-green-600"
-          >
-            Network
-          </button>
-        </form>
-
-        <div className="flex-1" />
-
-        <button
-          onClick={loadData}
-          disabled={state.loading}
-          className="px-3 py-1 text-xs bg-gray-100 text-gray-600 rounded hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          Refresh
-        </button>
-
-        {state.graph?.metadata?.queryTime && (
-          <span className="text-xs text-gray-400">
-            Updated: {state.graph.metadata.queryTime}
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="truncate text-[13px] font-medium text-slate-200">
+            {railHost?.hostName ?? '未选择主机'}
           </span>
-        )}
+          {railHost?.osName && (
+            <span className="shrink-0 rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-300">
+              {railHost.osName} {railHost.osVersion ?? ''}
+            </span>
+          )}
+          {railHost?.arch && (
+            <span className="shrink-0 rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] text-slate-400">
+              {railHost.arch}
+            </span>
+          )}
+        </div>
+
+        <div className="ml-auto flex items-center gap-3">
+          <div
+            className={`h-0.5 w-24 overflow-hidden rounded-full bg-slate-800 ${state.loading ? '' : 'opacity-0'}`}
+            aria-hidden
+          >
+            <div className="h-full w-1/2 animate-pulse rounded-full bg-indigo-400" />
+          </div>
+          <button
+            type="button"
+            onClick={loadData}
+            disabled={state.loading}
+            className="flex h-8 items-center gap-1.5 rounded-md bg-slate-800 px-3 text-[12px] font-medium text-slate-200 transition-colors hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <svg viewBox="0 0 20 20" className="size-3.5" fill="none" stroke="currentColor" strokeWidth="1.8">
+              <path d="M16 10a6 6 0 1 1-1.8-4.3M16 3.5V7h-3.5" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            刷新
+          </button>
+        </div>
       </header>
 
-      {/* Main area */}
-      <div className="flex-1 relative overflow-hidden">
-        <FilterBar
-          searchQuery={state.searchQuery}
-          onSearchChange={(q) => dispatch({ type: 'SET_SEARCH', query: q })}
-          layerVisibility={state.layerVisibility}
-          onToggleLayer={(l) => dispatch({ type: 'TOGGLE_LAYER', layer: l })}
-          layout={state.layout}
-          onLayoutChange={(l) => dispatch({ type: 'SET_LAYOUT', layout: l })}
-        />
-        <div className="relative" style={{ height: 'calc(100% - 41px)' }}>
-          <TopologyCanvas
-            graph={displayGraph}
-            selectedNodeId={state.selectedNodeId}
-            onSelectNode={handleSelectNode}
+      <div className="flex min-h-0 flex-1">
+        <aside className="flex w-72 shrink-0 flex-col overflow-y-auto border-r border-line bg-surface">
+          <HostSummaryCard
+            host={railHost}
+            segmentCount={segmentCount}
+            processCount={processCount}
+            groupCount={groupCount}
+            serviceCount={serviceCount}
+            generatedAt={state.hostTopology?.generatedAt ?? displayGraph?.metadata?.queryTime ?? null}
+            loading={state.loading}
+          />
+
+          <LegendCard kinds={presentKinds} />
+
+          <details className="group px-4 py-3.5">
+            <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[11px] text-ink-mute transition-colors hover:text-ink-soft">
+              <svg
+                viewBox="0 0 20 20"
+                className="size-3 transition-transform group-open:rotate-90"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+              >
+                <path d="m8 5 5 5-5 5" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              按对象 ID 查询
+            </summary>
+
+            <div className="mt-3 space-y-3">
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  queryHost();
+                }}
+                className="space-y-1.5"
+              >
+                <label className="block text-[10px] text-ink-mute" htmlFor="host-id-input">
+                  主机对象 ID
+                </label>
+                <div className="flex gap-1.5">
+                  <input
+                    id="host-id-input"
+                    type="text"
+                    placeholder="UUID"
+                    value={hostId}
+                    onChange={(e) => setHostId(e.target.value)}
+                    className="h-7 min-w-0 flex-1 rounded-md border border-line bg-canvas px-2 font-mono text-[11px] text-ink placeholder:text-ink-mute focus:border-brand focus:bg-surface focus:outline-none focus:ring-2 focus:ring-brand/15"
+                  />
+                  <button
+                    type="submit"
+                    className="h-7 shrink-0 rounded-md bg-brand px-2.5 text-[11px] font-medium text-white transition-colors hover:bg-indigo-700"
+                  >
+                    查询
+                  </button>
+                </div>
+              </form>
+
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  queryNetwork();
+                }}
+                className="space-y-1.5"
+              >
+                <label className="block text-[10px] text-ink-mute" htmlFor="network-id-input">
+                  网段对象 ID
+                </label>
+                <div className="flex gap-1.5">
+                  <input
+                    id="network-id-input"
+                    type="text"
+                    placeholder="UUID"
+                    value={networkId}
+                    onChange={(e) => setNetworkId(e.target.value)}
+                    className="h-7 min-w-0 flex-1 rounded-md border border-line bg-canvas px-2 font-mono text-[11px] text-ink placeholder:text-ink-mute focus:border-brand focus:bg-surface focus:outline-none focus:ring-2 focus:ring-brand/15"
+                  />
+                  <button
+                    type="submit"
+                    className="h-7 shrink-0 rounded-md border border-line bg-surface px-2.5 text-[11px] font-medium text-ink-soft transition-colors hover:border-line-strong"
+                  >
+                    查询
+                  </button>
+                </div>
+              </form>
+            </div>
+          </details>
+        </aside>
+
+        <main className="flex min-w-0 flex-1 flex-col">
+          <CanvasToolbar
             searchQuery={state.searchQuery}
+            onSearchChange={(q) => dispatch({ type: 'SET_SEARCH', query: q })}
+            layerVisibility={state.layerVisibility}
+            onToggleLayer={(l) => dispatch({ type: 'TOGGLE_LAYER', layer: l })}
             layout={state.layout}
+            onLayoutChange={(l) => dispatch({ type: 'SET_LAYOUT', layout: l })}
+            matchCount={matchCount}
           />
-          <LayerLegend />
-          <NodeDetailPanel
-            node={selectedNode}
-            hostTopology={state.hostTopology}
-            processViewMode={getProcessViewMode(selectedNode, loadedGroupsByHost, groupPageLoadingByHost)}
-            loadedProcessGroups={getSelectedLoadedProcessGroups(selectedNode, loadedGroupsByHost)}
-            onClose={() => dispatch({ type: 'SELECT_NODE', nodeId: null })}
-          />
-        </div>
+
+          <div className="relative min-h-0 flex-1">
+            <TopologyCanvas
+              graph={displayGraph}
+              selectedNodeId={state.selectedNodeId}
+              onSelectNode={handleSelectNode}
+              searchQuery={state.searchQuery}
+              layout={state.layout}
+            />
+            <NodeDetailPanel
+              node={selectedNode}
+              hostTopology={state.hostTopology}
+              processViewMode={getProcessViewMode(selectedNode, loadedGroupsByHost, groupPageLoadingByHost)}
+              loadedProcessGroups={getSelectedLoadedProcessGroups(selectedNode, loadedGroupsByHost)}
+              onClose={() => dispatch({ type: 'SELECT_NODE', nodeId: null })}
+            />
+
+            {state.error && (
+              <div className="absolute bottom-3 left-3 z-20 flex max-w-md items-start gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[11px] text-rose-800 shadow-sm">
+                <span className="mt-0.5 font-semibold">出错</span>
+                <span className="min-w-0 break-all">{state.error}</span>
+                <button
+                  type="button"
+                  onClick={() => dispatch({ type: 'FETCH_GRAPH_ERROR', error: '' })}
+                  className="ml-auto shrink-0 rounded px-1 text-rose-400 hover:text-rose-700"
+                  aria-label="关闭错误提示"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
+          </div>
+        </main>
       </div>
 
-      {/* Loading bar */}
-      <div
-        className={`h-0.5 bg-blue-500 transition-all duration-300 ease-out ${state.loading ? 'opacity-100' : 'opacity-0'}`}
-        style={{ width: state.loading ? '100%' : '0%' }}
+      <StatusBar
+        hostCount={hostCount}
+        segmentCount={segmentCount}
+        processCount={processCount}
+        nodeCount={graphNodes.length}
+        edgeCount={graphEdges.length}
+        queryTime={displayGraph?.metadata?.queryTime ?? null}
+        loading={state.loading}
       />
-
-      {/* Error banner */}
-      {state.error && (
-        <div className="absolute bottom-4 right-4 bg-red-50 border border-red-200 rounded-lg px-4 py-2 text-xs text-red-700 z-20 max-w-md shadow">
-          <span className="font-medium">Error</span>
-          <span className="ml-1">{state.error}</span>
-          <button
-            onClick={() => dispatch({ type: 'FETCH_GRAPH_ERROR', error: '' })}
-            className="ml-2 text-red-400 hover:text-red-600 font-bold"
-          >
-            &times;
-          </button>
-        </div>
-      )}
     </div>
   );
 }

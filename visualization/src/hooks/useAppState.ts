@@ -14,7 +14,7 @@ const initialState: AppState = {
   selectedNodeId: null,
   layerVisibility: { ...initialLayerVisibility },
   searchQuery: '',
-  layout: 'dagre',
+  layout: 'auto',
 };
 
 function reducer(state: AppState, action: AppAction): AppState {

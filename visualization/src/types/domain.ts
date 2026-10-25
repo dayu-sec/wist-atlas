@@ -61,6 +61,9 @@ export type HostProcessTopologyGraph = {
     focusObjectKind?: NodeKind;
     focusObjectId?: string;
     truncated?: boolean;
+    /** 后端 graph 接口实际返回的计数（状态栏与左栏用） */
+    hostCount?: number;
+    processCount?: number;
   };
 };
 
@@ -70,6 +73,8 @@ export type HostTopologyHost = {
   machineId?: string | null;
   osName?: string | null;
   osVersion?: string | null;
+  /** CPU 架构（`aarch64` / `x86_64`）。M1 之后的后端才有，老数据为 null。 */
+  arch?: string | null;
 };
 
 export type ProcessStateCountDto = {
@@ -165,7 +170,7 @@ export type AppAction =
   | { type: 'SET_SEARCH'; query: string }
   | { type: 'SET_LAYOUT'; layout: LayoutName };
 
-export type LayoutName = 'dagre' | 'cose-bilkent' | 'concentric';
+export type LayoutName = 'auto' | 'dagre' | 'cose-bilkent' | 'concentric';
 
 // ---- Cytoscape element data extensions ----
 export type CyNodeData = {
