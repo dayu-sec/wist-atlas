@@ -6,11 +6,13 @@ CREATE SCHEMA public;
 pub const UPSERT_HOST: &str = r#"
 INSERT INTO host_inventory (
     host_id, tenant_id, environment_id, host_name, machine_id, os_name, os_version,
-    created_at, last_inventory_at
+    created_at, last_inventory_at, arch, stale_at, ingest_scope, miss_count
 ) VALUES (
     NULLIF($1, '')::uuid, NULLIF($2, '')::uuid, NULLIF($3, '')::uuid, $4,
     NULLIF($5, ''), NULLIF($6, ''), NULLIF($7, ''),
-    NULLIF($8, '')::timestamptz, NULLIF($9, '')::timestamptz
+    NULLIF($8, '')::timestamptz, NULLIF($9, '')::timestamptz,
+    NULLIF($10, ''), NULLIF($11, '')::timestamptz, NULLIF($12, ''),
+    COALESCE(NULLIF($13, '')::bigint, 0)
 )
 ON CONFLICT (machine_id) WHERE machine_id IS NOT NULL DO UPDATE SET
     tenant_id = EXCLUDED.tenant_id,
@@ -19,17 +21,24 @@ ON CONFLICT (machine_id) WHERE machine_id IS NOT NULL DO UPDATE SET
     machine_id = EXCLUDED.machine_id,
     os_name = EXCLUDED.os_name,
     os_version = EXCLUDED.os_version,
-    last_inventory_at = EXCLUDED.last_inventory_at
+    arch = EXCLUDED.arch,
+    last_inventory_at = EXCLUDED.last_inventory_at,
+    -- 看到了就复活，计数归零（与 process 的 stale_at 同一语义）。
+    stale_at = EXCLUDED.stale_at,
+    miss_count = EXCLUDED.miss_count,
+    ingest_scope = COALESCE(EXCLUDED.ingest_scope, host_inventory.ingest_scope)
 "#;
 
 pub const UPSERT_HOST_WITHOUT_MACHINE_ID: &str = r#"
 INSERT INTO host_inventory (
     host_id, tenant_id, environment_id, host_name, machine_id, os_name, os_version,
-    created_at, last_inventory_at
+    created_at, last_inventory_at, arch, stale_at, ingest_scope, miss_count
 ) VALUES (
     NULLIF($1, '')::uuid, NULLIF($2, '')::uuid, NULLIF($3, '')::uuid, $4,
     NULLIF($5, ''), NULLIF($6, ''), NULLIF($7, ''),
-    NULLIF($8, '')::timestamptz, NULLIF($9, '')::timestamptz
+    NULLIF($8, '')::timestamptz, NULLIF($9, '')::timestamptz,
+    NULLIF($10, ''), NULLIF($11, '')::timestamptz, NULLIF($12, ''),
+    COALESCE(NULLIF($13, '')::bigint, 0)
 )
 ON CONFLICT (host_id) DO UPDATE SET
     tenant_id = EXCLUDED.tenant_id,
@@ -38,12 +47,16 @@ ON CONFLICT (host_id) DO UPDATE SET
     machine_id = EXCLUDED.machine_id,
     os_name = EXCLUDED.os_name,
     os_version = EXCLUDED.os_version,
-    last_inventory_at = EXCLUDED.last_inventory_at
+    arch = EXCLUDED.arch,
+    last_inventory_at = EXCLUDED.last_inventory_at,
+    stale_at = EXCLUDED.stale_at,
+    miss_count = EXCLUDED.miss_count,
+    ingest_scope = COALESCE(EXCLUDED.ingest_scope, host_inventory.ingest_scope)
 "#;
 
 pub const LIST_HOSTS: &str = r#"
 SELECT host_id, tenant_id, environment_id, host_name, machine_id, os_name, os_version,
-       created_at, last_inventory_at
+       created_at, last_inventory_at, arch, stale_at, ingest_scope, miss_count
 FROM host_inventory
 WHERE tenant_id = NULLIF($1, '')::uuid
 ORDER BY host_name ASC, host_id ASC
@@ -52,7 +65,7 @@ LIMIT NULLIF($2, '')::int4 OFFSET NULLIF($3, '')::int4
 
 pub const LIST_ALL_HOSTS: &str = r#"
 SELECT host_id, tenant_id, environment_id, host_name, machine_id, os_name, os_version,
-       created_at, last_inventory_at
+       created_at, last_inventory_at, arch, stale_at, ingest_scope, miss_count
 FROM host_inventory
 ORDER BY host_name ASC, host_id ASC
 LIMIT NULLIF($1, '')::int4 OFFSET NULLIF($2, '')::int4
@@ -60,7 +73,7 @@ LIMIT NULLIF($1, '')::int4 OFFSET NULLIF($2, '')::int4
 
 pub const GET_HOST: &str = r#"
 SELECT host_id, tenant_id, environment_id, host_name, machine_id, os_name, os_version,
-       created_at, last_inventory_at
+       created_at, last_inventory_at, arch, stale_at, ingest_scope, miss_count
 FROM host_inventory
 WHERE host_id = NULLIF($1, '')::uuid
 "#;

@@ -184,7 +184,10 @@ pub(super) use business::{materialize_business_catalog, materialize_business_cat
 pub(super) use governance::{
     materialize_subjects_and_assignments, materialize_subjects_and_assignments_async,
 };
-pub(super) use host::{materialize_candidates, materialize_candidates_async};
+pub(super) use host::{
+    HOST_STALE_AFTER_MISSES, HostStaleSweep, MaterializedHosts, mark_stale_hosts,
+    mark_stale_hosts_async, materialize_candidates, materialize_candidates_async,
+};
 pub(super) use process::{
     ProcessSweep, StaleSweep, mark_stale_processes, mark_stale_processes_async,
     materialize_processes, materialize_processes_async,

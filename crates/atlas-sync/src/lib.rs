@@ -272,7 +272,8 @@ where
         offset: 0,
     };
     let hosts = CatalogStore::list_hosts(store, tenant_id, full_page).conv_err()?;
-    summary.host_count = hosts.len();
+    // 与现役视图同口径：退役主机不算「现在有多少台」。
+    summary.host_count = hosts.iter().filter(|host| host.stale_at.is_none()).count();
     summary.network_count = CatalogStore::list_network_segments(store, tenant_id, full_page)
         .conv_err()?
         .len();
@@ -326,7 +327,7 @@ where
     let hosts = AsyncCatalogStore::list_hosts(store, tenant_id, full_page)
         .await
         .conv_err()?;
-    summary.host_count = hosts.len();
+    summary.host_count = hosts.iter().filter(|host| host.stale_at.is_none()).count();
     summary.network_count = AsyncCatalogStore::list_network_segments(store, tenant_id, full_page)
         .await
         .conv_err()?

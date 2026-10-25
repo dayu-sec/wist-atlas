@@ -121,6 +121,12 @@ impl AsyncCatalogStore for PostgresTopologyStore<LivePostgresExecutor> {
                     host.os_version.clone().unwrap_or_default(),
                     host.created_at.to_rfc3339(),
                     host.last_inventory_at.to_rfc3339(),
+                    host.arch.clone().unwrap_or_default(),
+                    host.stale_at
+                        .map(|value| value.to_rfc3339())
+                        .unwrap_or_default(),
+                    host.ingest_scope.clone().unwrap_or_default(),
+                    host.miss_count.to_string(),
                 ],
             )
             .await?;

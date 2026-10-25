@@ -470,3 +470,224 @@ fn a_stale_row_keeps_its_original_observation_time() {
         "stale_at 不早于最后一次观测"
     );
 }
+
+// ── 主机退役：连续缺失计数，不是「一份没看到就退役」 ──────────────
+//
+// 注意这里必须用**多主机快照**才能测到清扫：一台主机一个信封时，信封里没它
+// 就意味着这份数据根本不涉及它，`seen` 也不会是「少了某一个」。
+// 当前适配器是一台机一个信封，所以主机退役实际上要等多主机快照（网关侧聚合 /
+// CMDB 同步）才会真正触发 —— 机制先就位，并用下面这组用例守住。
+
+const HOST_A: &str = "node-a";
+const HOST_B: &str = "node-b";
+
+fn payload_with_hosts(hosts: &[(&str, &str)]) -> serde_json::Value {
+    json!({
+        "hosts": hosts
+            .iter()
+            .map(|(name, machine_id)| json!({
+                "hostname": name,
+                "machine_id": machine_id,
+                "external_ref": machine_id
+            }))
+            .collect::<Vec<_>>()
+    })
+}
+
+fn snapshot_hosts(
+    service: &TopologyIngestService<atlas_storage::InMemoryTopologyStore>,
+    ingest_id: &str,
+    hosts: &[(&str, &str)],
+    tenant_id: TenantId,
+) -> u64 {
+    let (_record, summary) = service
+        .submit_and_materialize(envelope(
+            ingest_id,
+            "agent-1",
+            IngestMode::Snapshot,
+            tenant_id,
+            payload_with_hosts(hosts),
+        ))
+        .expect("snapshot ingest");
+    summary.stale_host_count
+}
+
+fn host_state(
+    service: &TopologyIngestService<atlas_storage::InMemoryTopologyStore>,
+    tenant_id: TenantId,
+    host_name: &str,
+) -> Option<(i64, bool)> {
+    CatalogStore::list_hosts(service.store(), tenant_id, Page::default())
+        .expect("list hosts")
+        .into_iter()
+        .find(|host| host.host_name == host_name)
+        .map(|host| (host.miss_count, host.stale_at.is_some()))
+}
+
+/// 阈值只在 atlas-api 内部定义，测试里对称取用。
+fn atlas_api_host_threshold() -> i64 {
+    crate::service::materialize::HOST_STALE_AFTER_MISSES
+}
+
+fn both_hosts() -> Vec<(&'static str, &'static str)> {
+    vec![(HOST_A, "machine-a"), (HOST_B, "machine-b")]
+}
+
+fn only_a() -> Vec<(&'static str, &'static str)> {
+    vec![(HOST_A, "machine-a")]
+}
+
+#[test]
+fn a_host_is_not_retired_after_a_single_missing_snapshot() {
+    // 主机消失可能只是一轮探针失败。误标一台活主机的代价远大于晚几轮。
+    let service = TopologyIngestService::new_in_memory();
+    let tenant_id = TenantId(Uuid::new_v4());
+
+    snapshot_hosts(&service, "ing-1", &both_hosts(), tenant_id);
+    assert_eq!(host_state(&service, tenant_id, HOST_B), Some((0, false)));
+
+    snapshot_hosts(&service, "ing-2", &only_a(), tenant_id);
+    assert_eq!(
+        host_state(&service, tenant_id, HOST_B),
+        Some((1, false)),
+        "缺一份只累计计数，不退役"
+    );
+    assert_eq!(
+        host_state(&service, tenant_id, HOST_A),
+        Some((0, false)),
+        "出现过的主机计数归零"
+    );
+}
+
+#[test]
+fn a_host_is_retired_after_the_miss_threshold() {
+    let service = TopologyIngestService::new_in_memory();
+    let tenant_id = TenantId(Uuid::new_v4());
+
+    snapshot_hosts(&service, "ing-1", &both_hosts(), tenant_id);
+
+    let mut newly_stale = 0;
+    for round in 0..atlas_api_host_threshold() {
+        newly_stale = snapshot_hosts(&service, &format!("ing-miss-{round}"), &only_a(), tenant_id);
+    }
+
+    assert_eq!(newly_stale, 1, "达到阈值那一轮才报「新退役」1 台");
+    assert_eq!(
+        host_state(&service, tenant_id, HOST_B),
+        Some((atlas_api_host_threshold(), true)),
+        "计数停在达阈值的位置，且已标 stale"
+    );
+}
+
+#[test]
+fn a_retired_host_keeps_its_first_retirement_time() {
+    let service = TopologyIngestService::new_in_memory();
+    let tenant_id = TenantId(Uuid::new_v4());
+    snapshot_hosts(&service, "ing-1", &both_hosts(), tenant_id);
+    for round in 0..atlas_api_host_threshold() {
+        snapshot_hosts(&service, &format!("ing-miss-{round}"), &only_a(), tenant_id);
+    }
+
+    let before = CatalogStore::list_hosts(service.store(), tenant_id, Page::default())
+        .expect("list hosts")
+        .into_iter()
+        .find(|host| host.host_name == HOST_B)
+        .expect("host");
+    let first = before.stale_at.expect("retired");
+
+    for round in 0..3 {
+        let newly = snapshot_hosts(
+            &service,
+            &format!("ing-extra-{round}"),
+            &only_a(),
+            tenant_id,
+        );
+        assert_eq!(newly, 0, "已退役的不重复计入");
+    }
+    let after = CatalogStore::list_hosts(service.store(), tenant_id, Page::default())
+        .expect("list hosts")
+        .into_iter()
+        .find(|host| host.host_name == HOST_B)
+        .expect("host");
+
+    assert_eq!(after.stale_at, Some(first), "首次退役时间必须冻结");
+    assert_eq!(after.miss_count, before.miss_count, "已退役的不再累加");
+}
+
+#[test]
+fn a_returning_host_is_revived_and_its_counter_cleared() {
+    let service = TopologyIngestService::new_in_memory();
+    let tenant_id = TenantId(Uuid::new_v4());
+
+    snapshot_hosts(&service, "ing-1", &both_hosts(), tenant_id);
+    // 缺到刚好差一轮就退役。
+    for round in 0..atlas_api_host_threshold() - 1 {
+        snapshot_hosts(&service, &format!("ing-miss-{round}"), &only_a(), tenant_id);
+    }
+    assert_eq!(
+        host_state(&service, tenant_id, HOST_B),
+        Some((atlas_api_host_threshold() - 1, false))
+    );
+
+    // 又出现了：计数归零。
+    snapshot_hosts(&service, "ing-back", &both_hosts(), tenant_id);
+    assert_eq!(host_state(&service, tenant_id, HOST_B), Some((0, false)));
+
+    // 之后再缺一轮，也只是从 1 重新开始 —— 证明「一次抖动不会累积成退役」。
+    snapshot_hosts(&service, "ing-miss-again", &only_a(), tenant_id);
+    assert_eq!(host_state(&service, tenant_id, HOST_B), Some((1, false)));
+}
+
+#[test]
+fn hosts_from_another_producer_scope_are_not_swept() {
+    let service = TopologyIngestService::new_in_memory();
+    let tenant_id = TenantId(Uuid::new_v4());
+
+    // 另一个生产者报 node-b。
+    service
+        .submit_and_materialize(envelope(
+            "ing-other",
+            "container-agent",
+            IngestMode::Snapshot,
+            tenant_id,
+            payload_with_hosts(&[(HOST_B, "machine-b")]),
+        ))
+        .expect("other producer");
+
+    // 我们的快照里一直没有 node-b。
+    for round in 0..atlas_api_host_threshold() {
+        snapshot_hosts(&service, &format!("ing-mine-{round}"), &only_a(), tenant_id);
+    }
+
+    assert_eq!(
+        host_state(&service, tenant_id, HOST_B),
+        Some((0, false)),
+        "别的作用域报的主机不该被我们的缺失计数拖成退役"
+    );
+}
+
+#[test]
+fn incremental_mode_never_accumulates_host_misses() {
+    let service = TopologyIngestService::new_in_memory();
+    let tenant_id = TenantId(Uuid::new_v4());
+    snapshot_hosts(&service, "ing-1", &both_hosts(), tenant_id);
+
+    for round in 0..atlas_api_host_threshold() + 2 {
+        let (_record, summary) = service
+            .submit_and_materialize(envelope(
+                &format!("ing-batch-{round}"),
+                "agent-1",
+                IngestMode::BatchUpsert,
+                tenant_id,
+                payload_with_hosts(&only_a()),
+            ))
+            .expect("batch upsert");
+        assert_eq!(summary.stale_host_count, 0);
+    }
+
+    assert_eq!(
+        host_state(&service, tenant_id, HOST_B),
+        Some((0, false)),
+        "部分观测不能当成「主机不在了」"
+    );
+}

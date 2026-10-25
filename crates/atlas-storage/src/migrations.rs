@@ -6,9 +6,11 @@ pub struct Migration {
 
 pub const INITIAL_SCHEMA_VERSION: &str = "0001_initial_schema";
 pub const PRESENCE_STALE_VERSION: &str = "0002_presence_stale";
+pub const HOST_ARCH_PRESENCE_VERSION: &str = "0003_host_arch_presence";
 
 pub const INITIAL_SCHEMA_SQL: &str = include_str!("../migrations/0001_initial_schema.sql");
 pub const PRESENCE_STALE_SQL: &str = include_str!("../migrations/0002_presence_stale.sql");
+pub const HOST_ARCH_PRESENCE_SQL: &str = include_str!("../migrations/0003_host_arch_presence.sql");
 
 pub const MIGRATIONS: &[Migration] = &[
     Migration {
@@ -18,6 +20,10 @@ pub const MIGRATIONS: &[Migration] = &[
     Migration {
         version: PRESENCE_STALE_VERSION,
         sql: PRESENCE_STALE_SQL,
+    },
+    Migration {
+        version: HOST_ARCH_PRESENCE_VERSION,
+        sql: HOST_ARCH_PRESENCE_SQL,
     },
 ];
 
@@ -72,5 +78,24 @@ mod tests {
         let sql = super::PRESENCE_STALE_SQL;
         assert!(!sql.contains("ALTER TABLE host_inventory"));
         assert!(!sql.contains("ALTER TABLE network_segment"));
+    }
+
+    #[test]
+    fn host_presence_migration_adds_arch_and_the_miss_counter() {
+        let sql = super::HOST_ARCH_PRESENCE_SQL;
+        for column in ["arch", "stale_at", "ingest_scope", "miss_count"] {
+            assert!(
+                sql.contains(column),
+                "host presence migration should add {column}"
+            );
+        }
+        assert_eq!(sql.matches("ADD COLUMN IF NOT EXISTS").count(), 4);
+    }
+
+    #[test]
+    fn the_miss_counter_defaults_to_zero_so_legacy_rows_are_live() {
+        // 升级前的存量主机没有计数：默认 0 = 存活，不能因为缺失列就把老资产全标退役。
+        let sql = super::HOST_ARCH_PRESENCE_SQL;
+        assert!(sql.contains("miss_count BIGINT NOT NULL DEFAULT 0"));
     }
 }

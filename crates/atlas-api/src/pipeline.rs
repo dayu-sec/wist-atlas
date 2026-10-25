@@ -98,8 +98,13 @@ pub fn resolve_host_candidate(
         machine_id: candidate.machine_id.clone(),
         os_name: candidate.os_name.clone(),
         os_version: candidate.os_version.clone(),
+        arch: candidate.arch.clone(),
         created_at: now,
         last_inventory_at: now,
+        // 这里只是「新建一个候选」，存活/作用域由 `materialize_candidates` 在落地前统一填。
+        stale_at: None,
+        miss_count: 0,
+        ingest_scope: None,
     };
 
     HostResolution {
@@ -377,6 +382,7 @@ mod tests {
             machine_id: Some("machine-01".to_string()),
             os_name: Some("linux".to_string()),
             os_version: Some("6.8".to_string()),
+            arch: Some("x86_64".to_string()),
         }
     }
 

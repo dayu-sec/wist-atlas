@@ -123,6 +123,7 @@ fn os_attributes_are_mapped_onto_the_host() {
                 ("os.name", "macOS"),
                 ("os.version", "26.6.2"),
                 ("os.type", "macos"),
+                ("host.arch", "aarch64"),
             ],
         )],
         &[],
@@ -130,6 +131,11 @@ fn os_attributes_are_mapped_onto_the_host() {
     let host = &built.payload.hosts[0];
     assert_eq!(host.os_name.as_deref(), Some("macOS"));
     assert_eq!(host.os_version.as_deref(), Some("26.6.2"));
+    assert_eq!(
+        host.arch.as_deref(),
+        Some("aarch64"),
+        "架构是包/二进制匹配的依据"
+    );
 }
 
 #[test]
@@ -139,9 +145,11 @@ fn a_host_before_os_collection_still_converts() {
     let host = &built.payload.hosts[0];
     assert_eq!(host.os_name, None);
     assert_eq!(host.os_version, None);
+    assert_eq!(host.arch, None);
 
     let rendered = serde_json::to_string(host).expect("serialize");
     assert!(!rendered.contains("os_name"), "{rendered}");
+    assert!(!rendered.contains("arch"), "{rendered}");
 }
 
 // ── 网卡与地址 ────────────────────────────────────────

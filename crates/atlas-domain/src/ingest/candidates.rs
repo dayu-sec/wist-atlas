@@ -30,6 +30,7 @@ pub struct HostCandidate {
     pub machine_id: Option<String>,
     pub os_name: Option<String>,
     pub os_version: Option<String>,
+    pub arch: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

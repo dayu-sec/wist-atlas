@@ -21,6 +21,12 @@ pub(super) fn decode_host(row: &[String]) -> StorageResult<HostInventory> {
         os_version: empty_to_none(&row[6]),
         created_at: parse_datetime(&row[7])?,
         last_inventory_at: parse_datetime(&row[8])?,
+        arch: empty_to_none(&row[9]),
+        stale_at: empty_to_none(&row[10])
+            .map(|value| parse_datetime(&value))
+            .transpose()?,
+        ingest_scope: empty_to_none(&row[11]),
+        miss_count: parse_optional_i64(&row[12])?.unwrap_or(0),
     })
 }
 

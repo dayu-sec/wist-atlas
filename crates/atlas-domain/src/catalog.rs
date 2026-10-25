@@ -161,8 +161,26 @@ pub struct HostInventory {
     pub machine_id: Option<String>,
     pub os_name: Option<String>,
     pub os_version: Option<String>,
+    /// CPU 架构（`aarch64` / `x86_64`）。与事实摘要的 `arch` 同一取值（`std::env::consts::ARCH`）。
+    ///
+    /// 包/二进制匹配、漏洞影响面都靠它：只知道「一台 macOS 26.6.2 的机器」分不出
+    /// 该发 arm64 还是 x86_64 的东西。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arch: Option<String>,
     pub created_at: DateTime<Utc>,
     pub last_inventory_at: DateTime<Utc>,
+    /// 首次判定退役的时刻；`None` = 仍存活。
+    ///
+    /// 与进程的 stale **不是同一个判据**：进程按「一份快照没出现」算，主机按「连续多份
+    /// 完整快照都没出现」算 —— 主机消失可能只是一轮探针失败，误标的代价大得多。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale_at: Option<DateTime<Utc>>,
+    /// 连续多少份完整快照里没出现它。出现即清零；达到阈值才写 `stale_at`。
+    #[serde(default)]
+    pub miss_count: i64,
+    /// 归属的快照作用域 `schema:system:producer:tenant:env`（见 `ProcessRuntimeState::ingest_scope`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ingest_scope: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

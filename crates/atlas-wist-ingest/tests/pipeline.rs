@@ -50,7 +50,8 @@ fn sink_line(snap_id: &str, observed_at: &str, pids: &[i32]) -> String {
             "host.name": HOST_NAME,
             "os.name": "macOS",
             "os.type": "macos",
-            "os.version": "26.6.2"
+            "os.version": "26.6.2",
+            "host.arch": "aarch64"
         },
         "discovered_at": observed_at,
         "last_seen_at": observed_at,
@@ -283,6 +284,7 @@ fn the_os_attributes_reach_the_host_inventory() {
         .expect("host materialized");
     assert_eq!(host.os_name.as_deref(), Some("macOS"));
     assert_eq!(host.os_version.as_deref(), Some("26.6.2"));
+    assert_eq!(host.arch.as_deref(), Some("aarch64"));
 }
 
 #[test]

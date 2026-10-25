@@ -23,6 +23,8 @@ pub struct PipelineRunSummary {
     pub host_count: usize,
     pub network_count: usize,
     pub assoc_count: usize,
+    /// 本次快照替换清扫**新判定退役**的主机数（非 snapshot 模式恒为 0）。
+    pub stale_host_count: u64,
     /// 本次快照替换清扫标成 stale 的进程数（非 snapshot 模式恒为 0）。
     pub stale_process_count: u64,
 }
@@ -66,8 +68,17 @@ where
         let mut catalog = hydrate_catalog(&self.store, envelope.tenant_id).conv_err()?;
         let scope = envelope.ingest_scope();
         materialize_business_catalog(&self.store, business_catalog, accepted_at).conv_err()?;
-        let materialized =
-            materialize_candidates(&self.store, &mut catalog, hosts, networks, accepted_at)
+        let materialized = materialize_candidates(
+            &self.store,
+            &mut catalog,
+            hosts,
+            networks,
+            accepted_at,
+            &scope,
+        )
+        .conv_err()?;
+        let host_stale_count =
+            sweep_stale_hosts(&self.store, &envelope, &materialized, &scope, accepted_at)
                 .conv_err()?;
         let process_sweep =
             materialize_processes(&self.store, &mut catalog, processes, accepted_at, &scope)
@@ -91,9 +102,10 @@ where
             PipelineRunSummary {
                 ingest_id: envelope.ingest_id,
                 accepted_at,
-                host_count: materialized.0,
-                network_count: materialized.1,
-                assoc_count: materialized.2,
+                host_count: materialized.host_count,
+                network_count: materialized.network_count,
+                assoc_count: materialized.assoc_count,
+                stale_host_count: host_stale_count,
                 stale_process_count,
             },
         ))
@@ -147,8 +159,18 @@ where
         materialize_business_catalog_async(&self.store, business_catalog, accepted_at)
             .await
             .conv_err()?;
-        let materialized =
-            materialize_candidates_async(&self.store, &mut catalog, hosts, networks, accepted_at)
+        let materialized = materialize_candidates_async(
+            &self.store,
+            &mut catalog,
+            hosts,
+            networks,
+            accepted_at,
+            &scope,
+        )
+        .await
+        .conv_err()?;
+        let host_stale_count =
+            sweep_stale_hosts_async(&self.store, &envelope, &materialized, &scope, accepted_at)
                 .await
                 .conv_err()?;
         let process_sweep =
@@ -185,9 +207,10 @@ where
             PipelineRunSummary {
                 ingest_id: envelope.ingest_id,
                 accepted_at,
-                host_count: materialized.0,
-                network_count: materialized.1,
-                assoc_count: materialized.2,
+                host_count: materialized.host_count,
+                network_count: materialized.network_count,
+                assoc_count: materialized.assoc_count,
+                stale_host_count: host_stale_count,
                 stale_process_count,
             },
         ))
@@ -211,14 +234,59 @@ where
 
 mod materialize;
 use materialize::{
-    ProcessSweep, hydrate_catalog, hydrate_catalog_async, mark_stale_processes,
-    mark_stale_processes_async, materialize_business_catalog, materialize_business_catalog_async,
-    materialize_candidates, materialize_candidates_async, materialize_host_telemetry,
-    materialize_host_telemetry_async, materialize_process_telemetry,
-    materialize_process_telemetry_async, materialize_processes, materialize_processes_async,
-    materialize_subjects_and_assignments, materialize_subjects_and_assignments_async,
-    validate_and_record, validate_and_record_async,
+    MaterializedHosts, ProcessSweep, hydrate_catalog, hydrate_catalog_async, mark_stale_hosts,
+    mark_stale_hosts_async, mark_stale_processes, mark_stale_processes_async,
+    materialize_business_catalog, materialize_business_catalog_async, materialize_candidates,
+    materialize_candidates_async, materialize_host_telemetry, materialize_host_telemetry_async,
+    materialize_process_telemetry, materialize_process_telemetry_async, materialize_processes,
+    materialize_processes_async, materialize_subjects_and_assignments,
+    materialize_subjects_and_assignments_async, validate_and_record, validate_and_record_async,
 };
+
+/// 主机退役清扫（只在 `snapshot` 模式下）。
+///
+/// 与进程同一道闸：`incremental` / `window` / `correction` 描述的是**部分**观测，
+/// 拿去当「全集」比对会把没投递的主机累计成退役。
+fn sweep_stale_hosts<S>(
+    store: &S,
+    envelope: &IngestEnvelope,
+    materialized: &MaterializedHosts,
+    scope: &str,
+    at: DateTime<Utc>,
+) -> ApiResult<u64>
+where
+    S: CatalogStore,
+{
+    if envelope.ingest_mode != atlas_domain::IngestMode::Snapshot {
+        return Ok(0);
+    }
+    Ok(
+        mark_stale_hosts(store, envelope.tenant_id, &materialized.host_ids, scope, at)
+            .conv_err()?
+            .newly_stale,
+    )
+}
+
+async fn sweep_stale_hosts_async<S>(
+    store: &S,
+    envelope: &IngestEnvelope,
+    materialized: &MaterializedHosts,
+    scope: &str,
+    at: DateTime<Utc>,
+) -> ApiResult<u64>
+where
+    S: AsyncCatalogStore,
+{
+    if envelope.ingest_mode != atlas_domain::IngestMode::Snapshot {
+        return Ok(0);
+    }
+    Ok(
+        mark_stale_hosts_async(store, envelope.tenant_id, &materialized.host_ids, scope, at)
+            .await
+            .conv_err()?
+            .newly_stale,
+    )
+}
 
 /// 只在 `snapshot` 模式下做替换清扫。
 ///

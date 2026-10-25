@@ -169,6 +169,9 @@ pub struct Host {
     /// 来自快照的 `os.version`。Linux 上这是**内核**版本（sysinfo 语义）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub os_version: Option<String>,
+    /// 来自快照的 `host.arch`（`aarch64` / `x86_64`）。包与二进制匹配靠它。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arch: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -486,6 +489,7 @@ fn build_host(
     // `os.*` 是后加的：老快照没有这几个键，所以是可选的，不能因为缺失就判坏。
     let os_name = attr(&resource.attributes, "os.name");
     let os_version = attr(&resource.attributes, "os.version");
+    let arch = attr(&resource.attributes, "host.arch");
 
     let host = Host {
         hostname: host_name.clone(),
@@ -493,6 +497,7 @@ fn build_host(
         machine_id: machine_id.clone(),
         os_name,
         os_version,
+        arch,
     };
     Ok((host, host_name, machine_id))
 }

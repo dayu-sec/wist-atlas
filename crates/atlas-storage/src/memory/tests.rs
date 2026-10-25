@@ -15,8 +15,12 @@ fn in_memory_store_persists_host_network_and_ingest_job() {
         machine_id: Some("machine-01".to_string()),
         os_name: Some("linux".to_string()),
         os_version: Some("6.8".to_string()),
+        arch: Some("x86_64".to_string()),
         created_at: Utc::now(),
         last_inventory_at: Utc::now(),
+        stale_at: None,
+        miss_count: 0,
+        ingest_scope: None,
     };
     let domain = NetworkDomain {
         network_domain_id: Uuid::new_v4(),

@@ -95,6 +95,8 @@ fn host_candidate_from_row(
             .or_else(|| os.and_then(|os| optional_string_lossy(os, "name"))),
         os_version: optional_string(row, "os_version")?
             .or_else(|| os.and_then(|os| optional_string_lossy(os, "version"))),
+        // `arch` 扁平写（`hosts[].arch`）为主；`host.arch` 是 agentd 属性名的源形式。
+        arch: optional_string(row, "arch")?.or_else(|| optional_string_lossy(row, "host.arch")),
     })
 }
 

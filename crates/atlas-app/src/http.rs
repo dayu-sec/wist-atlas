@@ -87,6 +87,7 @@ struct HostTopologyHostDto {
     machine_id: Option<String>,
     os_name: Option<String>,
     os_version: Option<String>,
+    arch: Option<String>,
 }
 
 #[derive(Clone)]
@@ -244,6 +245,7 @@ where
                         machine_id: view.host.machine_id,
                         os_name: view.host.os_name,
                         os_version: view.host.os_version,
+                        arch: view.host.arch,
                     },
                     latest_runtime: view.latest_runtime,
                     process_groups: view.process_groups,
@@ -270,7 +272,8 @@ where
         Ok(hosts) => hosts,
         Err(err) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
     };
-    let Some(host) = hosts.into_iter().next() else {
+    // 已退役的主机不能代表「当前这台机」—— 保留行是为了历史，不是为了出现在现役视图里。
+    let Some(host) = hosts.into_iter().find(|host| host.stale_at.is_none()) else {
         return json_error(StatusCode::NOT_FOUND, "no host found".to_string());
     };
     host_topology_response(store, host.host_id).await
@@ -292,6 +295,7 @@ where
                         machine_id: view.host.machine_id,
                         os_name: view.host.os_name,
                         os_version: view.host.os_version,
+                        arch: view.host.arch,
                     },
                     total_processes: view.total_processes,
                     total_groups: view.total_groups,
@@ -331,6 +335,7 @@ where
                         machine_id: view.host.machine_id,
                         os_name: view.host.os_name,
                         os_version: view.host.os_version,
+                        arch: view.host.arch,
                     },
                     total_processes: view.total_processes,
                     total_groups: view.total_groups,

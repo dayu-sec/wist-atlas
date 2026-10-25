@@ -274,6 +274,7 @@ pub(crate) fn resolve_host_candidate_for_host_telemetry(
                 machine_id: host.machine_id.clone(),
                 os_name: host.os_name.clone(),
                 os_version: host.os_version.clone(),
+                arch: host.arch.clone(),
             });
         }
     }
@@ -293,6 +294,7 @@ pub(crate) fn resolve_host_candidate_for_host_telemetry(
                 machine_id: host.machine_id.clone(),
                 os_name: host.os_name.clone(),
                 os_version: host.os_version.clone(),
+                arch: host.arch.clone(),
             });
         }
     }
@@ -319,6 +321,7 @@ pub(crate) fn resolve_host_candidate_for_process_telemetry(
                 machine_id: host.machine_id.clone(),
                 os_name: host.os_name.clone(),
                 os_version: host.os_version.clone(),
+                arch: host.arch.clone(),
             });
         }
     }
@@ -338,6 +341,7 @@ pub(crate) fn resolve_host_candidate_for_process_telemetry(
                 machine_id: host.machine_id.clone(),
                 os_name: host.os_name.clone(),
                 os_version: host.os_version.clone(),
+                arch: host.arch.clone(),
             });
         }
     }

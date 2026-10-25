@@ -59,8 +59,12 @@ fn process_presence_columns_round_trip_and_revive() {
         machine_id: Some("machine-presence".to_string()),
         os_name: None,
         os_version: None,
+        arch: None,
         created_at: now,
         last_inventory_at: now,
+        stale_at: None,
+        miss_count: 0,
+        ingest_scope: None,
     };
     CatalogStore::upsert_host(&store, &host).unwrap();
 
@@ -155,8 +159,12 @@ fn memory_postgres_executor_round_trips_minimal_p0_records() {
         machine_id: Some("machine-01".to_string()),
         os_name: Some("linux".to_string()),
         os_version: Some("6.8".to_string()),
+        arch: Some("x86_64".to_string()),
         created_at: now,
         last_inventory_at: now,
+        stale_at: None,
+        miss_count: 0,
+        ingest_scope: None,
     };
     let service = ServiceEntity {
         service_id: Uuid::new_v4(),
