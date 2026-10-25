@@ -5,6 +5,11 @@
 
 ## [未发布]
 
+## [0.2.0] - 2026-10-25
+
+这一版把「边缘发现 → 中心资产目录」打通成**无人值守**的链路：网关落盘的 sink 文件被
+自动消费、退出进程会被标 stale、主机多了架构与退役判据、前端能一眼读出这台机器有什么。
+
 ### 改进（拓扑可视化视觉改版）
 
 细节与参考产品见 [`doc/frontend/visual-design.md`](doc/frontend/visual-design.md)。
@@ -84,6 +89,11 @@
   - 输入解析**故意**不用 `wist-contracts` 的类型：那些类型带 `deny_unknown_fields`，
     对新版 agentd 多出来的字段会把**整帧**打回 —— 对消费端那是反的。
   - 裁剪过的 macOS fixture（1 host / 2 网卡 / 3 进程）作为 golden，改映射规则必须同步重新生成。
+
+### 说明
+
+- 本版仍未接入 CI 与打包流水线：`version.txt` 与 `Cargo.toml` 的 workspace 版本同步为
+  `0.2.0`，不产出发布附件。
 
 ## [0.1.0-alpha] - 2026-10-25
 
