@@ -1,11 +1,14 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import { useAppState } from './hooks/useAppState';
+import AppHeader from './components/AppHeader';
 import TopologyCanvas from './components/TopologyCanvas';
 import CanvasToolbar from './components/CanvasToolbar';
 import LegendCard from './components/LegendCard';
 import HostSummaryCard from './components/HostSummaryCard';
 import StatusBar from './components/StatusBar';
 import NodeDetailPanel from './components/NodeDetailPanel';
+import { ChevronRight } from './components/icons';
+import { buildSearchIndex, countMatches } from './utils/search';
 import {
   fetchHostProcessGroupsPage,
   fetchHostProcessOverview,
@@ -21,6 +24,7 @@ import type {
   HostProcessTopologyEdge,
   HostProcessTopologyGraph,
   HostProcessTopologyNode,
+  LayerKind,
   NodeKind,
 } from './types/domain';
 
@@ -117,14 +121,28 @@ export default function App() {
     });
   }, [networkId, dispatch]);
 
-  const displayGraph = buildDisplayGraph(
-    state.graph,
-    expandedHosts,
-    expandedGroups,
-    overviewGroupsByHost,
-    truncatedGroupsByHost,
-    loadedGroupsByHost,
-    groupPageLoadingByHost,
+  // 关键：选中节点/输入搜索词都会让 App 重渲染，如果把 displayGraph 每次重建，
+  // 画布的「图结构签名」就每次都变，点一下节点就会重新布局。
+  const displayGraph = useMemo(
+    () =>
+      buildDisplayGraph(
+        state.graph,
+        expandedHosts,
+        expandedGroups,
+        overviewGroupsByHost,
+        truncatedGroupsByHost,
+        loadedGroupsByHost,
+        groupPageLoadingByHost,
+      ),
+    [
+      state.graph,
+      expandedHosts,
+      expandedGroups,
+      overviewGroupsByHost,
+      truncatedGroupsByHost,
+      loadedGroupsByHost,
+      groupPageLoadingByHost,
+    ],
   );
   const selectedNode =
     displayGraph?.nodes.find((n) => n.id === state.selectedNodeId) ?? null;
@@ -170,19 +188,26 @@ export default function App() {
     }
   }, [state.graph, overviewGroupsByHost]);
 
+  /**
+   * 运行时卡片有两种意图：点卡片是「看详情」，点卡片底部的「展开进程分组」才是「铺开」。
+   * 之前一次点击同时做两件事，详情抽屉正好盖住刚展开的分组。
+   */
+  const handleExpandNode = useCallback((nodeId: string) => {
+    const hostNodeId = nodeId.startsWith(PROCESS_SUMMARY_PREFIX)
+      ? nodeId.slice(PROCESS_SUMMARY_PREFIX.length)
+      : nodeId;
+    setExpandedHosts((current) => {
+      const next = new Set(current);
+      if (next.has(hostNodeId)) next.delete(hostNodeId);
+      else next.add(hostNodeId);
+      return next;
+    });
+    dispatch({ type: 'SELECT_NODE', nodeId: null });
+  }, [dispatch]);
+
   const handleSelectNode = useCallback((nodeId: string | null) => {
     if (nodeId && nodeId.startsWith(PROCESS_SUMMARY_PREFIX)) {
-      const hostNodeId = nodeId.slice(PROCESS_SUMMARY_PREFIX.length);
-      setExpandedHosts((current) => {
-        const next = new Set(current);
-        if (next.has(hostNodeId)) {
-          next.delete(hostNodeId);
-        } else {
-          next.add(hostNodeId);
-        }
-        return next;
-      });
-      dispatch({ type: 'SELECT_NODE', nodeId: null });
+      dispatch({ type: 'SELECT_NODE', nodeId });
       return;
     }
     if (nodeId && nodeId.startsWith(PROCESS_GROUP_OVERFLOW_PREFIX)) {
@@ -252,12 +277,39 @@ export default function App() {
       }
     : null);
 
-  const graphNodes = displayGraph?.nodes ?? [];
-  const graphEdges = displayGraph?.edges ?? [];
-  const presentKinds: NodeKind[] = [];
-  for (const node of graphNodes) {
-    if (!presentKinds.includes(node.objectKind)) presentKinds.push(node.objectKind);
-  }
+  const graphNodes = useMemo(() => displayGraph?.nodes ?? [], [displayGraph]);
+  const graphEdges = useMemo(() => displayGraph?.edges ?? [], [displayGraph]);
+  const presentLayers = useMemo(() => {
+    const layers: LayerKind[] = [];
+    for (const node of graphNodes) {
+      if (!layers.includes(node.layer)) layers.push(node.layer);
+    }
+    return layers;
+  }, [graphNodes]);
+
+  const presentKinds = useMemo(() => {
+    const kinds: NodeKind[] = [];
+    for (const node of graphNodes) {
+      if (!kinds.includes(node.objectKind)) kinds.push(node.objectKind);
+    }
+    return kinds;
+  }, [graphNodes]);
+
+  const topGroups = useMemo(() => {
+    return (state.hostTopology?.processGroups ?? []).slice(0, 5).map((group) => ({
+      name: String(group.display_name ?? group.executable ?? '-'),
+      count: Number(group.process_count ?? 0),
+    }));
+  }, [state.hostTopology]);
+
+  // Esc 收起详情面板：图上的选中态和右侧抽屉必须能一键退出来。
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') dispatch({ type: 'SELECT_NODE', nodeId: null });
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [dispatch]);
 
   const segmentCount = state.hostTopology?.networkSegments.length
     ?? graphNodes.filter((node) => node.objectKind === 'NetworkSegment').length;
@@ -269,103 +321,51 @@ export default function App() {
     ?? graphNodes.filter((node) => node.objectKind === 'ServiceEntity').length;
   const hostCount = Number(displayGraph?.metadata?.hostCount ?? (primaryHostNode ? 1 : 0));
 
-  const query = state.searchQuery.trim().toLowerCase();
-  const matchCount = query
-    ? graphNodes.filter((node) => {
-        const haystack = [node.label, ...Object.values(node.properties).map(String)]
-          .join(' ')
-          .toLowerCase();
-        return haystack.includes(query);
-      }).length
+  const searchIndex = useMemo(() => buildSearchIndex(displayGraph), [displayGraph]);
+  const matchCount = state.searchQuery.trim()
+    ? countMatches(searchIndex, state.searchQuery)
     : null;
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden">
-      <header className="flex h-14 shrink-0 items-center gap-3 bg-slate-900 px-5 text-slate-100">
-        <div className="flex items-center gap-2">
-          <svg viewBox="0 0 20 20" className="size-5 text-indigo-400" fill="none" aria-hidden>
-            <path d="M10 1.6 18.4 10 10 18.4 1.6 10Z" stroke="currentColor" strokeWidth="1.4" />
-            <circle cx="10" cy="10" r="2.4" fill="currentColor" />
-          </svg>
-          <span className="text-[13px] font-semibold tracking-wide">wist-atlas</span>
-        </div>
-
-        <span className="h-5 w-px bg-slate-700" aria-hidden />
-
-        <div className="flex min-w-0 items-center gap-2">
-          <span className="truncate text-[13px] font-medium text-slate-200">
-            {railHost?.hostName ?? '未选择主机'}
-          </span>
-          {railHost?.osName && (
-            <span className="shrink-0 rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-300">
-              {railHost.osName} {railHost.osVersion ?? ''}
-            </span>
-          )}
-          {railHost?.arch && (
-            <span className="shrink-0 rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] text-slate-400">
-              {railHost.arch}
-            </span>
-          )}
-        </div>
-
-        <div className="ml-auto flex items-center gap-3">
-          <div
-            className={`h-0.5 w-24 overflow-hidden rounded-full bg-slate-800 ${state.loading ? '' : 'opacity-0'}`}
-            aria-hidden
-          >
-            <div className="h-full w-1/2 animate-pulse rounded-full bg-indigo-400" />
-          </div>
-          <button
-            type="button"
-            onClick={loadData}
-            disabled={state.loading}
-            className="flex h-8 items-center gap-1.5 rounded-md bg-slate-800 px-3 text-[12px] font-medium text-slate-200 transition-colors hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <svg viewBox="0 0 20 20" className="size-3.5" fill="none" stroke="currentColor" strokeWidth="1.8">
-              <path d="M16 10a6 6 0 1 1-1.8-4.3M16 3.5V7h-3.5" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-            刷新
-          </button>
-        </div>
-      </header>
+    <div className="flex h-screen flex-col overflow-hidden bg-canvas">
+      <AppHeader
+        host={railHost}
+        hostName={railHost?.hostName ?? '未选择主机'}
+        scannedAt={state.hostTopology?.generatedAt ?? displayGraph?.metadata?.queryTime ?? null}
+        loading={state.loading}
+        onRefresh={loadData}
+      />
 
       <div className="flex min-h-0 flex-1">
-        <aside className="flex w-72 shrink-0 flex-col overflow-y-auto border-r border-line bg-surface">
+        <aside className="flex w-[304px] shrink-0 flex-col overflow-y-auto border-r border-line bg-surface">
           <HostSummaryCard
             host={railHost}
             segmentCount={segmentCount}
             processCount={processCount}
             groupCount={groupCount}
             serviceCount={serviceCount}
+            topGroups={topGroups}
             generatedAt={state.hostTopology?.generatedAt ?? displayGraph?.metadata?.queryTime ?? null}
             loading={state.loading}
           />
 
           <LegendCard kinds={presentKinds} />
 
-          <details className="group px-4 py-3.5">
-            <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[11px] text-ink-mute transition-colors hover:text-ink-soft">
-              <svg
-                viewBox="0 0 20 20"
-                className="size-3 transition-transform group-open:rotate-90"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-              >
-                <path d="m8 5 5 5-5 5" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
+          <details className="group border-b border-line px-4 py-3.5">
+            <summary className="flex cursor-pointer list-none items-center gap-1 text-[10.5px] text-[#98a2b3] transition-colors hover:text-[#475467]">
+              <ChevronRight className="size-3 transition-transform group-open:rotate-90" />
               按对象 ID 查询
             </summary>
 
             <div className="mt-3 space-y-3">
               <form
-                onSubmit={(e) => {
-                  e.preventDefault();
+                onSubmit={(event) => {
+                  event.preventDefault();
                   queryHost();
                 }}
                 className="space-y-1.5"
               >
-                <label className="block text-[10px] text-ink-mute" htmlFor="host-id-input">
+                <label className="block text-[9.5px] text-[#98a2b3]" htmlFor="host-id-input">
                   主机对象 ID
                 </label>
                 <div className="flex gap-1.5">
@@ -374,12 +374,12 @@ export default function App() {
                     type="text"
                     placeholder="UUID"
                     value={hostId}
-                    onChange={(e) => setHostId(e.target.value)}
-                    className="h-7 min-w-0 flex-1 rounded-md border border-line bg-canvas px-2 font-mono text-[11px] text-ink placeholder:text-ink-mute focus:border-brand focus:bg-surface focus:outline-none focus:ring-2 focus:ring-brand/15"
+                    onChange={(event) => setHostId(event.target.value)}
+                    className="h-7 min-w-0 flex-1 rounded-[7px] border border-line bg-[#f9fafb] px-2 font-mono text-[10.5px] text-ink placeholder:text-[#b4bcc8] focus:border-brand focus:bg-surface focus:outline-none focus:ring-2 focus:ring-brand/15"
                   />
                   <button
                     type="submit"
-                    className="h-7 shrink-0 rounded-md bg-brand px-2.5 text-[11px] font-medium text-white transition-colors hover:bg-indigo-700"
+                    className="h-7 shrink-0 rounded-[7px] bg-ink px-2.5 text-[10.5px] font-medium text-white transition-colors hover:bg-[#344054]"
                   >
                     查询
                   </button>
@@ -387,13 +387,13 @@ export default function App() {
               </form>
 
               <form
-                onSubmit={(e) => {
-                  e.preventDefault();
+                onSubmit={(event) => {
+                  event.preventDefault();
                   queryNetwork();
                 }}
                 className="space-y-1.5"
               >
-                <label className="block text-[10px] text-ink-mute" htmlFor="network-id-input">
+                <label className="block text-[9.5px] text-[#98a2b3]" htmlFor="network-id-input">
                   网段对象 ID
                 </label>
                 <div className="flex gap-1.5">
@@ -402,12 +402,12 @@ export default function App() {
                     type="text"
                     placeholder="UUID"
                     value={networkId}
-                    onChange={(e) => setNetworkId(e.target.value)}
-                    className="h-7 min-w-0 flex-1 rounded-md border border-line bg-canvas px-2 font-mono text-[11px] text-ink placeholder:text-ink-mute focus:border-brand focus:bg-surface focus:outline-none focus:ring-2 focus:ring-brand/15"
+                    onChange={(event) => setNetworkId(event.target.value)}
+                    className="h-7 min-w-0 flex-1 rounded-[7px] border border-line bg-[#f9fafb] px-2 font-mono text-[10.5px] text-ink placeholder:text-[#b4bcc8] focus:border-brand focus:bg-surface focus:outline-none focus:ring-2 focus:ring-brand/15"
                   />
                   <button
                     type="submit"
-                    className="h-7 shrink-0 rounded-md border border-line bg-surface px-2.5 text-[11px] font-medium text-ink-soft transition-colors hover:border-line-strong"
+                    className="h-7 shrink-0 rounded-[7px] border border-line bg-surface px-2.5 text-[10.5px] font-medium text-[#475467] transition-colors hover:border-[#d0d5dd] hover:bg-[#f9fafb]"
                   >
                     查询
                   </button>
@@ -415,50 +415,71 @@ export default function App() {
               </form>
             </div>
           </details>
+
+          <details className="group px-4 py-3.5">
+            <summary className="flex cursor-pointer list-none items-center gap-1 text-[10.5px] text-[#98a2b3] transition-colors hover:text-[#475467]">
+              <ChevronRight className="size-3 transition-transform group-open:rotate-90" />
+              对象标识
+            </summary>
+            <div className="mt-2.5 space-y-2">
+              <IdRow label="主机 ID" value={railHost?.id} />
+              <IdRow label="机器 ID" value={railHost?.machineId} />
+            </div>
+          </details>
+
+          <div className="mt-auto px-4 py-4 text-[10px] leading-4 text-[#b4bcc8]">
+            只读视图 · 数据来自最近一次主机盘点
+          </div>
         </aside>
 
-        <main className="flex min-w-0 flex-1 flex-col">
-          <CanvasToolbar
+        <main className="relative min-w-0 flex-1">
+          <TopologyCanvas
+            graph={displayGraph}
+            selectedNodeId={state.selectedNodeId}
+            onSelectNode={handleSelectNode}
+            onExpandNode={handleExpandNode}
             searchQuery={state.searchQuery}
-            onSearchChange={(q) => dispatch({ type: 'SET_SEARCH', query: q })}
             layerVisibility={state.layerVisibility}
-            onToggleLayer={(l) => dispatch({ type: 'TOGGLE_LAYER', layer: l })}
-            layout={state.layout}
-            onLayoutChange={(l) => dispatch({ type: 'SET_LAYOUT', layout: l })}
-            matchCount={matchCount}
+            scannedAt={state.hostTopology?.generatedAt ?? displayGraph?.metadata?.queryTime ?? null}
+            hostArch={state.hostTopology?.host.arch ?? null}
+            loading={state.loading}
           />
 
-          <div className="relative min-h-0 flex-1">
-            <TopologyCanvas
-              graph={displayGraph}
-              selectedNodeId={state.selectedNodeId}
-              onSelectNode={handleSelectNode}
+          <div className="pointer-events-none absolute left-4 top-4 z-20">
+            <CanvasToolbar
               searchQuery={state.searchQuery}
-              layout={state.layout}
+              onSearchChange={(query) => dispatch({ type: 'SET_SEARCH', query })}
+              layerVisibility={state.layerVisibility}
+              layers={presentLayers}
+              onToggleLayer={(layer) => dispatch({ type: 'TOGGLE_LAYER', layer })}
+              matchCount={matchCount}
             />
-            <NodeDetailPanel
-              node={selectedNode}
-              hostTopology={state.hostTopology}
-              processViewMode={getProcessViewMode(selectedNode, loadedGroupsByHost, groupPageLoadingByHost)}
-              loadedProcessGroups={getSelectedLoadedProcessGroups(selectedNode, loadedGroupsByHost)}
-              onClose={() => dispatch({ type: 'SELECT_NODE', nodeId: null })}
-            />
-
-            {state.error && (
-              <div className="absolute bottom-3 left-3 z-20 flex max-w-md items-start gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[11px] text-rose-800 shadow-sm">
-                <span className="mt-0.5 font-semibold">出错</span>
-                <span className="min-w-0 break-all">{state.error}</span>
-                <button
-                  type="button"
-                  onClick={() => dispatch({ type: 'FETCH_GRAPH_ERROR', error: '' })}
-                  className="ml-auto shrink-0 rounded px-1 text-rose-400 hover:text-rose-700"
-                  aria-label="关闭错误提示"
-                >
-                  ✕
-                </button>
-              </div>
-            )}
           </div>
+
+          <NodeDetailPanel
+            node={selectedNode}
+            graph={displayGraph}
+            hostTopology={state.hostTopology}
+            processViewMode={getProcessViewMode(selectedNode, loadedGroupsByHost, groupPageLoadingByHost)}
+            loadedProcessGroups={getSelectedLoadedProcessGroups(selectedNode, loadedGroupsByHost)}
+            onClose={() => dispatch({ type: 'SELECT_NODE', nodeId: null })}
+            onExpand={handleExpandNode}
+          />
+
+          {state.error && (
+            <div className="absolute bottom-4 left-4 z-30 flex max-w-md items-start gap-2 rounded-[10px] border border-[#fecdca] bg-[#fffbfa] px-3 py-2 text-[11px] text-[#b42318] shadow-[0_8px_24px_-12px_rgba(16,24,40,0.25)]">
+              <span className="mt-px shrink-0 font-semibold">出错</span>
+              <span className="min-w-0 break-all">{state.error}</span>
+              <button
+                type="button"
+                onClick={() => dispatch({ type: 'FETCH_GRAPH_ERROR', error: '' })}
+                className="ml-auto shrink-0 rounded px-1 text-[#f97066] hover:text-[#b42318]"
+                aria-label="关闭错误提示"
+              >
+                ✕
+              </button>
+            </div>
+          )}
         </main>
       </div>
 
@@ -466,11 +487,24 @@ export default function App() {
         hostCount={hostCount}
         segmentCount={segmentCount}
         processCount={processCount}
+        groupCount={groupCount}
         nodeCount={graphNodes.length}
         edgeCount={graphEdges.length}
         queryTime={displayGraph?.metadata?.queryTime ?? null}
         loading={state.loading}
       />
+    </div>
+  );
+}
+
+function IdRow({ label, value }: { label: string; value?: string | null }) {
+  if (!value) return null;
+  return (
+    <div className="text-[10px]">
+      <div className="text-[#98a2b3]">{label}</div>
+      <div className="mt-0.5 truncate font-mono text-[9.5px] leading-4 text-[#667085]" title={value}>
+        {value}
+      </div>
     </div>
   );
 }

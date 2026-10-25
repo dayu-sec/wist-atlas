@@ -2,47 +2,36 @@ import type { LayerKind, NodeKind } from '../types/domain';
 import { LAYER_NODE_KINDS } from '../types/domain';
 
 export type NodeStyle = {
-  /** 节点填充 */
+  /** 图标块底色 */
   fill: string;
-  /** 节点描边 */
+  /** 图标与描边色 */
   stroke: string;
-  /** 该类型的角标色（图例、徽章、详情面板标题） */
+  /** 文字/角标色 */
   accent: string;
   /** 中文名 */
   label: string;
 };
 
 /**
- * 按 **objectKind** 着色，不是按 layer。
+ * 颜色只承担「分类」，不承担「装饰」。
  *
- * 之前只有 layer 两级色（绿=资源、紫=治理），而图上同时有主机/网段/进程汇总/分组/进程五种
- * 节点 —— 图例解释不了图上看到的东西。现在一种对象一个色，图例只列「当前这张图里出现过」的。
+ * 上一版的节点是满色块（薄荷绿 / 婴儿蓝 / 琥珀），十来个节点就把画布变成糖果盘；
+ * 现在大面积留白交给卡片本身，颜色只出现在 28px 的图标块和一根细角标上。
  */
 export const NODE_STYLES: Record<NodeKind, NodeStyle> = {
-  HostInventory: { fill: '#fef3c7', stroke: '#f59e0b', accent: '#b45309', label: '主机' },
-  NetworkSegment: { fill: '#d1fae5', stroke: '#10b981', accent: '#047857', label: '网段' },
-  ProcessSummary: { fill: '#dbeafe', stroke: '#3b82f6', accent: '#1d4ed8', label: '进程汇总' },
-  ProcessGroup: { fill: '#e0f2fe', stroke: '#0ea5e9', accent: '#0369a1', label: '进程分组' },
-  ProcessRuntime: { fill: '#f1f5f9', stroke: '#94a3b8', accent: '#475569', label: '进程' },
-  ServiceEntity: { fill: '#ede9fe', stroke: '#8b5cf6', accent: '#6d28d9', label: '服务' },
-  ServiceInstance: { fill: '#f3e8ff', stroke: '#a855f7', accent: '#7e22ce', label: '服务实例' },
-  Subject: { fill: '#fce7f3', stroke: '#ec4899', accent: '#be185d', label: '责任人' },
+  HostInventory: { fill: '#FFF6ED', stroke: '#F79009', accent: '#B54708', label: '主机' },
+  NetworkSegment: { fill: '#ECFDF3', stroke: '#12B76A', accent: '#027A48', label: '网段' },
+  ProcessSummary: { fill: '#EEF4FF', stroke: '#6366F1', accent: '#4338CA', label: '进程汇总' },
+  ProcessGroup: { fill: '#F0F9FF', stroke: '#0BA5EC', accent: '#026AA2', label: '进程分组' },
+  ProcessRuntime: { fill: '#F8FAFC', stroke: '#98A2B3', accent: '#475467', label: '进程' },
+  ServiceEntity: { fill: '#F4F3FF', stroke: '#7A5AF8', accent: '#5925DC', label: '服务' },
+  ServiceInstance: { fill: '#F9F5FF', stroke: '#9E77ED', accent: '#6941C6', label: '服务实例' },
+  Subject: { fill: '#FDF2FA', stroke: '#EE46BC', accent: '#C11574', label: '责任人' },
 };
 
-export const NODE_SHAPES: Record<NodeKind, string> = {
-  HostInventory: 'round-diamond',
-  NetworkSegment: 'round-hexagon',
-  ProcessSummary: 'round-rectangle',
-  ProcessGroup: 'round-rectangle',
-  ProcessRuntime: 'ellipse',
-  ServiceEntity: 'round-tag',
-  ServiceInstance: 'round-octagon',
-  Subject: 'ellipse',
-};
-
-export const LAYER_COLORS: Record<LayerKind, { bg: string; border: string; label: string }> = {
-  resource: { bg: '#ecfdf5', border: '#10b981', label: '资源目录' },
-  governance: { bg: '#f5f3ff', border: '#8b5cf6', label: '责任治理' },
+export const LAYER_COLORS: Record<LayerKind, { bg: string; border: string; label: string; short: string }> = {
+  resource: { bg: '#ECFDF3', border: '#12B76A', label: '资源目录', short: '资源' },
+  governance: { bg: '#F5F3FF', border: '#8B5CF6', label: '责任治理', short: '治理' },
 };
 
 export function nodeKindToLayer(kind: NodeKind): LayerKind {

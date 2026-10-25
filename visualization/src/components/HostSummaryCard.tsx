@@ -1,5 +1,8 @@
 import type { HostTopologyHost } from '../types/domain';
 import { formatCount, formatRelative } from '../utils/format';
+import { HostGlyph } from './icons';
+
+export type TopGroupSummary = { name: string; count: number };
 
 type Props = {
   host: HostTopologyHost | null;
@@ -7,15 +10,16 @@ type Props = {
   processCount: number;
   groupCount: number;
   serviceCount: number;
+  topGroups: TopGroupSummary[];
   generatedAt?: string | null;
   loading: boolean;
 };
 
 /**
- * 主机资产卡 —— 这一屏真正要回答的问题。
+ * 左栏是「这台机器的档案」，不是第二张图。
  *
- * 之前的界面只有一张图，系统/架构/网段数/进程数一个都看不到；而它们本来就在
- * `hostTopology` 里，已经取回来了却没人渲染。
+ * 上一版把四个指标塞进四块灰色方块、底下一整条空白；现在指标用带分隔线的紧凑表格，
+ * 下面接「高频进程」—— 1,120 个进程这个数字终于有了可读的构成。
  */
 export default function HostSummaryCard({
   host,
@@ -23,76 +27,103 @@ export default function HostSummaryCard({
   processCount,
   groupCount,
   serviceCount,
+  topGroups,
   generatedAt,
   loading,
 }: Props) {
   const os = [host?.osName, host?.osVersion].filter(Boolean).join(' ');
+  const maxCount = topGroups.reduce((max, group) => Math.max(max, group.count), 0);
+
+  const metrics: { label: string; value: number }[] = [
+    { label: '网段', value: segmentCount },
+    { label: '进程', value: processCount },
+    { label: '进程分组', value: groupCount },
+    { label: '服务', value: serviceCount },
+  ];
 
   return (
-    <section className="px-4 py-4 border-b border-line">
-      <div className="flex items-start gap-2.5">
+    <section className="border-b border-line px-4 pb-4 pt-4">
+      <div className="flex items-start gap-3">
         <span
-          className="mt-1.5 size-2.5 shrink-0 rotate-45 rounded-[2px] bg-amber-400 ring-2 ring-amber-100"
+          className="grid size-10 shrink-0 place-items-center rounded-[11px]"
+          style={{ backgroundColor: '#FFF6ED', color: '#F79009' }}
           aria-hidden
-        />
-        <div className="min-w-0">
-          <h2 className="text-[15px] font-semibold leading-tight tracking-tight text-ink truncate">
+        >
+          <HostGlyph className="size-[19px]" />
+        </span>
+        <div className="min-w-0 flex-1 pt-0.5">
+          <h2 className="truncate text-[15px] font-semibold leading-5 tracking-[-0.01em] text-ink">
             {host?.hostName ?? (loading ? '加载中…' : '未选择主机')}
           </h2>
-          <p className="mt-0.5 text-[11px] text-ink-mute">
+          <p className="mt-1 truncate text-[11px] leading-4 text-[#667085]">
             {os || '系统信息未采集'}
-            {host?.arch ? ` · ${host.arch}` : ''}
+            {host?.arch ? <span className="font-mono text-[10.5px] text-[#98a2b3]"> · {host.arch}</span> : null}
           </p>
         </div>
       </div>
 
-      <dl className="mt-4 grid grid-cols-2 gap-2">
-        <Metric label="网段" value={formatCount(segmentCount)} />
-        <Metric label="进程" value={formatCount(processCount)} />
-        <Metric label="进程分组" value={formatCount(groupCount)} />
-        <Metric label="服务" value={formatCount(serviceCount)} />
-      </dl>
+      <div className="mt-4 grid grid-cols-2 overflow-hidden rounded-[10px] border border-line">
+        {metrics.map((metric, index) => (
+          <div
+            key={metric.label}
+            className={[
+              'px-3 py-2.5',
+              index % 2 === 0 ? 'border-r border-line' : '',
+              index < 2 ? 'border-b border-line' : '',
+            ].join(' ')}
+          >
+            <div className="text-[9.5px] font-medium uppercase leading-none tracking-[0.08em] text-[#98a2b3]">
+              {metric.label}
+            </div>
+            <div className="tnum mt-1 text-[18px] font-semibold leading-6 tracking-[-0.01em] text-ink">
+              {formatCount(metric.value)}
+            </div>
+          </div>
+        ))}
+      </div>
 
-      <div className="mt-4 space-y-2 border-t border-line pt-3">
-        <IdRow label="主机 ID" value={host?.id} />
-        <IdRow label="机器 ID" value={host?.machineId} />
-        <div className="flex items-baseline justify-between gap-3 text-[11px]">
-          <span className="shrink-0 text-ink-mute">盘点于</span>
-          {generatedAt ? (
-            <span className="text-ink-soft" title={generatedAt}>
-              {formatRelative(generatedAt)}
-            </span>
-          ) : (
-            <span className="text-ink-soft">—</span>
-          )}
+      <div className="mt-4">
+        <div className="flex items-baseline justify-between">
+          <h3 className="text-[9.5px] font-medium uppercase tracking-[0.08em] text-[#98a2b3]">
+            高频进程
+          </h3>
+          <span className="text-[9.5px] text-[#b4bcc8]">按进程数</span>
         </div>
+
+        {topGroups.length > 0 ? (
+          <ul className="mt-2.5 space-y-2.5">
+            {topGroups.map((group) => (
+              <li key={group.name}>
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="truncate text-[11px] leading-4 text-[#344054]" title={group.name}>
+                    {group.name}
+                  </span>
+                  <span className="tnum shrink-0 text-[10px] text-[#667085]">
+                    {formatCount(group.count)}
+                  </span>
+                </div>
+                <div className="mt-1 h-[3px] overflow-hidden rounded-full bg-[#f2f4f7]">
+                  <div
+                    className="h-full rounded-full bg-[#a5b4fc]"
+                    style={{ width: `${maxCount > 0 ? Math.max(3, (group.count / maxCount) * 100) : 0}%` }}
+                  />
+                </div>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="mt-2 text-[10.5px] text-[#98a2b3]">
+            {loading ? '正在读取进程分组…' : '暂无进程分组数据'}
+          </p>
+        )}
+      </div>
+
+      <div className="mt-4 flex items-center justify-between border-t border-[#f2f4f7] pt-3 text-[10.5px]">
+        <span className="text-[#98a2b3]">盘点时间</span>
+        <span className="text-[#475467]" title={generatedAt ?? undefined}>
+          {generatedAt ? formatRelative(generatedAt) : '—'}
+        </span>
       </div>
     </section>
-  );
-}
-
-function Metric({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-md bg-canvas px-2.5 py-2">
-      <dt className="text-[10px] text-ink-mute">{label}</dt>
-      <dd className="tnum text-[17px] font-semibold leading-tight text-ink">{value}</dd>
-    </div>
-  );
-}
-
-/**
- * 一行 ID。标签在上、值独占整行 —— UUID 有 36 个字符，塞在标签右侧必然折行。
- * 值为空时整行不渲染（macOS 就没有 machine-id，别留一个孤零零的破折号）。
- */
-function IdRow({ label, value }: { label: string; value?: string | null }) {
-  if (!value) return null;
-
-  return (
-    <div className="text-[11px]">
-      <span className="text-ink-mute">{label}</span>
-      <p className="mt-0.5 truncate font-mono text-[10px] leading-snug text-ink-soft" title={value}>
-        {value}
-      </p>
-    </div>
   );
 }

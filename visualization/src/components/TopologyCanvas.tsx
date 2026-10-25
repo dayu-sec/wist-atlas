@@ -1,409 +1,591 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import cytoscape, { type Core } from 'cytoscape';
 import dagre from 'cytoscape-dagre';
 import coseBilkent from 'cytoscape-cose-bilkent';
-import type { HostProcessTopologyGraph, LayoutName, NodeKind } from '../types/domain';
+import type { HostProcessTopologyGraph, LayerKind, NodeKind } from '../types/domain';
 import { graphToCyElements } from '../utils/graph-to-cy';
-import { NODE_SHAPES, getNodeStyle } from '../utils/colors';
-import { basename } from '../utils/format';
+import { buildSearchIndex } from '../utils/search';
+import { computeFocusLayout, computeRuntimeLayout, type LaneAnnotation } from '../utils/focus-layout';
+import { nodeDims } from '../utils/presentation';
+import NodeCard, { type GraphNodeHint, type HostStats } from './NodeCard';
+import { FitIcon, MinusIcon, PlusIcon } from './icons';
 
 cytoscape.use(dagre);
 cytoscape.use(coseBilkent);
-
-type CytoscapeNodeShape =
-  | 'rectangle'
-  | 'roundrectangle'
-  | 'ellipse'
-  | 'triangle'
-  | 'pentagon'
-  | 'hexagon'
-  | 'heptagon'
-  | 'octagon'
-  | 'star'
-  | 'barrel'
-  | 'diamond'
-  | 'vee'
-  | 'rhomboid'
-  | 'polygon'
-  | 'tag'
-  | 'round-rectangle'
-  | 'round-triangle'
-  | 'round-diamond'
-  | 'round-pentagon'
-  | 'round-hexagon'
-  | 'round-heptagon'
-  | 'round-octagon'
-  | 'round-tag'
-  | 'cut-rectangle'
-  | 'bottom-round-rectangle'
-  | 'concave-hexagon';
 
 type Props = {
   graph: HostProcessTopologyGraph | null;
   selectedNodeId: string | null;
   onSelectNode: (nodeId: string | null) => void;
+  onExpandNode: (nodeId: string) => void;
   searchQuery: string;
-  layout: LayoutName;
+  layerVisibility: Record<LayerKind, boolean>;
+  scannedAt?: string | null;
+  hostArch?: string | null;
+  loading: boolean;
 };
 
-const LAYOUTS: Record<ConcreteLayout, cytoscape.LayoutOptions> = {
-  // LR 而不是 TB：主机的「网段」是 rank-1 的兄弟节点，横排能用上宽屏；
-  // 之前 rankSep 太小，纵向排出来的标签会压到下一个节点上。
+const LAYOUT_OPTIONS: Record<'dagre' | 'cose-bilkent', cytoscape.LayoutOptions> = {
+  // 卡片比几何节点宽得多，rank/node 间距必须跟着放大，否则标签会互相压。
   dagre: {
     name: 'dagre',
     rankDir: 'LR',
-    nodeSep: 56,
-    rankSep: 130,
-    edgeSep: 12,
+    nodeSep: 48,
+    rankSep: 128,
+    edgeSep: 20,
     padding: 48,
-    animate: false,
-  } as cytoscape.LayoutOptions,
-  concentric: {
-    name: 'concentric',
-    minNodeSpacing: 34,
-    spacingFactor: 1.35,
-    // 半径层级：主机在最内圈，进程汇总结其次，网段等叶子在最外圈。
-    concentric: (node: cytoscape.NodeSingular) => {
-      const kind = node.data('objectKind') as string;
-      if (kind === 'HostInventory') return 3;
-      if (kind === 'ProcessSummary') return 2;
-      return 1;
-    },
-    levelWidth: () => 1,
     animate: false,
   } as cytoscape.LayoutOptions,
   'cose-bilkent': {
     name: 'cose-bilkent',
-    idealEdgeLength: 140,
-    nodeRepulsion: 6000,
+    idealEdgeLength: 190,
+    nodeRepulsion: 14000,
+    gravity: 0.2,
     animate: false,
   } as cytoscape.LayoutOptions,
 };
 
-/** 「自动」模式下真正会落到的一个具体布局（星形图走自己算的 preset，不在表里）。 */
-type ConcreteLayout = 'dagre' | 'concentric' | 'cose-bilkent';
+/** 图变深之后的两个落点：分层 / 力导向。 */
+type ConcreteLayout = 'dagre' | 'cose-bilkent';
 
-type Position = { x: number; y: number };
+const CY_STYLE = [
+  {
+    selector: 'node',
+    style: {
+      // 节点的可见外形交给 HTML 卡片；cytoscape 只负责布局、连线和命中区。
+      width: (element: cytoscape.NodeSingular) =>
+        nodeDims(element.data('objectKind') as NodeKind).width,
+      height: (element: cytoscape.NodeSingular) =>
+        nodeDims(element.data('objectKind') as NodeKind).height,
+      shape: 'round-rectangle',
+      'background-opacity': 0,
+      'border-width': 0,
+      label: '',
+      'overlay-opacity': 0,
+    },
+  },
+  {
+    selector: 'edge',
+    style: {
+      width: 1.4,
+      'line-color': '#c3ccd9',
+      'curve-style': 'bezier',
+      'control-point-step-size': 36,
+      'line-cap': 'round',
+      'overlay-opacity': 0,
+    },
+  },
+  {
+    selector: 'edge[edgeKind = "host_network_assoc"]',
+    style: { 'line-color': '#cbd5e1' },
+  },
+  {
+    selector: 'edge[edgeKind = "responsibility_assignment"]',
+    style: { 'line-color': '#e4d7fb', 'line-style': 'dashed' },
+  },
+  {
+    selector: 'edge.neighbor',
+    style: { width: 1.8, 'line-color': '#a5b4fc' },
+  },
+  {
+    selector: 'edge.hot',
+    style: { width: 2, 'line-color': '#94a3b8' },
+  },
+  {
+    selector: 'edge.dimmed',
+    style: { opacity: 0.16 },
+  },
+] as cytoscape.StylesheetStyle[];
 
-/**
- * 星形资产图的半径。横向拉长：这个画布永远是宽屏，正圆会把两边留空。
- */
-const STAR_LEAF_LIMIT = 14;
-const STAR_RX = 340;
-const STAR_RY = 250;
+const MIN_ZOOM = 0.12;
+const MAX_ZOOM = 2.4;
+const FIT_ZOOM_CAP = 1.08;
 
-/**
- * 星形资产图（1 台主机 + 一圈直连叶子）的专用环形布局。
- *
- * 为什么不用 concentric：它把「独占一层」的节点固定从正北开始排，第一个叶子也从正北开始，
- * 于是进程汇总节点会跟某个网段共线 —— 看起来像那条边上的中转点。这里显式算角度，位置可控。
- */
-function starPresetPositions(graph: HostProcessTopologyGraph): Record<string, Position> | null {
-  const hosts = graph.nodes.filter((node) => node.objectKind === 'HostInventory');
-  if (hosts.length !== 1) return null;
-
-  const host = hosts[0];
-  const leaves = graph.nodes.filter((node) => node.id !== host.id);
-  if (leaves.length === 0 || leaves.length > STAR_LEAF_LIMIT) return null;
-
-  const degree = new Map<string, number>();
-  const attachedToHost = new Set<string>();
-  for (const edge of graph.edges) {
-    degree.set(edge.source, (degree.get(edge.source) ?? 0) + 1);
-    degree.set(edge.target, (degree.get(edge.target) ?? 0) + 1);
-    if (edge.source === host.id) attachedToHost.add(edge.target);
-    if (edge.target === host.id) attachedToHost.add(edge.source);
-  }
-
-  // 有一个节点不是「直连主机且只有一条边」，就不是星形图，交给通用布局。
-  const isStar = leaves.every(
-    (node) => attachedToHost.has(node.id) && (degree.get(node.id) ?? 0) <= 1,
-  );
-  if (!isStar) return null;
-
-  // 进程汇总排第一位 → 从正下方起铺，于是它独占正下方，不会和网段挤成一圈。
-  const ordered = [...leaves].sort((a, b) => {
-    const rankA = a.objectKind === 'ProcessSummary' ? 0 : 1;
-    const rankB = b.objectKind === 'ProcessSummary' ? 0 : 1;
-    return rankA - rankB;
-  });
-
-  const positions: Record<string, Position> = { [host.id]: { x: 0, y: 0 } };
-  const step = (Math.PI * 2) / ordered.length;
-  ordered.forEach((node, index) => {
-    // cytoscape 的 y 轴向下，所以 sin(π/2)=1 就是屏幕下方。
-    const angle = Math.PI / 2 + step * index;
-    positions[node.id] = {
-      x: Math.round(Math.cos(angle) * STAR_RX),
-      y: Math.round(Math.sin(angle) * STAR_RY),
-    };
-  });
-
-  return positions;
-}
-
-/** 每种节点的视觉尺寸。主机最大，进程最小 —— 尺寸本身要能读出层级。 */
-const NODE_SIZE: Record<string, number> = {
-  HostInventory: 76,
-  ProcessSummary: 56,
-  ProcessGroup: 40,
-  NetworkSegment: 34,
-  ServiceEntity: 34,
-  ServiceInstance: 30,
-  ProcessRuntime: 18,
-  Subject: 28,
-};
-
-/** 节点主标签：用结构化字段重排，而不是照抄后端那句英文 `processes: 1120`。 */
-function displayLabel(kind: NodeKind, label: string, properties: Record<string, unknown>): string {
-  if (kind === 'ProcessSummary') {
-    const total = Number(properties.totalProcesses ?? 0);
-    return Number.isFinite(total) && total > 0 ? `进程 · ${total.toLocaleString('zh-CN')}` : '进程';
-  }
-  if (kind === 'ProcessGroup') {
-    const executable = typeof properties.executable === 'string' ? properties.executable : '';
-    const count = Number(properties.processCount ?? 0);
-    const name = executable ? basename(executable) : label;
-    return Number.isFinite(count) && count > 0 ? `${name} · ${count}` : name;
-  }
-  return label;
-}
-
-export default function TopologyCanvas({ graph, selectedNodeId, onSelectNode, searchQuery, layout }: Props) {
+export default function TopologyCanvas({
+  graph,
+  selectedNodeId,
+  onSelectNode,
+  onExpandNode,
+  searchQuery,
+  layerVisibility,
+  scannedAt,
+  hostArch,
+  loading,
+}: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<Core | null>(null);
-  const onSelectNodeRef = useRef(onSelectNode);
-  const fitRef = useRef<() => void>(() => {});
+  const cardRefs = useRef(new Map<string, HTMLDivElement>());
+  const annotationRefs = useRef(new Map<string, HTMLDivElement>());
+  const rafRef = useRef(0);
+  const onSelectRef = useRef(onSelectNode);
+  const [annotations, setAnnotations] = useState<LaneAnnotation[]>([]);
+  const [zoom, setZoom] = useState(1);
 
   useEffect(() => {
-    onSelectNodeRef.current = onSelectNode;
+    onSelectRef.current = onSelectNode;
   }, [onSelectNode]);
+
+  /**
+   * 先按图层过滤，再布局 —— 隐藏的节点如果还参与布局，画布上会留下看不见的空洞。
+   */
+  const visibleGraph = useMemo(() => {
+    if (!graph) return null;
+    const nodes = graph.nodes.filter((node) => layerVisibility[node.layer]);
+    const ids = new Set(nodes.map((node) => node.id));
+    const edges = graph.edges.filter((edge) => ids.has(edge.source) && ids.has(edge.target));
+    return { nodes, edges, metadata: graph.metadata } satisfies HostProcessTopologyGraph;
+  }, [graph, layerVisibility]);
+
+  /**
+   * App 每次渲染（包括选中节点）都会重建 graph 对象。如果 effect 直接依赖它，
+   * 点一下节点就会重排 + 重新 fit，画布像被「刷新」了一样跳一下。这里用结构签名去抖。
+   */
+  const graphSignature = useMemo(
+    () =>
+      visibleGraph
+        ? `${visibleGraph.nodes.map((node) => node.id).join('|')}#${visibleGraph.edges
+            .map((edge) => edge.id)
+            .join('|')}`
+        : '',
+    [visibleGraph],
+  );
+
+  const hints = useMemo(() => buildNetworkHints(visibleGraph), [visibleGraph]);
+  const searchIndex = useMemo(() => buildSearchIndex(visibleGraph), [visibleGraph]);
+
+  // 这些回调随 annotations / graph 身份变化，但 cytoscape 只应该初始化一次。
+  const scheduleSyncRef = useRef<() => void>(() => {});
+  const fitViewRef = useRef<() => void>(() => {});
+  const annotationsRef = useRef<LaneAnnotation[]>([]);
+
+  const hostStats = useMemo<HostStats | undefined>(() => {
+    if (!visibleGraph) return undefined;
+    const summary = visibleGraph.nodes.find((node) => node.objectKind === 'ProcessSummary');
+    return {
+      segments: visibleGraph.nodes.filter((node) => node.objectKind === 'NetworkSegment').length,
+      processes: Number(
+        visibleGraph.metadata?.processCount ?? summary?.properties.totalProcesses ?? 0,
+      ),
+      groups: Number(summary?.properties.totalPrograms ?? 0),
+      arch: hostArch ?? null,
+      scannedAt: scannedAt ?? null,
+    };
+  }, [visibleGraph, scannedAt, hostArch]);
+
+  const expanded = useMemo(
+    () => Boolean(visibleGraph?.nodes.some((node) => node.objectKind === 'ProcessGroup')),
+    [visibleGraph],
+  );
+
+  const syncViewport = useCallback(() => {
+    const cy = cyRef.current;
+    if (!cy) return;
+    const factor = cy.zoom();
+    const pan = cy.pan();
+
+    for (const [id, element] of cardRefs.current) {
+      const node = cy.getElementById(id);
+      if (node.length === 0) continue;
+      const point = node.renderedPosition();
+      const dims = nodeDims(node.data('objectKind') as NodeKind);
+      element.style.transform = `translate3d(${point.x - (dims.width * factor) / 2}px, ${
+        point.y - (dims.height * factor) / 2
+      }px, 0) scale(${factor})`;
+    }
+
+    for (const annotation of annotations) {
+      const element = annotationRefs.current.get(annotation.id);
+      if (!element) continue;
+      element.style.transform = `translate3d(${annotation.x * factor + pan.x}px, ${
+        annotation.y * factor + pan.y
+      }px, 0) scale(${factor})`;
+    }
+
+    setZoom((current) => (Math.abs(current - factor) < 0.005 ? current : factor));
+  }, [annotations]);
+
+  const scheduleSync = useCallback(() => {
+    if (rafRef.current) return;
+    rafRef.current = requestAnimationFrame(() => {
+      rafRef.current = 0;
+      syncViewport();
+    });
+  }, [syncViewport]);
+
+  const fitView = useCallback(() => {
+    const cy = cyRef.current;
+    if (!cy) return;
+    const elements = cy.elements();
+    if (elements.length === 0) return;
+    cy.resize();
+    cy.fit(elements, 76);
+    if (cy.zoom() > FIT_ZOOM_CAP) {
+      cy.zoom({
+        level: FIT_ZOOM_CAP,
+        renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 },
+      });
+    }
+    cy.center(elements);
+
+    // 画布左上角浮着工具条（相对画布 16–56px）。把栏标题压到 64px 以下，
+    // 窗口再矮也不会出现「标题钻到搜索框底下」。
+    const pan = cy.pan();
+    const laneTop = annotationsRef.current.reduce(
+      (min, annotation) => Math.min(min, annotation.y),
+      Number.POSITIVE_INFINITY,
+    );
+    if (Number.isFinite(laneTop)) {
+      const screenTop = laneTop * cy.zoom() + pan.y;
+      const inset = 64;
+      if (screenTop < inset) {
+        cy.pan({ x: pan.x, y: pan.y + (inset - screenTop) });
+      }
+    }
+    // fit 直接改了 zoom；立刻同步百分比，别等下一帧 rAF 才更新。
+    setZoom(cy.zoom());
+    scheduleSync();
+  }, [scheduleSync]);
+
+  // 把最新回调同步进 ref：cytoscape 的事件回调只注册一次，不能闭包到首帧的版本。
+  useEffect(() => {
+    annotationsRef.current = annotations;
+    scheduleSyncRef.current = scheduleSync;
+    fitViewRef.current = fitView;
+  }, [annotations, scheduleSync, fitView]);
 
   useEffect(() => {
     if (!containerRef.current || cyRef.current) return;
 
+    const cardMap = cardRefs.current;
+    const annotationMap = annotationRefs.current;
     const cy = cytoscape({
       container: containerRef.current,
       selectionType: 'single',
       boxSelectionEnabled: false,
-      wheelSensitivity: 0.25,
-      minZoom: 0.15,
-      maxZoom: 3,
-      style: [
-        {
-          selector: 'node',
-          style: {
-            shape: (el: cytoscape.NodeSingular) =>
-              (NODE_SHAPES[el.data('objectKind') as NodeKind] ?? 'ellipse') as CytoscapeNodeShape,
-            width: (el: cytoscape.NodeSingular) => NODE_SIZE[el.data('objectKind') as string] ?? 24,
-            height: (el: cytoscape.NodeSingular) => NODE_SIZE[el.data('objectKind') as string] ?? 24,
-            'background-color': (el: cytoscape.NodeSingular) => getNodeStyle(el.data('objectKind') as NodeKind).fill,
-            'border-color': (el: cytoscape.NodeSingular) => getNodeStyle(el.data('objectKind') as NodeKind).stroke,
-            'border-width': (el: cytoscape.NodeSingular) => (el.data('objectKind') === 'HostInventory' ? 3 : 1.75),
-            label: (el: cytoscape.NodeSingular) =>
-              displayLabel(
-                el.data('objectKind') as NodeKind,
-                String(el.data('label') ?? ''),
-                (el.data('properties') ?? {}) as Record<string, unknown>,
-              ),
-            'text-valign': 'bottom',
-            'text-halign': 'center',
-            'text-margin-y': 7,
-            'font-size': (el: cytoscape.NodeSingular) => (el.data('objectKind') === 'HostInventory' ? 13 : 10),
-            'font-weight': (el: cytoscape.NodeSingular) => (el.data('objectKind') === 'HostInventory' ? 600 : 400),
-            color: (el: cytoscape.NodeSingular) => getNodeStyle(el.data('objectKind') as NodeKind).accent,
-            'text-wrap': 'wrap',
-            'text-max-width': (el: cytoscape.NodeSingular) => (el.data('objectKind') === 'HostInventory' ? '160px' : '110px'),
-            // 关键：标签后面垫一块半透明白底，否则标签压在边上就成了那团糊字。
-            'text-background-color': '#ffffff',
-            'text-background-opacity': 0.88,
-            'text-background-padding': '2px',
-            'text-background-shape': 'roundrectangle',
-            'overlay-opacity': 0,
-          },
-        },
-        {
-          selector: 'edge',
-          style: {
-            width: 1.25,
-            'line-color': '#cbd5e1',
-            'target-arrow-color': '#cbd5e1',
-            'target-arrow-shape': 'none',
-            'curve-style': 'bezier',
-            'overlay-opacity': 0,
-          },
-        },
-        {
-          selector: 'edge[edgeKind = "host_process_assoc"]',
-          style: {
-            'line-color': '#b8c4d6',
-            'line-style': 'solid',
-            width: 1.5,
-          },
-        },
-        {
-          selector: 'edge[edgeKind = "responsibility_assignment"]',
-          style: {
-            'line-color': '#d8c7f5',
-            'line-style': 'dashed',
-          },
-        },
-        {
-          selector: 'node:selected',
-          style: {
-            'border-width': 3.5,
-            'border-color': '#4f46e5',
-            'overlay-color': '#4f46e5',
-            'overlay-opacity': 0.12,
-            'overlay-padding': 6,
-          },
-        },
-        {
-          selector: '.dimmed',
-          style: { opacity: 0.12 },
-        },
-        {
-          selector: '.neighbor',
-          style: { 'border-width': 2.5 },
-        },
-      ],
-      layout: LAYOUTS.dagre,
+      wheelSensitivity: 0.2,
+      minZoom: MIN_ZOOM,
+      maxZoom: MAX_ZOOM,
+      style: CY_STYLE,
     });
 
-    cy.on('tap', (evt: cytoscape.EventObject) => {
-      if (evt.target === cy) onSelectNodeRef.current(null);
-    });
-    cy.on('tap', 'node', (evt: cytoscape.EventObject) => {
-      onSelectNodeRef.current(evt.target.id());
+    const handleViewport = () => scheduleSyncRef.current();
+    cy.on('render pan zoom resize layoutstop', handleViewport);
+    cy.on('tap', (event: cytoscape.EventObject) => {
+      if (event.target === cy) onSelectRef.current(null);
     });
 
-    const fit = () => {
-      const elements = cy.elements();
-      if (elements.length === 0) return;
+    const observer = new ResizeObserver(() => {
+      // 首次布局时容器可能还没拿到最终高度（cytoscape 初始化那一刻 height=0），
+      // fit 只能横向居中，整张图会被顶到画布上沿。尺寸变化后必须重新 fit。
       cy.resize();
-      cy.fit(elements, 64);
-      // 小图放大有上限：节点被拉成色块比空白更难看。
-      if (cy.zoom() > 1.6) {
-        cy.zoom({ level: 1.6, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } });
-        cy.center(elements);
-      }
-    };
-    fitRef.current = fit;
-
-    // 容器尺寸变化必须重新 fit —— 之前只在数据到达时 fit 一次，而那一刻容器
-    // 往往还没有最终尺寸，于是图缩在中间一小团、四周全是空白。
-    const observer = new ResizeObserver(() => fit());
+      window.requestAnimationFrame(() => {
+        fitViewRef.current();
+        scheduleSyncRef.current();
+      });
+    });
     observer.observe(containerRef.current);
 
     cyRef.current = cy;
-
     return () => {
       observer.disconnect();
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      rafRef.current = 0;
+      cardMap.clear();
+      annotationMap.clear();
       cy.destroy();
       cyRef.current = null;
     };
   }, []);
 
+  // 结构变化 → 重建元素 + 布局。只依赖签名，不依赖 graph 的对象身份。
   useEffect(() => {
     const cy = cyRef.current;
-    if (!cy || !graph) return;
+    if (!cy || !visibleGraph) return;
+    const current = visibleGraph;
+
     cy.elements().remove();
-    cy.add(graphToCyElements(graph));
+    cy.add(graphToCyElements(current));
 
-    const effective = chooseEffectiveLayout(graph, layout);
-    const instance =
-      effective === 'star'
-        ? cy.layout({
-            name: 'preset',
-            positions: starPresetPositions(graph) ?? {},
-            animate: false,
-            fit: false,
-          } as cytoscape.LayoutOptions)
-        : cy.layout(LAYOUTS[effective]);
+    const focus = computeFocusLayout(current) ?? computeRuntimeLayout(current);
+    // 先写进 ref 再 fit：fit 时 React 还没提交 setAnnotations，拿 state 会慢一帧。
+    annotationsRef.current = focus?.annotations ?? [];
+    setAnnotations(focus?.annotations ?? []);
 
-    instance.one('layoutstop', () => fitRef.current());
+    if (focus) {
+      cy.batch(() => {
+        cy.nodes().forEach((node) => {
+          const point = focus.positions[node.id()];
+          if (point) node.position(point);
+        });
+      });
+      fitViewRef.current();
+      return;
+    }
+
+    const effective: ConcreteLayout = chooseEffectiveLayout(current);
+    const instance = cy.layout(LAYOUT_OPTIONS[effective]);
+    instance.one('layoutstop', () => fitViewRef.current());
     instance.run();
-  }, [graph, layout]);
+    // 只按结构签名重排：graph 的对象身份每次 App 渲染都会变，不能进依赖。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [graphSignature]);
+
+
+  // 布局变化后卡片可能已经挂载完成，补一次同步（fit 的 render 事件不一定覆盖首帧）。
+  useEffect(() => {
+    scheduleSync();
+  }, [graphSignature, annotations, scheduleSync]);
+
+  // 搜索：命中集合驱动卡片与连线同时变淡，避免「卡片亮了、线还在」。
+  const matchedIds = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!searchIndex.size || !query) return null;
+    const result = new Set<string>();
+    for (const [id, text] of searchIndex) {
+      if (text.includes(query)) result.add(id);
+    }
+    // 一条都不命中时不要把所有节点压成幽灵：保持全亮，让「无匹配」只是工具条上的提示。
+    return result.size > 0 ? result : null;
+  }, [searchIndex, searchQuery]);
 
   useEffect(() => {
     const cy = cyRef.current;
     if (!cy) return;
-    cy.nodes().removeClass('neighbor');
-    if (!selectedNodeId) return;
-    const node = cy.getElementById(selectedNodeId);
-    if (node.length) node.neighborhood().addClass('neighbor');
-  }, [selectedNodeId]);
+    cy.edges().removeClass('dimmed');
+    if (!matchedIds) return;
+    const matched = matchedIds;
+    cy.edges().forEach((edge) => {
+      if (!matched.has(edge.source().id()) || !matched.has(edge.target().id())) {
+        edge.addClass('dimmed');
+      }
+    });
+    // matchedIds 由 searchQuery + 图结构派生；只在两者变化时重刷连线即可。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchQuery, graphSignature]);
 
+  // 选中：相邻边加一点色，但不把其余内容全部压暗 —— 画布要保住上下文。
   useEffect(() => {
     const cy = cyRef.current;
-    if (!cy || !graph) return;
+    if (!cy) return;
+    cy.edges().removeClass('neighbor');
+    if (!selectedNodeId) return;
+    const node = cy.getElementById(selectedNodeId);
+    if (node.length > 0) node.connectedEdges().addClass('neighbor');
+  }, [selectedNodeId, graphSignature]);
 
-    const query = searchQuery.trim().toLowerCase();
-    cy.nodes().removeClass('dimmed');
-    if (!query) return;
+  /**
+   * hover 只动 cytoscape 的连线类，不 setState —— 每划过一张卡片就重渲染整层卡片不划算。
+   */
+  const handleHover = (nodeId: string | null) => {
+    const cy = cyRef.current;
+    if (!cy) return;
+    cy.edges().removeClass('hot');
+    if (!nodeId) return;
+    const node = cy.getElementById(nodeId);
+    if (node.length > 0) node.connectedEdges().addClass('hot');
+  };
 
-    cy.nodes().forEach((node: cytoscape.NodeSingular) => {
-      const label = String(node.data('label') ?? '');
-      const properties = (node.data('properties') ?? {}) as Record<string, unknown>;
-      const haystack = [label, ...Object.values(properties).map(String)].join(' ').toLowerCase();
-      if (!haystack.includes(query)) node.addClass('dimmed');
-    });
-  }, [searchQuery, graph]);
+  const zoomBy = (direction: 1 | -1) => {
+    const cy = cyRef.current;
+    if (!cy) return;
+    const level = clamp(cy.zoom() * (direction > 0 ? 1.25 : 0.8), MIN_ZOOM, MAX_ZOOM);
+    cy.zoom({ level, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } });
+    scheduleSync();
+  };
 
-  const empty = useMemo(() => !graph || graph.nodes.length === 0, [graph]);
+  const resetZoom = () => {
+    const cy = cyRef.current;
+    if (!cy) return;
+    cy.zoom({ level: 1, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } });
+    scheduleSync();
+  };
+
+  const empty = !loading && (!visibleGraph || visibleGraph.nodes.length === 0);
 
   return (
-    <div className="relative h-full w-full">
+    <div className="atlas-canvas relative h-full w-full overflow-hidden">
       <div ref={containerRef} className="h-full w-full" />
 
-      {empty && (
-        <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2 text-center">
-          <svg
-            className="size-9 text-line-strong"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.4"
+      {/* HTML 卡片层：不拦截空白处的指针事件，拖拽/滚轮仍然交给 cytoscape。 */}
+      <div className="pointer-events-none absolute inset-0 select-none">
+        {visibleGraph?.nodes.map((node) => {
+          const dims = nodeDims(node.objectKind);
+          return (
+            <div
+              key={node.id}
+              ref={(element) => {
+                if (element) cardRefs.current.set(node.id, element);
+                else cardRefs.current.delete(node.id);
+              }}
+              className="pointer-events-auto absolute left-0 top-0 origin-top-left will-change-transform"
+              style={{ width: dims.width, height: dims.height }}
+            >
+              <NodeCard
+                node={node}
+                hint={hints.get(node.id)}
+                hostStats={node.objectKind === 'HostInventory' ? hostStats : undefined}
+                selected={selectedNodeId === node.id}
+                dimmed={matchedIds ? !matchedIds.has(node.id) : false}
+                expanded={expanded}
+                onSelect={onSelectNode}
+                onExpand={onExpandNode}
+                onHover={handleHover}
+              />
+            </div>
+          );
+        })}
+
+        {annotations.map((annotation) => (
+          <div
+            key={annotation.id}
+            ref={(element) => {
+              if (element) annotationRefs.current.set(annotation.id, element);
+              else annotationRefs.current.delete(annotation.id);
+            }}
+            data-annotation-id={annotation.id}
+            className="absolute left-0 top-0 origin-top-left whitespace-nowrap"
+            style={{ width: annotation.width }}
           >
-            <circle cx="12" cy="5" r="2.4" />
-            <circle cx="5" cy="18" r="2.4" />
-            <circle cx="19" cy="18" r="2.4" />
-            <path d="M12 7.4v4.2M10.2 13.2 6.6 16M13.8 13.2l3.6 2.8" strokeLinecap="round" />
-          </svg>
-          <p className="text-[13px] font-medium text-ink-soft">还没有可展示的拓扑</p>
-          <p className="max-w-xs text-[11px] text-ink-mute">
-            先导入一份发现快照，或在左栏按对象 ID 查询。
-          </p>
+            <div className="flex items-baseline justify-between gap-3 border-b border-[#dfe4eb] pb-1.5">
+              <span className="text-[10.5px] font-semibold uppercase tracking-[0.1em] text-[#667085]">
+                {annotation.text}
+              </span>
+              <span className="tnum text-[10px] font-normal text-[#98a2b3]">{annotation.count}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <ZoomControls
+        zoom={zoom}
+        shifted={Boolean(selectedNodeId)}
+        onZoomIn={() => zoomBy(1)}
+        onZoomOut={() => zoomBy(-1)}
+        onReset={resetZoom}
+        onFit={fitView}
+      />
+
+      {loading && !graph && (
+        <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2.5">
+          <span className="size-5 animate-spin rounded-full border-2 border-[#d0d5dd] border-t-[#4f46e5]" />
+          <p className="text-[12px] text-[#667085]">正在读取拓扑…</p>
+        </div>
+      )}
+
+      {empty && (
+        <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-3 text-center">
+          <span className="grid size-11 place-items-center rounded-xl border border-dashed border-[#d0d5dd] bg-white/70 text-[#98a2b3]">
+            <svg viewBox="0 0 24 24" className="size-5" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <circle cx="12" cy="5" r="2" />
+              <circle cx="5" cy="18" r="2" />
+              <circle cx="19" cy="18" r="2" />
+              <path d="M12 7.2v4M10.4 12.8 6.4 16.2M13.6 12.8l4 3.4" strokeLinecap="round" />
+            </svg>
+          </span>
+          <div>
+            <p className="text-[13px] font-medium text-[#344054]">没有可展示的拓扑</p>
+            <p className="mt-1 text-[11px] text-[#98a2b3]">先导入一份发现快照，或按对象 ID 查询。</p>
+          </div>
         </div>
       )}
     </div>
   );
 }
 
+function ZoomControls({
+  zoom,
+  shifted,
+  onZoomIn,
+  onZoomOut,
+  onReset,
+  onFit,
+}: {
+  zoom: number;
+  shifted: boolean;
+  onZoomIn: () => void;
+  onZoomOut: () => void;
+  onReset: () => void;
+  onFit: () => void;
+}) {
+  return (
+    <div
+      className={`absolute bottom-4 z-20 flex items-center gap-0.5 rounded-[10px] border border-[#e4e7ec] bg-white/95 p-0.5 shadow-[0_1px_2px_rgba(16,24,40,0.05),0_4px_12px_-4px_rgba(16,24,40,0.12)] backdrop-blur transition-[right] duration-200 ${
+        shifted ? 'right-[352px]' : 'right-4'
+      }`}
+    >
+      <ZoomButton label="缩小" onClick={onZoomOut}>
+        <MinusIcon className="size-3.5" />
+      </ZoomButton>
+      <button
+        type="button"
+        onClick={onReset}
+        title="缩放到 100%"
+        className="tnum h-7 w-11 rounded-[7px] text-[10.5px] font-medium text-[#475467] transition-colors hover:bg-[#f2f4f7]"
+      >
+        {Math.round(zoom * 100)}%
+      </button>
+      <ZoomButton label="放大" onClick={onZoomIn}>
+        <PlusIcon className="size-3.5" />
+      </ZoomButton>
+      <span className="mx-0.5 h-4 w-px bg-[#eaecf0]" aria-hidden />
+      <ZoomButton label="适配画布" onClick={onFit}>
+        <FitIcon className="size-3.5" />
+      </ZoomButton>
+    </div>
+  );
+}
+
+function ZoomButton({
+  label,
+  onClick,
+  children,
+}: {
+  label: string;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={label}
+      aria-label={label}
+      className="grid size-7 place-items-center rounded-[7px] text-[#475467] transition-colors hover:bg-[#f2f4f7]"
+    >
+      {children}
+    </button>
+  );
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
+
 /**
- * 「自动」下按图形状选布局；用户显式选了某个布局就照办，不静默替换。
- *
- * 之前默认就是 dagre，却对小图偷偷改成放射，而下拉框还写着「层次」——
- * 画出来的东西和标签对不上；现在「自动」是一个显式选项。
+ * 自动布局：聚焦剖面只在「一台主机 + 一圈叶子」时成立；
+ * 展开分组后图变深，交给 dagre；分组数过多、又没有具体进程时，力导向更好读。
  */
-function chooseEffectiveLayout(
-  graph: HostProcessTopologyGraph,
-  requestedLayout: LayoutName,
-): ConcreteLayout | 'star' {
-  if (requestedLayout !== 'auto') return requestedLayout;
-
-  // 星形资产图是最常见的入口视图（一台主机 + 一圈网段），值得单独摆。
-  if (starPresetPositions(graph)) return 'star';
-
+function chooseEffectiveLayout(graph: HostProcessTopologyGraph): ConcreteLayout {
   const count = (kind: NodeKind) => graph.nodes.filter((node) => node.objectKind === kind).length;
   const groups = count('ProcessGroup');
   const runtimes = count('ProcessRuntime');
+  if (groups >= 16 && runtimes === 0) return 'cose-bilkent';
+  return 'dagre';
+}
 
-  // 展开到「只有分组、没有具体进程」那一层时，dagre 会排成一条几百节点的长链，
-  // 力导向才好读。这是原来就有的判断，保留。
-  if (count('ProcessSummary') >= 1 && groups >= 16 && runtimes === 0) {
-    return 'cose-bilkent';
+/** 网段节点本身没有接口名，信息在 `host_network_assoc` 边上 —— 卡片需要它。 */
+function buildNetworkHints(graph: HostProcessTopologyGraph | null) {
+  const hints = new Map<string, GraphNodeHint>();
+  if (!graph) return hints;
+  for (const edge of graph.edges) {
+    if (edge.edgeKind !== 'host_network_assoc') continue;
+    const ifaceName = edge.properties?.ifaceName;
+    const ipAddr = edge.properties?.ipAddr;
+    if (typeof ifaceName !== 'string' && typeof ipAddr !== 'string') continue;
+    hints.set(edge.target, {
+      ifaceName: typeof ifaceName === 'string' ? ifaceName : undefined,
+      ipAddr: typeof ipAddr === 'string' ? ipAddr : undefined,
+    });
   }
-
-  return graph.nodes.length <= 48 ? 'concentric' : 'dagre';
+  return hints;
 }

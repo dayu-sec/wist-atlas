@@ -14,7 +14,6 @@ const initialState: AppState = {
   selectedNodeId: null,
   layerVisibility: { ...initialLayerVisibility },
   searchQuery: '',
-  layout: 'auto',
 };
 
 function reducer(state: AppState, action: AppAction): AppState {
@@ -39,8 +38,6 @@ function reducer(state: AppState, action: AppAction): AppState {
       };
     case 'SET_SEARCH':
       return { ...state, searchQuery: action.query };
-    case 'SET_LAYOUT':
-      return { ...state, layout: action.layout };
     default:
       return state;
   }

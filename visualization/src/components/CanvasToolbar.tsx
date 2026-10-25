@@ -1,104 +1,81 @@
-import type { LayerKind, LayoutName } from '../types/domain';
+import type { LayerKind } from '../types/domain';
 import { LAYER_COLORS } from '../utils/colors';
+import { SearchIcon } from './icons';
 
 type Props = {
   searchQuery: string;
   onSearchChange: (query: string) => void;
   layerVisibility: Record<LayerKind, boolean>;
+  layers: LayerKind[];
   onToggleLayer: (layer: LayerKind) => void;
-  layout: LayoutName;
-  onLayoutChange: (layout: LayoutName) => void;
   matchCount: number | null;
 };
 
-const ALL_LAYERS: LayerKind[] = ['resource', 'governance'];
-
-const LAYOUT_OPTIONS: { value: LayoutName; label: string }[] = [
-  { value: 'auto', label: '自动' },
-  { value: 'dagre', label: '层次' },
-  { value: 'concentric', label: '中心放射' },
-  { value: 'cose-bilkent', label: '力导向' },
-];
-
+/**
+ * 画布工具条浮在画布左上角，而不是再占一条通栏。
+ *
+ * 上一版把「品牌 / 主机名」和「搜索 / 图层」拆成两条 100px 高的横栏，
+ * 画布被压到只剩 860px；而搜索和图层的过滤本来就是画布的操作，跟页面导航不是一层。
+ *
+ * 这里也不再放「布局」下拉：对一张 10 个节点的图暴露 dagre / 力导向，
+ * 只会让人选到一个 51% 缩放、字都看不清的结果。布局由画布按图的形状自己选。
+ */
 export default function CanvasToolbar({
   searchQuery,
   onSearchChange,
   layerVisibility,
+  layers,
   onToggleLayer,
-  layout,
-  onLayoutChange,
   matchCount,
 }: Props) {
   return (
-    <div className="flex h-11 shrink-0 items-center gap-2 border-b border-line bg-surface px-3">
-      <div className="relative">
-        <svg
-          className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-ink-mute"
-          viewBox="0 0 20 20"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.8"
-        >
-          <circle cx="8.5" cy="8.5" r="5.5" />
-          <path d="m13 13 4 4" strokeLinecap="round" />
-        </svg>
+    <div className="floating-bar pointer-events-auto flex h-10 items-center gap-0.5 rounded-[11px] px-1">
+      <label className="relative flex items-center" aria-label="搜索节点">
+        <SearchIcon className="pointer-events-none absolute left-2.5 size-3.5 text-[#98a2b3]" />
         <input
           type="search"
           placeholder="搜索节点"
           value={searchQuery}
-          onChange={(e) => onSearchChange(e.target.value)}
-          className="h-7 w-52 rounded-md border border-line bg-canvas pl-7 pr-2 text-[12px] text-ink placeholder:text-ink-mute focus:border-brand focus:bg-surface focus:outline-none focus:ring-2 focus:ring-brand/15"
+          onChange={(event) => onSearchChange(event.target.value)}
+          className="h-8 w-[208px] rounded-[8px] bg-transparent pl-8 pr-2 text-[12px] text-ink placeholder:text-[#98a2b3] focus:bg-[#f7f8fa] focus:outline-none"
         />
-      </div>
+      </label>
 
       {searchQuery.trim() !== '' && matchCount != null && (
-        <span className="tnum text-[11px] text-ink-mute">{matchCount} 个匹配</span>
+        <span className="tnum mr-1 shrink-0 text-[10.5px] text-[#98a2b3]">
+          {matchCount === 0 ? '无匹配' : `${matchCount} 个匹配`}
+        </span>
       )}
 
-      <div className="mx-1 h-5 w-px bg-line" aria-hidden />
+      <span className="mx-0.5 h-4 w-px bg-[#eaecf0]" aria-hidden />
 
-      <div className="flex items-center gap-1">
-        {ALL_LAYERS.map((layer) => {
-          const active = layerVisibility[layer];
-          return (
-            <button
-              key={layer}
-              type="button"
-              onClick={() => onToggleLayer(layer)}
-              data-active={active}
-              className="seg flex h-7 items-center gap-1.5 rounded-md px-2 text-[11px] text-ink-soft transition-colors hover:border-line-strong"
-            >
-              <span
-                className="size-2 rounded-[2px]"
-                style={{
-                  backgroundColor: active ? LAYER_COLORS[layer].border : 'transparent',
-                  border: `1.5px solid ${LAYER_COLORS[layer].border}`,
-                }}
-                aria-hidden
-              />
-              {LAYER_COLORS[layer].label}
-            </button>
-          );
-        })}
-      </div>
+      {layers.map((layer) => {
+        const active = layerVisibility[layer];
+        const color = LAYER_COLORS[layer];
+        return (
+          <button
+            key={layer}
+            type="button"
+            onClick={() => onToggleLayer(layer)}
+            data-active={active}
+            title={color.label}
+            className={`flex h-7 items-center gap-1.5 rounded-[7px] px-2 text-[11px] transition-colors ${
+              active ? 'bg-[#f7f8fa] text-[#344054]' : 'text-[#98a2b3] hover:bg-[#f7f8fa]'
+            }`}
+          >
+            <span
+              className="size-2 rounded-[2px]"
+              style={{
+                backgroundColor: active ? color.border : 'transparent',
+                border: `1.5px solid ${active ? color.border : '#cdd3dc'}`,
+              }}
+              aria-hidden
+            />
+            {color.short}
+          </button>
+        );
+      })}
 
-      <div className="ml-auto flex items-center gap-2">
-        <label className="text-[11px] text-ink-mute" htmlFor="layout-select">
-          布局
-        </label>
-        <select
-          id="layout-select"
-          value={layout}
-          onChange={(e) => onLayoutChange(e.target.value as LayoutName)}
-          className="h-7 rounded-md border border-line bg-surface px-1.5 text-[11px] text-ink-soft focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/15"
-        >
-          {LAYOUT_OPTIONS.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </select>
-      </div>
     </div>
   );
 }

@@ -1,59 +1,82 @@
-import type { HostProcessTopologyNode, HostTopologyDto, LoadedProcessGroupsState } from '../types/domain';
+import type {
+  HostProcessTopologyGraph,
+  HostProcessTopologyNode,
+  HostTopologyDto,
+  LoadedProcessGroupsState,
+} from '../types/domain';
 import { getNodeStyle } from '../utils/colors';
+import { formatAddressFamily, parseTopPrograms } from '../utils/presentation';
 import { basename, formatCount, truncate } from '../utils/format';
+import { ArrowRightIcon, CloseIcon, KindGlyph } from './icons';
 
 type Props = {
   node: HostProcessTopologyNode | null;
+  graph: HostProcessTopologyGraph | null;
   hostTopology: HostTopologyDto | null;
   processViewMode: 'overview' | 'expanded' | 'loading' | null;
   loadedProcessGroups: LoadedProcessGroupsState | null;
   onClose: () => void;
+  onExpand: (nodeId: string) => void;
 };
 
 export default function NodeDetailPanel({
   node,
+  graph,
   hostTopology,
   processViewMode,
   loadedProcessGroups,
   onClose,
+  onExpand,
 }: Props) {
   if (!node) return null;
 
   const style = getNodeStyle(node.objectKind);
-  const showHostTopology = node.objectKind === 'HostInventory' && hostTopology?.host.id === node.objectId;
+  const title =
+    node.objectKind === 'ProcessGroup'
+      ? basename(String(node.properties.executable ?? node.label))
+      : node.objectKind === 'ProcessSummary'
+        ? '运行时'
+        : node.label;
 
   return (
-    <aside className="absolute inset-y-0 right-0 z-10 flex w-80 flex-col border-l border-line bg-surface">
-      <header className="flex items-start justify-between gap-3 border-b border-line px-4 py-3">
-        <div className="min-w-0">
-          <span
-            className="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-medium"
-            style={{ backgroundColor: style.fill, color: style.accent }}
-          >
-            <span className="size-1.5 rounded-full" style={{ backgroundColor: style.stroke }} />
+    <aside className="absolute inset-y-0 right-0 z-30 flex w-[336px] flex-col border-l border-line bg-surface shadow-[-12px_0_32px_-24px_rgba(16,24,40,0.35)]">
+      <header className="flex items-start gap-2.5 border-b border-line px-4 py-3.5">
+        <span
+          className="mt-0.5 grid size-7 shrink-0 place-items-center rounded-[8px]"
+          style={{ backgroundColor: style.fill, color: style.stroke }}
+          aria-hidden
+        >
+          <KindGlyph kind={node.objectKind} className="size-4" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="text-[9.5px] font-medium uppercase leading-none tracking-[0.08em] text-[#98a2b3]">
             {style.label}
-          </span>
-          <h3 className="mt-1.5 truncate text-[13px] font-semibold text-ink" title={node.label}>
-            {node.objectKind === 'ProcessGroup'
-              ? basename(String(node.properties.executable ?? node.label))
-              : node.label}
+          </div>
+          <h3 className="mt-1 truncate text-[13px] font-semibold leading-4 text-ink" title={title}>
+            {title}
           </h3>
         </div>
         <button
           type="button"
           onClick={onClose}
           aria-label="关闭"
-          className="-mr-1 shrink-0 rounded-md p-1 text-ink-mute transition-colors hover:bg-canvas hover:text-ink"
+          className="-mr-1 grid size-7 shrink-0 place-items-center rounded-[7px] text-[#98a2b3] transition-colors hover:bg-[#f2f4f7] hover:text-[#344054]"
         >
-          <svg viewBox="0 0 20 20" className="size-4" fill="none" stroke="currentColor" strokeWidth="1.8">
-            <path d="m5 5 10 10M15 5 5 15" strokeLinecap="round" />
-          </svg>
+          <CloseIcon className="size-4" />
         </button>
       </header>
 
-      <div className="flex-1 overflow-y-auto px-4 py-3.5">
-        {showHostTopology ? (
+      <div className="flex-1 overflow-y-auto px-4 py-4">
+        {node.objectKind === 'HostInventory' && hostTopology?.host.id === node.objectId ? (
           <HostDetail topology={hostTopology} />
+        ) : node.objectKind === 'NetworkSegment' ? (
+          <NetworkDetail node={node} graph={graph} />
+        ) : node.objectKind === 'ProcessSummary' ? (
+          <RuntimeDetail
+            node={node}
+            expanded={Boolean(graph?.nodes.some((item) => item.objectKind === 'ProcessGroup'))}
+            onExpand={() => onExpand(node.id)}
+          />
         ) : node.objectKind === 'ProcessGroup' ? (
           <ProcessGroupDetail
             node={node}
@@ -72,7 +95,7 @@ function HostDetail({ topology }: { topology: HostTopologyDto }) {
   const os = [topology.host.osName, topology.host.osVersion].filter(Boolean).join(' ');
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-5">
       <Section title="资产">
         <Field label="系统">{os || '未采集'}</Field>
         <Field label="架构">{topology.host.arch ?? '未采集'}</Field>
@@ -90,21 +113,21 @@ function HostDetail({ topology }: { topology: HostTopologyDto }) {
       </Section>
 
       {topology.networkSegments.length > 0 && (
-        <Section title={`网段 ${topology.networkSegments.length}`}>
-          <ul className="space-y-1.5">
+        <Section title={`网络接口 ${topology.networkSegments.length}`}>
+          <ul className="space-y-1">
             {topology.networkSegments.map((segment, index) => {
               const name = String(segment.name ?? segment.cidr ?? '-');
-              const family = String(segment.address_family ?? '').toLowerCase();
+              const family = formatAddressFamily(segment.address_family);
               return (
                 <li
                   key={`${String(segment.network_segment_id ?? index)}`}
-                  className="flex items-center justify-between gap-2 rounded-md bg-canvas px-2.5 py-1.5"
+                  className="flex items-center justify-between gap-2 rounded-[8px] bg-[#f9fafb] px-2.5 py-1.5"
                 >
-                  <span className="truncate font-mono text-[11px] text-ink" title={name}>
-                    {truncate(name, 26)}
+                  <span className="truncate font-mono text-[10.5px] text-[#344054]" title={name}>
+                    {truncate(name, 30)}
                   </span>
                   {family && (
-                    <span className="shrink-0 rounded bg-white px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-ink-mute">
+                    <span className="shrink-0 text-[9px] font-medium uppercase tracking-[0.06em] text-[#98a2b3]">
                       {family}
                     </span>
                   )}
@@ -115,36 +138,15 @@ function HostDetail({ topology }: { topology: HostTopologyDto }) {
         </Section>
       )}
 
-      {topology.services.length > 0 && (
-        <Section title={`服务 ${topology.services.length}`}>
-          <ul className="space-y-1.5">
-            {topology.services.map((service) => (
-              <li key={String(service.service.external_ref ?? service.service.name)} className="rounded-md bg-canvas px-2.5 py-1.5">
-                <div className="text-[11px] font-medium text-ink">
-                  {String(service.service.name ?? '-')}
-                </div>
-                <div className="tnum text-[10px] text-ink-mute">
-                  实例 {service.instances.length} · 绑定进程{' '}
-                  {service.instances.reduce((sum, item) => sum + item.processes.length, 0)}
-                </div>
-              </li>
-            ))}
-          </ul>
-        </Section>
-      )}
-
       {topology.processGroups.length > 0 && (
         <Section title="进程分组 Top 5">
-          <ul className="space-y-1">
+          <ul className="space-y-1.5">
             {topology.processGroups.slice(0, 5).map((group, index) => (
-              <li
-                key={`${String(group.display_name)}-${index}`}
-                className="flex items-center justify-between gap-2 text-[11px]"
-              >
-                <span className="truncate text-ink" title={String(group.display_name)}>
+              <li key={`${String(group.display_name)}-${index}`} className="flex items-baseline justify-between gap-2">
+                <span className="truncate text-[11px] text-[#344054]" title={String(group.display_name)}>
                   {String(group.display_name ?? '-')}
                 </span>
-                <span className="tnum shrink-0 text-ink-mute">
+                <span className="tnum shrink-0 text-[10.5px] text-[#98a2b3]">
                   {String(group.process_count ?? '-')}
                 </span>
               </li>
@@ -152,6 +154,108 @@ function HostDetail({ topology }: { topology: HostTopologyDto }) {
           </ul>
         </Section>
       )}
+
+      <Section title="标识">
+        <Field label="对象 ID">
+          <span className="font-mono text-[10px] break-all">{topology.host.id}</span>
+        </Field>
+      </Section>
+    </div>
+  );
+}
+
+/**
+ * 网段自己只有 CIDR 和地址族；「哪个接口、哪个 IP」在 host_network_assoc 边上。
+ * 详情面板要把这条边上的信息读出来，否则用户点开网段还是不知道它是怎么接进来的。
+ */
+function NetworkDetail({ node, graph }: { node: HostProcessTopologyNode; graph: HostProcessTopologyGraph | null }) {
+  const association = graph?.edges.find(
+    (edge) =>
+      edge.edgeKind === 'host_network_assoc' &&
+      (edge.target === node.id || edge.source === node.id),
+  );
+  const iface = association?.properties?.ifaceName;
+  const ip = association?.properties?.ipAddr;
+  const family = formatAddressFamily(node.properties.addressFamily);
+  const name = String(node.properties.cidr ?? node.label);
+
+  return (
+    <div className="space-y-5">
+      <Section title="接入">
+        <Field label="接口">{typeof iface === 'string' ? iface : '—'}</Field>
+        <Field label="地址">{typeof ip === 'string' ? ip : '—'}</Field>
+        <Field label="地址族">{family || '—'}</Field>
+      </Section>
+
+      <Section title="网段">
+        <Field label="CIDR">
+          <span className="font-mono text-[10.5px]">{name}</span>
+        </Field>
+        <Field label="展示名">{node.label}</Field>
+      </Section>
+
+      <Section title="标识">
+        <Field label="对象 ID">
+          <span className="font-mono text-[10px] break-all">{node.objectId}</span>
+        </Field>
+      </Section>
+    </div>
+  );
+}
+
+function RuntimeDetail({
+  node,
+  expanded,
+  onExpand,
+}: {
+  node: HostProcessTopologyNode;
+  expanded: boolean;
+  onExpand: () => void;
+}) {
+  const totalProcesses = Number(node.properties.totalProcesses ?? 0);
+  const totalPrograms = Number(node.properties.totalPrograms ?? 0);
+  const programs = parseTopPrograms(node.properties.topPrograms);
+
+  return (
+    <div className="space-y-5">
+      <Section title="规模">
+        <div className="grid grid-cols-2 gap-2">
+          <Metric label="进程" value={totalProcesses} />
+          <Metric label="程序" value={totalPrograms} />
+        </div>
+      </Section>
+
+      <Section title="高频程序">
+        {programs.length > 0 ? (
+          <ul className="space-y-1.5">
+            {programs.map((program) => (
+              <li key={program.name} className="flex items-baseline justify-between gap-2">
+                <span className="truncate text-[11px] text-[#344054]" title={program.name}>
+                  {program.name}
+                </span>
+                <span className="tnum shrink-0 text-[10.5px] text-[#98a2b3]">{program.count}</span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-[11px] text-[#98a2b3]">暂无程序摘要</p>
+        )}
+      </Section>
+
+      <button
+        type="button"
+        onClick={onExpand}
+        className="flex h-8 w-full items-center justify-center gap-1.5 rounded-[8px] bg-[#4f46e5] text-[11.5px] font-medium text-white transition-colors hover:bg-[#4338ca]"
+      >
+        {expanded ? '收起进程分组' : '在图中展开进程分组'}
+        <ArrowRightIcon className="size-3.5" />
+      </button>
+
+      <Section title="标识">
+        <Field label="对象 ID">
+          <span className="font-mono text-[10px] break-all">{node.objectId}</span>
+        </Field>
+      </Section>
     </div>
   );
 }
@@ -178,20 +282,18 @@ function ProcessGroupDetail({
 
   if (isOverflow) {
     return (
-      <div className="space-y-4">
+      <div className="space-y-5">
         <Section title="收起的分组">
           <div className="grid grid-cols-2 gap-2">
             <Metric label="隐藏分组" value={hiddenGroups ?? 0} />
             <Metric label="隐藏进程" value={hiddenProcesses ?? 0} />
           </div>
-          <p className="mt-2 text-[11px] leading-relaxed text-ink-mute">
+          <p className="mt-2 text-[11px] leading-relaxed text-[#98a2b3]">
             当前只显示进程数最多的前 {displayLimit ?? '-'} 组。点这个节点可以继续加载更多分组。
           </p>
         </Section>
         <ViewModeBadge mode={processViewMode} />
-        {processViewMode === 'loading' && (
-          <Notice tone="warn">正在加载下一批分组…</Notice>
-        )}
+        {processViewMode === 'loading' && <Notice tone="warn">正在加载下一批分组…</Notice>}
         {loadedProcessGroups && (
           <Notice tone="info">
             已追加 {loadedProcessGroups.groups.length} 组
@@ -206,7 +308,7 @@ function ProcessGroupDetail({
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-5">
       <Section title="进程分组">
         <Field label="可执行文件">
           <span className="font-mono text-[10px] break-all">{executable ?? '—'}</span>
@@ -220,9 +322,7 @@ function ProcessGroupDetail({
       <Section title="状态">
         <Field label="主导状态">{dominantState ?? '—'}</Field>
         <Field label="分布">{states ?? '—'}</Field>
-        <Field label="内存">
-          {totalMemoryRssKiB != null ? `${formatCount(totalMemoryRssKiB)} KiB` : '—'}
-        </Field>
+        <Field label="内存">{totalMemoryRssKiB != null ? `${formatCount(totalMemoryRssKiB)} KiB` : '—'}</Field>
       </Section>
 
       <ViewModeBadge mode={processViewMode} />
@@ -234,16 +334,16 @@ function ProcessGroupDetail({
 function PropertiesDetail({ node }: { node: HostProcessTopologyNode }) {
   const entries = Object.entries(node.properties);
   return (
-    <div className="space-y-4">
+    <div className="space-y-5">
       <Section title="属性">
         {entries.length === 0 ? (
-          <p className="text-[11px] text-ink-mute">没有属性</p>
+          <p className="text-[11px] text-[#98a2b3]">没有属性</p>
         ) : (
           <dl className="space-y-1.5">
             {entries.map(([key, value]) => (
               <div key={key} className="flex items-baseline justify-between gap-3">
-                <dt className="shrink-0 text-[10px] text-ink-mute">{key}</dt>
-                <dd className="min-w-0 text-right font-mono text-[10px] break-all text-ink-soft">
+                <dt className="shrink-0 text-[10px] text-[#98a2b3]">{key}</dt>
+                <dd className="min-w-0 text-right font-mono text-[10px] break-all text-[#475467]">
                   {formatValue(value)}
                 </dd>
               </div>
@@ -266,10 +366,10 @@ function PropertiesDetail({ node }: { node: HostProcessTopologyNode }) {
 function GraphId({ id }: { id: string }) {
   return (
     <details className="group">
-      <summary className="cursor-pointer list-none text-[10px] text-ink-mute transition-colors hover:text-ink-soft">
+      <summary className="cursor-pointer list-none text-[10px] text-[#98a2b3] transition-colors hover:text-[#475467]">
         图元素 ID
       </summary>
-      <p className="mt-1 font-mono text-[10px] break-all text-ink-mute">{id}</p>
+      <p className="mt-1 font-mono text-[10px] break-all text-[#98a2b3]">{id}</p>
     </details>
   );
 }
@@ -277,7 +377,7 @@ function GraphId({ id }: { id: string }) {
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section>
-      <h4 className="mb-2 text-[10px] font-medium uppercase tracking-wider text-ink-mute">{title}</h4>
+      <h4 className="mb-2 text-[9.5px] font-medium uppercase tracking-[0.08em] text-[#98a2b3]">{title}</h4>
       <div className="space-y-1.5">{children}</div>
     </section>
   );
@@ -286,19 +386,19 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex items-baseline justify-between gap-3 text-[11px]">
-      <span className="shrink-0 text-ink-mute">{label}</span>
-      <span className="min-w-0 text-right text-ink-soft">{children}</span>
+      <span className="shrink-0 text-[#98a2b3]">{label}</span>
+      <span className="min-w-0 text-right text-[#344054]">{children}</span>
     </div>
   );
 }
 
 function Metric({ label, value, suffix }: { label: string; value: number; suffix?: string }) {
   return (
-    <div className="rounded-md bg-canvas px-2.5 py-2">
-      <div className="text-[10px] text-ink-mute">{label}</div>
-      <div className="tnum text-[15px] font-semibold leading-tight text-ink">
+    <div className="rounded-[8px] border border-[#f2f4f7] bg-[#f9fafb] px-2.5 py-2">
+      <div className="text-[9.5px] uppercase tracking-[0.06em] text-[#98a2b3]">{label}</div>
+      <div className="tnum mt-0.5 text-[15px] font-semibold leading-tight text-ink">
         {formatCount(value)}
-        {suffix && <span className="ml-0.5 text-[10px] font-normal text-ink-mute">{suffix}</span>}
+        {suffix && <span className="ml-0.5 text-[10px] font-normal text-[#98a2b3]">{suffix}</span>}
       </div>
     </div>
   );
@@ -307,9 +407,9 @@ function Metric({ label, value, suffix }: { label: string; value: number; suffix
 function Notice({ tone, children }: { tone: 'info' | 'warn'; children: React.ReactNode }) {
   const className =
     tone === 'warn'
-      ? 'border-amber-200 bg-amber-50 text-amber-800'
+      ? 'border-[#fedf89] bg-[#fffaeb] text-[#b54708]'
       : 'border-brand/25 bg-brand-soft text-brand';
-  return <div className={`rounded-md border px-3 py-2 text-[11px] ${className}`}>{children}</div>;
+  return <div className={`rounded-[8px] border px-3 py-2 text-[11px] leading-4 ${className}`}>{children}</div>;
 }
 
 function ViewModeBadge({ mode }: { mode: 'overview' | 'expanded' | 'loading' | null }) {
@@ -319,12 +419,12 @@ function ViewModeBadge({ mode }: { mode: 'overview' | 'expanded' | 'loading' | n
     mode === 'loading' ? '正在加载更多分组' : mode === 'expanded' ? '已展开分组' : '概览视图';
   const className =
     mode === 'loading'
-      ? 'border-amber-200 bg-amber-50 text-amber-800'
+      ? 'border-[#fedf89] bg-[#fffaeb] text-[#b54708]'
       : mode === 'expanded'
         ? 'border-brand/25 bg-brand-soft text-brand'
-        : 'border-line bg-canvas text-ink-soft';
+        : 'border-line bg-[#f9fafb] text-[#475467]';
 
-  return <div className={`rounded-md border px-3 py-2 text-[11px] ${className}`}>{text}</div>;
+  return <div className={`rounded-[8px] border px-3 py-2 text-[11px] ${className}`}>{text}</div>;
 }
 
 function formatValue(value: unknown) {

@@ -157,7 +157,6 @@ export type AppState = {
   selectedNodeId: string | null;
   layerVisibility: Record<LayerKind, boolean>;
   searchQuery: string;
-  layout: LayoutName;
 };
 
 export type AppAction =
@@ -167,10 +166,7 @@ export type AppAction =
   | { type: 'FETCH_GRAPH_ERROR'; error: string }
   | { type: 'SELECT_NODE'; nodeId: string | null }
   | { type: 'TOGGLE_LAYER'; layer: LayerKind }
-  | { type: 'SET_SEARCH'; query: string }
-  | { type: 'SET_LAYOUT'; layout: LayoutName };
-
-export type LayoutName = 'auto' | 'dagre' | 'cose-bilkent' | 'concentric';
+  | { type: 'SET_SEARCH'; query: string };
 
 // ---- Cytoscape element data extensions ----
 export type CyNodeData = {

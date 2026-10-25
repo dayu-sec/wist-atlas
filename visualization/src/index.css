@@ -8,16 +8,16 @@
     "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
 
-  /* 表面层次：画布 < 卡片 < 顶栏 */
-  --color-canvas: #f5f6f8;
+  /* 表面层次：画布 < 卡片 < 浮层 */
+  --color-canvas: #f7f8fa;
   --color-surface: #ffffff;
-  --color-line: #e6e8ec;
-  --color-line-strong: #d3d7de;
+  --color-line: #eaecf0;
+  --color-line-strong: #d0d5dd;
 
   /* 文字层次 */
   --color-ink: #101828;
   --color-ink-soft: #475467;
-  --color-ink-mute: #8a94a6;
+  --color-ink-mute: #667085;
 
   /* 品牌色：全站唯一强调色 */
   --color-brand: #4f46e5;
@@ -64,6 +64,53 @@ body {
   background: transparent;
 }
 
+/* 画布：极淡的点阵，给平移/缩放一点空间参照；不能抢过卡片本身。 */
+.atlas-canvas {
+  background-color: #f7f8fa;
+  background-image: radial-gradient(circle, #dfe3ea 0.8px, transparent 0.9px);
+  background-size: 22px 22px;
+  background-position: -1px -1px;
+}
+
+/* 画布上的节点卡。样式集中在 CSS 里，是因为它有 8 种内容变体，
+   但「卡片的物理规则」（描边、阴影、选中、变淡）必须完全一致。 */
+.node-card {
+  border-color: #e4e7ec;
+  box-shadow:
+    0 1px 2px rgba(16, 24, 40, 0.04),
+    0 2px 6px -2px rgba(16, 24, 40, 0.06);
+  transition:
+    border-color 140ms ease,
+    box-shadow 140ms ease,
+    opacity 140ms ease,
+    transform 140ms ease;
+  cursor: pointer;
+}
+
+.node-card:hover {
+  border-color: #cfd6e0;
+  box-shadow:
+    0 2px 4px rgba(16, 24, 40, 0.04),
+    0 10px 24px -8px rgba(16, 24, 40, 0.16);
+  transform: translateY(-1px);
+}
+
+.node-card:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-brand) 55%, white);
+  outline-offset: 2px;
+}
+
+.node-card-selected {
+  border-color: var(--color-brand);
+  box-shadow:
+    0 0 0 3px rgba(79, 70, 229, 0.14),
+    0 10px 28px -10px rgba(16, 24, 40, 0.24);
+}
+
+.node-card-dimmed {
+  opacity: 0.3;
+}
+
 /* 顶栏里的分段按钮 */
 .seg {
   border: 1px solid var(--color-line);
@@ -74,4 +121,14 @@ body {
   background: var(--color-brand-soft);
   border-color: color-mix(in srgb, var(--color-brand) 35%, transparent);
   color: var(--color-brand);
+}
+
+/* 浮在画布上的工具条 */
+.floating-bar {
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid rgba(228, 231, 236, 0.9);
+  box-shadow:
+    0 1px 2px rgba(16, 24, 40, 0.04),
+    0 8px 24px -12px rgba(16, 24, 40, 0.18);
+  backdrop-filter: blur(8px);
 }

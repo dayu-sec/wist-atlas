@@ -5,6 +5,30 @@
 
 ## [未发布]
 
+### 改进（拓扑可视化视觉改版）
+
+细节与参考产品见 [`doc/frontend/visual-design.md`](doc/frontend/visual-design.md)。
+
+- **构图从「圆环」改成「横向剖面」**：网络接口（左）→ 主机（中）→ 运行时（右）。
+  上一版把 8 个网段绕着主机摆成椭圆，每条边等长、方向随机，读不出结构；
+  现在两侧栏有标题、计数和分隔线，宽屏也用上了。
+- **节点从几何体改成信息卡**：接口名从关联边 `host_network_assoc.properties.ifaceName`
+  读出来做标题，CIDR 做副标题；主机卡带系统/架构/盘点时间；运行时卡带
+  「1,120 进程 / 705 程序 / 高频程序 Top 3」。颜色只留在 28–44px 的图标块里。
+- **页面壳收敛**：56px 深色顶栏 + 44px 工具条改成 52px 顶栏 + 画布左上浮动工具条；
+  左栏变成主机档案（身份 / 四个指标 / 高频进程条形图 / 图例 / 对象查询）。
+- **搜索索引补上边属性**：`bridge`、`en0`、CIDR 都能搜到网段；零命中时不再把整张图压暗。
+- **运行时展开**：卡片正文看详情、底部按钮展开；12 个分组按两列网格铺开（约 76%），
+  不再被 dagre 排成一列后缩到 39%。
+- **修复**：
+  - 选中节点 / 输入搜索会导致整图重新布局并重置视口（`displayGraph` 身份不稳定）；
+  - cytoscape 把容器 inline `position` 改成 `relative`，`absolute inset-0` 高度塌成 0，
+    fit 只横向居中，图被顶到画布上沿；
+  - 图层开关只改 state、画布没消费；
+  - 浮动工具条压住栏标题。
+- 新增 `visualization/src/utils/focus-layout.ts`、`presentation.ts`、`search.ts`，
+  以及 `components/NodeCard.tsx` / `AppHeader.tsx` / `icons.tsx`。
+
 ### 新增（主机架构与退役）
 
 - **`host_inventory` 加 `arch`**：CPU 架构（`aarch64` / `x86_64`）。包与二进制匹配、
