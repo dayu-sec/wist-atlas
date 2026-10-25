@@ -296,7 +296,7 @@ where
 
 const SWEEP_PAGE_LIMIT: u32 = 500;
 
-fn list_process_runtime_states_paged<S>(
+pub(super) fn list_process_runtime_states_paged<S>(
     store: &S,
     host_id: Uuid,
 ) -> StorageResult<Vec<ProcessRuntimeState>>
@@ -323,7 +323,7 @@ where
     Ok(items)
 }
 
-async fn list_process_runtime_states_paged_async<S>(
+pub(super) async fn list_process_runtime_states_paged_async<S>(
     store: &S,
     host_id: Uuid,
 ) -> StorageResult<Vec<ProcessRuntimeState>>

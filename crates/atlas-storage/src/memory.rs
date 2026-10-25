@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use atlas_domain::{
-    HostInventory, HostNetAssoc, HostRuntimeState, NetworkDomain, NetworkSegment,
+    HostInventory, HostNetAssoc, HostRuntimeState, InstanceEndpoint, NetworkDomain, NetworkSegment,
     ProcessRuntimeState, ResponsibilityAssignment, RuntimeBinding, ServiceEntity, ServiceInstance,
     Subject, TenantId,
 };
@@ -45,6 +45,7 @@ struct MemoryState {
     process_runtime_states: Vec<ProcessRuntimeState>,
     services: Vec<ServiceEntity>,
     service_instances: Vec<ServiceInstance>,
+    instance_endpoints: Vec<InstanceEndpoint>,
     runtime_bindings: Vec<RuntimeBinding>,
     subjects: Vec<Subject>,
     responsibility_assignments: Vec<ResponsibilityAssignment>,

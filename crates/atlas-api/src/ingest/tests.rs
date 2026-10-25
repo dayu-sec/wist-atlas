@@ -8,7 +8,8 @@ use super::{
     InMemoryIngestJobRecorder, IngestJobStatus, IngestService, extract_business_catalog_candidates,
     extract_host_candidates, extract_host_telemetry_candidates, extract_network_segment_candidates,
     extract_process_runtime_candidates, extract_process_telemetry_candidates,
-    extract_responsibility_assignment_candidates, extract_subject_candidates,
+    extract_responsibility_assignment_candidates, extract_service_endpoint_candidates,
+    extract_subject_candidates,
 };
 
 fn envelope(payload_inline: serde_json::Value) -> IngestEnvelope {
@@ -575,4 +576,55 @@ fn extract_responsibility_assignments_from_rows() {
         candidate.target_kind,
         atlas_domain::ObjectKind::Host
     ));
+}
+
+#[test]
+fn extract_service_endpoints_reject_out_of_range_ports() {
+    // 端口 0 是内核「随便给一个」的占位，65536 以上不可能出现在监听表里；
+    // 两种都属于解析错位，宁可不入库也不要污染服务实例。
+    for bad in [0, 65536, -1] {
+        let error = extract_service_endpoint_candidates(&envelope(json!({
+            "service_endpoints": [{
+                "address": "0.0.0.0",
+                "port": bad
+            }]
+        })))
+        .expect_err("端口越界必须拒掉");
+        assert_eq!(error.reason().stable_code(), "biz.atlas.api.field_invalid");
+    }
+}
+
+#[test]
+fn extract_service_endpoints_accepts_number_or_string_fields() {
+    let extracted = extract_service_endpoint_candidates(&envelope(json!({
+        "service_endpoints": [
+            {
+                "protocol": "TCP",
+                "address": "0.0.0.0",
+                "port": 22,
+                "pid": 4242,
+                "process_executable": "/usr/sbin/sshd"
+            },
+            {
+                "address": "127.0.0.1",
+                "port": "8080"
+            }
+        ]
+    })))
+    .unwrap();
+
+    assert_eq!(extracted.candidates.len(), 2);
+    let first = &extracted.candidates[0];
+    // 协议统一成小写：后端按 (protocol, address, port) 算稳定 uuid，
+    // `TCP` 和 `tcp` 变成两行就白采了。
+    assert_eq!(first.protocol, "tcp");
+    assert_eq!(first.port, 22);
+    assert_eq!(first.pid, Some(4242));
+    assert_eq!(first.process_executable.as_deref(), Some("/usr/sbin/sshd"));
+
+    let second = &extracted.candidates[1];
+    // 没给 protocol 时默认 tcp；没给 pid 不算错，只是不知道谁在听。
+    assert_eq!(second.protocol, "tcp");
+    assert_eq!(second.port, 8080);
+    assert_eq!(second.pid, None);
 }

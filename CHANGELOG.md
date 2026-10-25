@@ -5,6 +5,39 @@
 
 ## [未发布]
 
+### 新增（监听端口 → 服务暴露面）
+
+- **`atlas.in.edge.v1` 新增 `service_endpoints[]`**：一个快照里的全部监听地址
+  （协议 / 绑定地址 / 端口 / 持有进程）。来源是 agentd 的 `service_endpoint` 资源 ——
+  Linux 上 endpoint probe 早就在采，只是此前没有消费者，所以服务数恒为 0。
+- **落库为 `InstEp`**（`doc/model/business-system-service-topology-model.md` §5.7）：
+  迁移 `0004_instance_endpoint`、领域类型 `InstanceEndpoint`，以及
+  `upsert / list / close / list_instance_ids_for_host` 四个存储方法（同步 + 异步）。
+  关闭用 `valid_to`，不删行，与 `RuntimeBinding` 的有效期语义一致。
+- **按可执行文件名推断逻辑服务**：`InstEp → ServiceInstance → ServiceEntity`
+  （`external_ref = proc:<basename>`，跨主机归并，`Platform / Internal`）。
+  这是**推断**不是投影：`InstEp` 必须挂在实例上，而实例必须有服务。
+  - 两个不同的 `node` 应用会被并成一个服务，这一版接受；声明式
+    `business_catalog` 进来后能覆盖。
+  - 找不到宿主进程的端口直接跳过并计入 `unresolved_endpoint_count` ——
+    给无名端口编一个 `tcp/8080` 服务只会把目录弄脏。
+- **缺字段 ≠ 空数组**：`service_endpoints` 缺失（来源不支持端口采集）不触发清扫；
+  空数组表示「确认没有端口在听」，会把该主机上的活端点置 `valid_to`。
+  这条区分是必需的：macOS 上报任何快照都是「没有端口」，不能据此清空 Linux 侧的历史。
+- 主机视图与拓扑图带上端点：`HostServiceInstanceView.endpoints`；
+  服务卡片直接显示 `tcp/22 0.0.0.0`，实例节点标题也从 `instance xxxxxxxx` 改成实际监听地址。
+- `PipelineRunSummary` 加 `service_endpoint_count` / `unresolved_endpoint_count`。
+- 适配器新增 `service_endpoint` 资源投影（`build_service_endpoints`），
+  空列表不序列化 —— 保持与 0.1.x 输出逐字节兼容。
+- **窗口语义**：端口一直开着时 `valid_from` 保留最早时间（否则退化成「上次上报」）；
+  关掉再打开算新一段窗口，起点重置。`last_seen_at` 由实例承担。
+- 进程重启后接管同一端口：实例不变，旧进程的 `runtime_binding` 收尾（置 `valid_to`），
+  否则「这个实例由谁在跑」会同时有两个答案。
+- 输入校验：端口必须落在 `1..=65535`；协议统一小写后再去重（`TCP` 与 `tcp` 是同一个 socket）。
+- **限制**：macOS 的探针还没写（agentd 的 `discover_service_endpoints()` 在非 Linux
+  平台直接返回空）。本机验证靠构造快照，见
+  `doc/external-integration/warp-insight-adapter-spec.md` §7.4。
+
 ## [0.2.0] - 2026-10-25
 
 这一版把「边缘发现 → 中心资产目录」打通成**无人值守**的链路：网关落盘的 sink 文件被

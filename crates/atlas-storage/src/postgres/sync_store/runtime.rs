@@ -1,8 +1,9 @@
 use atlas_domain::{
-    HostInventory, HostNetAssoc, HostRuntimeState, NetworkDomain, NetworkSegment, ObjectKind,
-    ProcessRuntimeState, ResponsibilityAssignment, RuntimeBinding, RuntimeObjectType,
+    HostInventory, HostNetAssoc, HostRuntimeState, InstanceEndpoint, NetworkDomain, NetworkSegment,
+    ObjectKind, ProcessRuntimeState, ResponsibilityAssignment, RuntimeBinding, RuntimeObjectType,
     ServiceEntity, ServiceInstance, Subject, TenantId,
 };
+use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::memory::IngestJobEntry;
@@ -185,6 +186,62 @@ where
         rows.into_iter()
             .map(|row| decode_service_instance(&row))
             .collect()
+    }
+
+    fn upsert_instance_endpoint(&self, endpoint: &InstanceEndpoint) -> StorageResult<()> {
+        self.executor.exec(
+            sql::UPSERT_INSTANCE_ENDPOINT,
+            &[
+                endpoint.endpoint_id.to_string(),
+                endpoint.tenant_id.0.to_string(),
+                endpoint.instance_id.to_string(),
+                endpoint.address.clone(),
+                endpoint.port.to_string(),
+                endpoint.protocol.clone(),
+                endpoint.source.clone(),
+                endpoint.valid_from.to_rfc3339(),
+                endpoint
+                    .valid_to
+                    .map(|value| value.to_rfc3339())
+                    .unwrap_or_default(),
+                endpoint.created_at.to_rfc3339(),
+                endpoint.updated_at.to_rfc3339(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn list_instance_endpoints(
+        &self,
+        instance_id: Uuid,
+        page: Page,
+    ) -> StorageResult<Vec<InstanceEndpoint>> {
+        let rows = self.executor.query_rows(
+            sql::LIST_INSTANCE_ENDPOINTS,
+            &[
+                instance_id.to_string(),
+                page.limit.to_string(),
+                page.offset.to_string(),
+            ],
+        )?;
+        rows.into_iter()
+            .map(|row| decode_instance_endpoint(&row))
+            .collect()
+    }
+
+    fn close_instance_endpoint(&self, endpoint_id: Uuid, at: DateTime<Utc>) -> StorageResult<()> {
+        self.executor.exec(
+            sql::CLOSE_INSTANCE_ENDPOINT,
+            &[endpoint_id.to_string(), at.to_rfc3339()],
+        )?;
+        Ok(())
+    }
+
+    fn list_instance_ids_for_host(&self, host_id: Uuid) -> StorageResult<Vec<Uuid>> {
+        let rows = self
+            .executor
+            .query_rows(sql::LIST_INSTANCE_IDS_FOR_HOST, &[host_id.to_string()])?;
+        rows.into_iter().map(|row| parse_uuid(&row[0])).collect()
     }
 
     fn upsert_runtime_binding(&self, binding: &atlas_domain::RuntimeBinding) -> StorageResult<()> {

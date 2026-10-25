@@ -175,12 +175,16 @@ where
 }
 
 mod business;
+mod endpoint;
 mod governance;
 mod host;
 mod process;
 mod telemetry;
 
 pub(super) use business::{materialize_business_catalog, materialize_business_catalog_async};
+pub(super) use endpoint::{
+    EndpointSweep, materialize_service_endpoints, materialize_service_endpoints_async,
+};
 pub(super) use governance::{
     materialize_subjects_and_assignments, materialize_subjects_and_assignments_async,
 };

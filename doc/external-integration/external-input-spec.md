@@ -220,7 +220,8 @@ Target 示例：
   "host": {},
   "net_ifaces": [],
   "processes": [],
-  "containers": []
+  "containers": [],
+  "service_endpoints": []
 }
 ```
 
@@ -252,11 +253,18 @@ Target 示例：
 | `payload.processes[]` | 进程事实 | process fact |
 | `payload.containers[]` | 容器事实 | container / runtime binding fact |
 | `payload.containers[].kubernetes.*` | K8s 线索 | pod/workload binding fact |
+| `payload.service_endpoints[]` | 监听地址事实（协议/地址/端口/持有进程） | service instance endpoint fact |
 
 约束：
 
 - Edge Discovery 不直接表达长期 owner。
 - `processes[]` 和 `containers[]` 只表达观察事实，不直接创建 service。
+- **例外：`service_endpoints[]` 会间接产生服务。** 因为 `InstEp` 必须挂在服务实例上，
+  中心侧会按可执行文件名推一个 `Platform / Internal` 的逻辑服务
+  （`external_ref = proc:<basename>`，跨主机归并），供 `business_catalog` 这类
+  声明式输入后续纠正。这是有意的推断，不是投影。
+- `service_endpoints` **缺失**与**空数组**语义不同：缺失表示来源不支持端口采集，
+  不触发清扫；空数组表示「确认没有端口在听」，会把该主机的活端点置 `valid_to`。
 - 如果只有 IP 没有 CIDR/prefix，只能作为 network fact，不能稳定创建 network segment。
 
 ---

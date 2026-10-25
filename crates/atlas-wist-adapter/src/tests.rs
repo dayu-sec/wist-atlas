@@ -624,3 +624,95 @@ fn unknown_fields_are_ignored() {
     assert_eq!(built.payload.hosts.len(), 1);
     assert_eq!(built.collect.res_ver, "5");
 }
+
+// ── 监听端口 ──────────────────────────────────────────
+
+#[test]
+fn service_endpoints_project_socket_owner() {
+    let resources = vec![
+        host_resource(),
+        resource(
+            "machine-abc:endpoint:tcp:0:22:inode-1",
+            SERVICE_ENDPOINT_KIND,
+            &[
+                ("endpoint.protocol", "TCP"),
+                ("endpoint.bind.ip", "0.0.0.0"),
+                ("endpoint.bind.port", "22"),
+                ("socket.inode", "inode-1"),
+                ("process.pid", "4242"),
+                ("process.executable.name", "/usr/sbin/sshd"),
+                ("runtime.binding.confidence", "single_owner"),
+            ],
+        ),
+        // 拿不到持有者也得留：地址本身就是暴露面事实。
+        resource(
+            "machine-abc:endpoint:tcp:1:9999:inode-2",
+            SERVICE_ENDPOINT_KIND,
+            &[
+                ("endpoint.protocol", "tcp"),
+                ("endpoint.bind.ip", "127.0.0.1"),
+                ("endpoint.bind.port", "9999"),
+                ("socket.inode", "inode-2"),
+            ],
+        ),
+    ];
+
+    let built = envelope(&resources, &[]);
+    assert_eq!(built.payload.service_endpoints.len(), 2);
+
+    let sshd = &built.payload.service_endpoints[0];
+    assert_eq!(sshd.protocol, "tcp");
+    assert_eq!(sshd.address, "0.0.0.0");
+    assert_eq!(sshd.port, 22);
+    assert_eq!(sshd.pid, Some(4242));
+    assert_eq!(sshd.process_executable.as_deref(), Some("/usr/sbin/sshd"));
+    assert_eq!(sshd.binding_confidence.as_deref(), Some("single_owner"));
+    assert_eq!(sshd.host_ref, "node-1");
+
+    let unknown_owner = &built.payload.service_endpoints[1];
+    assert_eq!(unknown_owner.port, 9999);
+    assert_eq!(unknown_owner.pid, None);
+}
+
+#[test]
+fn service_endpoints_dedupe_on_normalized_protocol() {
+    // 同一台机器上，tcp/tcp6 两张表可能用不同大小写报同一个 socket；
+    // 去重 key 必须用归一化后的协议，否则中心侧会多出一条重复的暴露面。
+    let resources = vec![
+        host_resource(),
+        resource(
+            "machine-abc:endpoint:tcp:0:22:a",
+            SERVICE_ENDPOINT_KIND,
+            &[
+                ("endpoint.protocol", "TCP"),
+                ("endpoint.bind.ip", "0.0.0.0"),
+                ("endpoint.bind.port", "22"),
+                ("socket.inode", "a"),
+            ],
+        ),
+        resource(
+            "machine-abc:endpoint:tcp:0:22:b",
+            SERVICE_ENDPOINT_KIND,
+            &[
+                ("endpoint.protocol", "tcp"),
+                ("endpoint.bind.ip", "0.0.0.0"),
+                ("endpoint.bind.port", "22"),
+                ("socket.inode", "b"),
+            ],
+        ),
+    ];
+
+    let built = envelope(&resources, &[]);
+    assert_eq!(built.payload.service_endpoints.len(), 1);
+    assert_eq!(built.payload.service_endpoints[0].protocol, "tcp");
+}
+
+#[test]
+fn service_endpoints_are_omitted_when_the_snapshot_has_none() {
+    // 0.1.x 的适配器输出里没有这个字段；空列表不该凭空多出来，
+    // 否则下游会把 `[]` 当成「确认没有端口」而清掉历史数据。
+    let built = envelope(&[host_resource()], &[]);
+    assert!(built.payload.service_endpoints.is_empty());
+    let json = serde_json::to_string(&built).expect("serialize");
+    assert!(!json.contains("service_endpoints"));
+}

@@ -155,6 +155,7 @@ source.system + source.producer + collect.res_ver
 - `DiscRes(kind=host)`，原名 `DiscoveredResource(kind=host)`
 - `DiscRes(kind=process)`，原名 `DiscoveredResource(kind=process)`
 - `DiscRes(kind=container)`，原名 `DiscoveredResource(kind=container)`
+- `DiscRes(kind=service_endpoint)`，原名 `DiscoveredResource(kind=service_endpoint)`
 - `DiscTarget(kind=host)`，原名 `DiscoveredTarget(kind=host)`
 - `DiscTarget(kind=process)`，原名 `DiscoveredTarget(kind=process)`
 - `DiscTarget(kind=container)`，原名 `DiscoveredTarget(kind=container)`
@@ -166,13 +167,15 @@ source.system + source.producer + collect.res_ver
 - `k8s_node`
 - `k8s_pod`
 - `service`
-- `service_endpoint`
 - `log_file`
 
 原因：
 
 - 当前 `warp-insightd` 主循环尚未稳定产出这些 discovery 类型。
 - atlas 侧需要先固定 host/process/container 到 candidate/evidence 的基本链路。
+
+> `service_endpoint` 已从这份名单里移出：agentd 的 endpoint probe 在 Linux 上已在采，
+> 适配器也会投影成 `payload.service_endpoints[]`（见 §7.4）。macOS 侧探针尚未实现。
 
 ---
 
@@ -305,6 +308,37 @@ DiscoveredResource.kind = container
 - `k8s.*` 字段是线索，不等于完整 K8s inventory。
 - 完整 cluster / namespace / workload 仍应优先来自 K8s API adapter。
 
+### 7.4 `service_endpoint` resource
+
+输入：
+
+```text
+DiscoveredResource.kind = service_endpoint
+```
+
+关键字段：
+
+| warp-insight key | atlas 输出 | 说明 |
+| --- | --- | --- |
+| `endpoint.protocol` | `service_endpoints[].protocol` | `tcp` / `udp`，统一转小写 |
+| `endpoint.bind.ip` | `service_endpoints[].address` | 监听地址，`0.0.0.0` 与 `127.0.0.1` 语义不同 |
+| `endpoint.bind.port` | `service_endpoints[].port` | 监听端口 |
+| `process.pid` | `service_endpoints[].pid` | socket 持有进程；缺失时只记地址 |
+| `process.identity` | `service_endpoints[].process_identity` | 优先于 pid 匹配（pid 会复用） |
+| `process.executable.name` | `service_endpoints[].process_executable` | 服务名的来源 |
+| `container.id` | `service_endpoints[].container_id` | 容器内监听，当前仅透传 |
+| `runtime.binding.confidence` | `service_endpoints[].binding_confidence` | socket owner 归属置信 |
+
+输出：
+
+- `payload.service_endpoints[]`，中心侧据此产生
+  `ServiceEntity` → `ServiceInstance` → `RuntimeBinding` → `InstEp`。
+- 快照里**没有任何** `service_endpoint` 资源时，`service_endpoints` 字段整个不出现（空列表不序列化）——
+  下游把「字段缺失」和「确认没有端口」当成两件事。
+
+不做「端口值不值得收」的过滤：`127.0.0.1` 上的监听只对本机开放，
+而 `0.0.0.0` 上的监听是对外暴露，两者都是暴露面事实，不能按接口地址那套规则丢掉回环地址。
+
 ---
 
 ## 8. Target 映射
@@ -434,4 +468,7 @@ adapter 不理解的 `attributes`、`runtime_facts`、`labels` 必须保留到 r
    未知字段忽略（由单元测试钉住这个行为）。
 
 尚未实现（仍在 §12 的范围内）：`container`，以及 `ProcRtCand` / `CtrRtCand` 这类结构化候选。
-当前进程只作为 `processes[]` 行给出，由 `atlas-api` 侧落地成 runtime 候选。
+当前进程只作为 `processes[]` 行给出，由 `atlas-api` 侧落地成 runtime 候选；
+`service_endpoint` 已实现（见 §7.4），但 **macOS 侧探针尚未做** ——
+agentd 的 `discover_service_endpoints()` 在非 Linux 平台直接返回空，
+所以本机验证只能靠构造快照。

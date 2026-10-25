@@ -299,6 +299,26 @@ where
                 "boundary".to_string(),
                 Value::String(format!("{:?}", service_view.service.boundary)),
             );
+            // 服务卡上直接给出「在哪儿听」：一个服务可能多个实例、每个实例多个端点。
+            // 没有这个，服务节点在图上就只是一个名字，看不出暴露面。
+            let service_endpoints = collect_endpoints(&service_view.instances);
+            if !service_endpoints.is_empty() {
+                service_props.insert(
+                    "endpoints".to_string(),
+                    Value::Array(
+                        service_endpoints
+                            .iter()
+                            .map(|(protocol, address, port)| {
+                                serde_json::json!({
+                                    "protocol": protocol,
+                                    "address": address,
+                                    "port": port,
+                                })
+                            })
+                            .collect(),
+                    ),
+                );
+            }
             nodes.push(HostProcessTopologyNode {
                 id: service_node_id.clone(),
                 object_kind: "ServiceEntity",
@@ -320,6 +340,34 @@ where
                 let instance_node_id =
                     format!("service-instance:{}", instance_view.instance.instance_id);
                 let mut instance_props = serde_json::Map::new();
+                let instance_endpoints: Vec<String> = instance_view
+                    .endpoints
+                    .iter()
+                    .map(|endpoint| {
+                        format!(
+                            "{}/{} {}",
+                            endpoint.protocol, endpoint.port, endpoint.address
+                        )
+                    })
+                    .collect();
+                if !instance_endpoints.is_empty() {
+                    instance_props.insert(
+                        "endpoints".to_string(),
+                        Value::Array(
+                            instance_view
+                                .endpoints
+                                .iter()
+                                .map(|endpoint| {
+                                    serde_json::json!({
+                                        "protocol": endpoint.protocol,
+                                        "address": endpoint.address,
+                                        "port": endpoint.port,
+                                    })
+                                })
+                                .collect(),
+                        ),
+                    );
+                }
                 instance_props.insert(
                     "lastSeenAt".to_string(),
                     Value::String(instance_view.instance.last_seen_at.to_rfc3339()),
@@ -333,10 +381,15 @@ where
                     object_kind: "ServiceInstance",
                     object_id: instance_view.instance.instance_id.to_string(),
                     layer: "resource",
-                    label: format!(
-                        "instance {}",
-                        &instance_view.instance.instance_id.to_string()[..8]
-                    ),
+                    label: if instance_endpoints.is_empty() {
+                        // 没有端口就退回 id 前缀：至少能区分两个实例。
+                        format!(
+                            "instance {}",
+                            &instance_view.instance.instance_id.to_string()[..8]
+                        )
+                    } else {
+                        instance_endpoints.join(" · ")
+                    },
                     properties: instance_props,
                 });
                 edges.push(HostProcessTopologyEdge {
@@ -444,6 +497,28 @@ fn basename(path: &str) -> String {
         .filter(|item| !item.is_empty())
         .unwrap_or(path)
         .to_string()
+}
+
+/// 把一个服务的所有实例的端点去重后拼成一份。
+/// 同一台主机上一个服务只该有一个实例，但多实例/多端口是常态，
+/// 服务卡上给全集比只给第一个诚实。
+pub(in crate::graph) fn collect_endpoints(
+    instances: &[atlas_domain::HostServiceInstanceView],
+) -> Vec<(String, String, i32)> {
+    let mut endpoints: Vec<(String, String, i32)> = instances
+        .iter()
+        .flat_map(|instance| instance.endpoints.iter())
+        .map(|endpoint| {
+            (
+                endpoint.protocol.clone(),
+                endpoint.address.clone(),
+                endpoint.port,
+            )
+        })
+        .collect();
+    endpoints.sort();
+    endpoints.dedup();
+    endpoints
 }
 
 fn list_all_hosts_page<S>(store: &S, page: Page) -> AppResult<Vec<atlas_domain::HostInventory>>

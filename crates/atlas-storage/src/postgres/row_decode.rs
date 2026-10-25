@@ -1,6 +1,6 @@
 use atlas_domain::{
-    HostInventory, HostNetAssoc, HostRuntimeState, NetworkDomain, NetworkSegment, ObjectKind,
-    ProcessRuntimeState, ResponsibilityAssignment, RuntimeBinding, RuntimeObjectType,
+    HostInventory, HostNetAssoc, HostRuntimeState, InstanceEndpoint, NetworkDomain, NetworkSegment,
+    ObjectKind, ProcessRuntimeState, ResponsibilityAssignment, RuntimeBinding, RuntimeObjectType,
     ServiceEntity, ServiceInstance, Subject, TenantId,
 };
 use chrono::{DateTime, Utc};
@@ -147,6 +147,27 @@ pub(super) fn decode_service_instance(row: &[String]) -> StorageResult<ServiceIn
             .map(|value| parse_datetime(&value))
             .transpose()?,
         last_seen_at: parse_datetime(&row[6])?,
+    })
+}
+
+pub(super) fn decode_instance_endpoint(row: &[String]) -> StorageResult<InstanceEndpoint> {
+    Ok(InstanceEndpoint {
+        endpoint_id: parse_uuid(&row[0])?,
+        tenant_id: TenantId(parse_uuid(&row[1])?),
+        instance_id: parse_uuid(&row[2])?,
+        address: row[3].clone(),
+        // port 是 NOT NULL 列。解析失败只可能是列序错位，落成 0 会让排查静默失真。
+        port: row[4]
+            .parse::<i32>()
+            .map_err(|err| operation_failed(err.to_string()))?,
+        protocol: row[5].clone(),
+        source: row[6].clone(),
+        valid_from: parse_datetime(&row[7])?,
+        valid_to: empty_to_none(&row[8])
+            .map(|value| parse_datetime(&value))
+            .transpose()?,
+        created_at: parse_datetime(&row[9])?,
+        updated_at: parse_datetime(&row[10])?,
     })
 }
 

@@ -38,6 +38,7 @@ const HOST_KIND: &str = "host";
 const IFACE_KIND: &str = "network_interface";
 const ADDR_KIND: &str = "ip_address";
 const PROCESS_KIND: &str = "process";
+const SERVICE_ENDPOINT_KIND: &str = "service_endpoint";
 
 /// agentd 没有真实机器标识时的 `host.id` 前缀。
 const HOSTNAME_PREFIX: &str = "hostname:";
@@ -151,6 +152,10 @@ pub struct Payload {
     pub hosts: Vec<Host>,
     pub interfaces: Vec<Interface>,
     pub processes: Vec<Process>,
+    /// 监听端口（模型里的 `InstEp`）。Linux 的 endpoint probe 已经采集，macOS 尚未。
+    /// 老适配器输出没有这个字段，所以空列表不序列化 —— 保持与 0.1.x 输出一致。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub service_endpoints: Vec<ServiceEndpoint>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -207,6 +212,33 @@ pub struct Process {
     pub machine_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity: Option<String>,
+}
+
+/// 一个正在监听的地址。
+///
+/// 这是**观测事实**（「这个地址上有人在听」），不是业务服务定义：进程名到服务的映射
+/// 由中心侧做推断，适配器只做逐字段投影。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServiceEndpoint {
+    pub protocol: String,
+    pub address: String,
+    pub port: i64,
+    pub host_ref: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine_id: Option<String>,
+    /// 持有该 socket 的进程。Linux 上由 `/proc` 的 inode 反查，缺失时只记地址。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_executable: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_identity: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binding_confidence: Option<String>,
 }
 
 // ── 输入：agentd 的快照形状（容错） ─────────────────────────
@@ -304,6 +336,12 @@ pub fn build_envelope(
         machine_id.as_deref(),
         meta.generated_at,
     )?;
+    let service_endpoints = build_service_endpoints(
+        resources,
+        &host_name,
+        machine_id.as_deref(),
+        meta.generated_at,
+    )?;
 
     Ok(EdgeEnvelope {
         schema: EDGE_SCHEMA.to_string(),
@@ -324,6 +362,7 @@ pub fn build_envelope(
             hosts: vec![host],
             interfaces,
             processes,
+            service_endpoints,
         },
     })
 }
@@ -657,6 +696,81 @@ fn build_processes(
             .then_with(|| left.executable_name.cmp(&right.executable_name))
     });
     Ok(processes)
+}
+
+/// 把 `service_endpoint` 资源投影成 payload 里的 `service_endpoints[]`。
+///
+/// 不做「端口值不值得收」的过滤：`127.0.0.1:5432` 和 `0.0.0.0:22` 是两件完全不同的事
+/// （只对本机开放 vs 对外暴露），保留下来才能区分「暴露面」与「内部依赖」。
+fn build_service_endpoints(
+    resources: &[SnapshotResource],
+    host_name: &str,
+    machine_id: Option<&str>,
+    generated_at: &str,
+) -> Result<Vec<ServiceEndpoint>, AdapterError> {
+    let mut endpoints: Vec<((String, String, i64, i64), ServiceEndpoint)> = Vec::new();
+
+    for resource in resources
+        .iter()
+        .filter(|resource| resource.kind == SERVICE_ENDPOINT_KIND)
+    {
+        let (Some(protocol), Some(address), Some(port_raw)) = (
+            attr(&resource.attributes, "endpoint.protocol"),
+            attr(&resource.attributes, "endpoint.bind.ip"),
+            attr(&resource.attributes, "endpoint.bind.port"),
+        ) else {
+            continue;
+        };
+        let port = port_raw
+            .trim()
+            .parse::<i64>()
+            .map_err(|_| AdapterError::NotNumeric {
+                resource_id: resource.resource_id.clone(),
+                field: "endpoint.bind.port",
+                value: port_raw.clone(),
+            })?;
+
+        // pid 解析不出来就当没拿到：监听地址本身仍是有用的事实，
+        // 不值得为一个坏 pid 把整个端口丢掉。
+        let pid = attr(&resource.attributes, "process.pid")
+            .and_then(|raw| raw.trim().parse::<i64>().ok());
+
+        let observed_at = if resource.discovered_at.trim().is_empty() {
+            generated_at.to_string()
+        } else {
+            resource.discovered_at.clone()
+        };
+
+        let protocol = protocol.to_ascii_lowercase();
+        let endpoint = ServiceEndpoint {
+            protocol: protocol.clone(),
+            address: address.clone(),
+            port,
+            host_ref: host_name.to_string(),
+            observed_at: Some(observed_at),
+            machine_id: machine_id.map(str::to_string),
+            pid,
+            process_executable: attr(&resource.attributes, "process.executable.name"),
+            process_identity: attr(&resource.attributes, "process.identity"),
+            container_id: attr(&resource.attributes, "container.id"),
+            binding_confidence: attr(&resource.attributes, "runtime.binding.confidence"),
+        };
+
+        // 同一个 (proto, addr, port, pid) 在快照里可能重复（tcp/tcp6 两表都能看到），
+        // 去重后再写库，否则中心侧的 stable uuid 会一直撞同一行。
+        // key 用已归一化的 protocol：`TCP` 与 `tcp` 是同一个 socket。
+        let key = (protocol, address, port, pid.unwrap_or(-1));
+        upsert(&mut endpoints, key, endpoint);
+    }
+
+    let mut endpoints: Vec<ServiceEndpoint> = endpoints.into_iter().map(|(_, e)| e).collect();
+    endpoints.sort_by(|left, right| {
+        left.port
+            .cmp(&right.port)
+            .then_with(|| left.protocol.cmp(&right.protocol))
+            .then_with(|| left.address.cmp(&right.address))
+    });
+    Ok(endpoints)
 }
 
 /// 这个地址值不值得进资产目录。

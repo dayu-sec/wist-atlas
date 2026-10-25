@@ -386,6 +386,61 @@ ORDER BY started_at DESC, instance_id ASC
 LIMIT NULLIF($2, '')::int4 OFFSET NULLIF($3, '')::int4
 "#;
 
+pub const UPSERT_INSTANCE_ENDPOINT: &str = r#"
+INSERT INTO instance_endpoint (
+    endpoint_id, tenant_id, inst_id, address, port, protocol, source,
+    valid_from, valid_to, created_at, updated_at
+) VALUES (
+    NULLIF($1, '')::uuid, NULLIF($2, '')::uuid, NULLIF($3, '')::uuid, $4,
+    NULLIF($5, '')::int4, $6, $7, NULLIF($8, '')::timestamptz,
+    NULLIF($9, '')::timestamptz, NULLIF($10, '')::timestamptz, NULLIF($11, '')::timestamptz
+)
+ON CONFLICT (endpoint_id) DO UPDATE SET
+    tenant_id = EXCLUDED.tenant_id,
+    inst_id = EXCLUDED.inst_id,
+    address = EXCLUDED.address,
+    port = EXCLUDED.port,
+    protocol = EXCLUDED.protocol,
+    source = EXCLUDED.source,
+    -- 一段暴露窗口的起点不该被每份快照推后（那样 valid_from 就退化成「上次观测」）。
+    -- 但如果这行已经被关过（valid_to 非空），这次是**重新开监听**，起点重新计。
+    valid_from = CASE
+        WHEN instance_endpoint.valid_to IS NOT NULL THEN EXCLUDED.valid_from
+        ELSE LEAST(instance_endpoint.valid_from, EXCLUDED.valid_from)
+    END,
+    -- 显式跟随写入值：同一条写入既可能是新开一段，也可能是纠正后重新满上 valid_to。
+    valid_to = EXCLUDED.valid_to,
+    updated_at = EXCLUDED.updated_at
+"#;
+
+pub const LIST_INSTANCE_ENDPOINTS: &str = r#"
+SELECT endpoint_id, tenant_id, inst_id, address, port, protocol, source,
+       valid_from, valid_to, created_at, updated_at
+FROM instance_endpoint
+WHERE inst_id = NULLIF($1, '')::uuid AND valid_to IS NULL
+ORDER BY protocol, address, port
+LIMIT NULLIF($2, '')::int4 OFFSET NULLIF($3, '')::int4
+"#;
+
+pub const CLOSE_INSTANCE_ENDPOINT: &str = r#"
+UPDATE instance_endpoint
+SET valid_to = NULLIF($2, '')::timestamptz,
+    updated_at = NULLIF($2, '')::timestamptz
+WHERE endpoint_id = NULLIF($1, '')::uuid AND valid_to IS NULL
+"#;
+
+// 「这台主机上还活着的实例」是关端点时的批量入口：不 JOIN service_instance，
+// 因为实例是否存活只由它的进程（stale_at）决定，再绕一层反而是多余的条件。
+pub const LIST_INSTANCE_IDS_FOR_HOST: &str = r#"
+SELECT DISTINCT rb.instance_id
+FROM runtime_binding rb
+JOIN process_runtime_state p ON p.process_id = rb.object_id
+WHERE rb.object_type = 'Process'
+  AND p.host_id = NULLIF($1, '')::uuid
+  AND p.stale_at IS NULL
+ORDER BY rb.instance_id
+"#;
+
 pub const UPSERT_RUNTIME_BINDING: &str = r#"
 INSERT INTO runtime_binding (
     binding_id, instance_id, object_type, object_id, scope, confidence, source,

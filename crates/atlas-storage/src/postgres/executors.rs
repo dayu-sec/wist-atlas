@@ -40,6 +40,7 @@ struct MemoryPostgresState {
     host_runtime_states: std::collections::BTreeMap<String, Vec<String>>,
     process_runtime_states: std::collections::BTreeMap<String, Vec<String>>,
     service_instances: std::collections::BTreeMap<String, Vec<String>>,
+    instance_endpoints: std::collections::BTreeMap<String, Vec<String>>,
     runtime_bindings: std::collections::BTreeMap<String, Vec<String>>,
     subjects: std::collections::BTreeMap<String, Vec<String>>,
     responsibility_assignments: std::collections::BTreeMap<String, Vec<String>>,
@@ -137,6 +138,33 @@ impl PostgresExecutor for MemoryPostgresExecutor {
                     .service_instances
                     .insert(params[0].clone(), params.to_vec());
             }
+            value if value == sql::UPSERT_INSTANCE_ENDPOINT => {
+                // 对齐 SQL 里的 CASE：窗口未关保留最早起点，关过又重开则重新计。
+                match state.instance_endpoints.get(&params[0]) {
+                    Some(row) if row[8].is_empty() => {
+                        let mut next = params.to_vec();
+                        if row[7] < next[7] {
+                            next[7] = row[7].clone();
+                        }
+                        state.instance_endpoints.insert(params[0].clone(), next);
+                    }
+                    _ => {
+                        state
+                            .instance_endpoints
+                            .insert(params[0].clone(), params.to_vec());
+                    }
+                }
+            }
+            value if value == sql::CLOSE_INSTANCE_ENDPOINT => {
+                // 对齐 SQL 的 `AND valid_to IS NULL`：已关闭的行不能再被改写。
+                let at = params[1].clone();
+                if let Some(row) = state.instance_endpoints.get_mut(&params[0]) {
+                    if row[8].is_empty() {
+                        row[8] = at.clone();
+                        row[10] = at;
+                    }
+                }
+            }
             value if value == sql::UPSERT_RUNTIME_BINDING => {
                 state
                     .runtime_bindings
@@ -227,6 +255,31 @@ impl PostgresExecutor for MemoryPostgresExecutor {
                 .filter(|row| row[2] == params[0])
                 .cloned()
                 .collect(),
+            value if value == sql::LIST_INSTANCE_ENDPOINTS => state
+                .instance_endpoints
+                .values()
+                .filter(|row| row[2] == params[0] && row[8].is_empty())
+                .cloned()
+                .collect(),
+            value if value == sql::LIST_INSTANCE_IDS_FOR_HOST => {
+                // 内存替身没有 JOIN：先按 host 找出存活进程，再筛出指向它们的 Process binding。
+                let live_process_ids: std::collections::BTreeSet<&str> = state
+                    .process_runtime_states
+                    .values()
+                    .filter(|row| row[2] == params[0] && row[12].is_empty())
+                    .map(|row| row[0].as_str())
+                    .collect();
+                let mut instance_ids: Vec<String> = state
+                    .runtime_bindings
+                    .values()
+                    .filter(|row| row[2] == "Process" && live_process_ids.contains(row[3].as_str()))
+                    .map(|row| row[1].clone())
+                    .collect();
+                // DISTINCT 的语义：一个实例可能有多个进程绑定。
+                instance_ids.sort();
+                instance_ids.dedup();
+                instance_ids.into_iter().map(|id| vec![id]).collect()
+            }
             value if value == sql::GET_RUNTIME_BINDING => state
                 .runtime_bindings
                 .get(&params[0])

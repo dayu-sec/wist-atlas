@@ -1,10 +1,11 @@
 use atlas_domain::{
     BusinessDomain, ClusterInventory, ExternalIdentityLink, ExternalSyncCursor, HostInventory,
-    HostNetAssoc, HostRuntimeState, NamespaceInventory, NetworkDomain, NetworkSegment, ObjectKind,
-    PodInventory, PodPlacement, ProcessRuntimeState, ResponsibilityAssignment, RuntimeBinding,
-    ServiceEntity, ServiceInstance, Subject, Subsystem, SystemBoundary, TenantId, WorkloadEntity,
-    WorkloadPodMembership,
+    HostNetAssoc, HostRuntimeState, InstanceEndpoint, NamespaceInventory, NetworkDomain,
+    NetworkSegment, ObjectKind, PodInventory, PodPlacement, ProcessRuntimeState,
+    ResponsibilityAssignment, RuntimeBinding, ServiceEntity, ServiceInstance, Subject, Subsystem,
+    SystemBoundary, TenantId, WorkloadEntity, WorkloadPodMembership,
 };
+use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::StorageResult;
@@ -158,6 +159,20 @@ pub trait RuntimeStore {
         page: Page,
     ) -> StorageResult<Vec<ServiceInstance>>;
 
+    fn upsert_instance_endpoint(&self, endpoint: &InstanceEndpoint) -> StorageResult<()>;
+    fn list_instance_endpoints(
+        &self,
+        instance_id: Uuid,
+        page: Page,
+    ) -> StorageResult<Vec<InstanceEndpoint>>;
+    fn close_instance_endpoint(&self, endpoint_id: Uuid, at: DateTime<Utc>) -> StorageResult<()>;
+
+    /// 这台主机上**仍然活着**（进程未标 stale）的服务实例 id，已去重。
+    ///
+    /// 导入「本轮没有任何端口在听」的快照时要关掉该主机的活端点；按进程逐个反查
+    /// binding 在千级进程规模下会把一次导入放大成上千次查询，所以按 host 直接取。
+    fn list_instance_ids_for_host(&self, host_id: Uuid) -> StorageResult<Vec<Uuid>>;
+
     fn upsert_runtime_binding(&self, binding: &RuntimeBinding) -> StorageResult<()>;
     fn get_runtime_binding(&self, binding_id: Uuid) -> StorageResult<Option<RuntimeBinding>>;
     fn list_runtime_bindings_for_instance(
@@ -207,6 +222,18 @@ pub trait AsyncRuntimeStore: Sync {
         service_id: Uuid,
         page: Page,
     ) -> StorageResult<Vec<ServiceInstance>>;
+    async fn upsert_instance_endpoint(&self, endpoint: &InstanceEndpoint) -> StorageResult<()>;
+    async fn list_instance_endpoints(
+        &self,
+        instance_id: Uuid,
+        page: Page,
+    ) -> StorageResult<Vec<InstanceEndpoint>>;
+    async fn close_instance_endpoint(
+        &self,
+        endpoint_id: Uuid,
+        at: DateTime<Utc>,
+    ) -> StorageResult<()>;
+    async fn list_instance_ids_for_host(&self, host_id: Uuid) -> StorageResult<Vec<Uuid>>;
     async fn upsert_runtime_binding(&self, binding: &RuntimeBinding) -> StorageResult<()>;
     async fn get_runtime_binding(&self, binding_id: Uuid) -> StorageResult<Option<RuntimeBinding>>;
     async fn list_runtime_bindings_for_instance(

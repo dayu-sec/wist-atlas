@@ -1,7 +1,7 @@
 use atlas_domain::{
     BusinessCatalogCandidate, HostCandidate, HostTelemetryCandidate, IngestEnvelope,
     NetworkSegmentCandidate, ProcessRuntimeCandidate, ProcessTelemetryCandidate,
-    ResponsibilityAssignmentCandidate, SubjectType,
+    ResponsibilityAssignmentCandidate, ServiceEndpointCandidate, SubjectType,
 };
 use serde_json::Value;
 
@@ -180,6 +180,81 @@ pub fn extract_process_runtime_candidates(
     }
 
     Ok(ExtractedProcessRuntimes { candidates })
+}
+
+/// 提取监听地址。
+///
+/// 只认 `service_endpoints[]` 数组 —— 不像 host/network 那样还要兼容存量单对象输入，
+/// 因为这是新开的契约字段，没有历史数据要兼容。
+pub fn extract_service_endpoint_candidates(
+    envelope: &IngestEnvelope,
+) -> ApiResult<ExtractedServiceEndpoints> {
+    let payload = object_payload(envelope)?;
+    let mut candidates = Vec::new();
+
+    let rows = optional_array(payload, "service_endpoints")?;
+    let reported = rows.is_some();
+    if let Some(rows) = rows {
+        candidates.reserve(rows.len());
+        for row in rows {
+            let row = row
+                .as_object()
+                .ok_or(invalid_field_type("service_endpoints[]"))?;
+            candidates.push(service_endpoint_candidate_from_row(envelope, row)?);
+        }
+    }
+
+    Ok(ExtractedServiceEndpoints {
+        candidates,
+        reported,
+    })
+}
+
+fn service_endpoint_candidate_from_row(
+    envelope: &IngestEnvelope,
+    row: &serde_json::Map<String, Value>,
+) -> ApiResult<ServiceEndpointCandidate> {
+    let protocol = optional_string(row, "protocol")?.unwrap_or_else(|| "tcp".to_string());
+    let address = required_string_like(row, "address")?;
+    let port_raw = required_string_like(row, "port")?;
+    let port = port_raw
+        .parse::<i32>()
+        .map_err(|_| invalid_field_value("port", port_raw.clone()))?;
+    // 端口 0 是内核的「随便给一个」占位，监听表里出现它说明采集读错了行；
+    // 超出 65535 是同一种错误。两种都不能当资产写进库里。
+    if !(1..=65535).contains(&port) {
+        return Err(invalid_field_value("port", port.to_string()));
+    }
+
+    // pid 拿不到不是错误：只知道「某个地址在听」仍然值得入库。
+    let pid = optional_u64(row, "pid")?
+        .map(|value| {
+            i32::try_from(value).map_err(|_| invalid_field_value("pid", value.to_string()))
+        })
+        .transpose()?;
+
+    let host_name = optional_string(row, "host_name")?
+        .or_else(|| optional_string_lossy(row, "host_ref"))
+        .or_else(|| optional_string_lossy(row, "hostname"));
+    let machine_id = optional_string(row, "machine_id")?;
+
+    Ok(ServiceEndpointCandidate {
+        tenant_id: envelope.tenant_id,
+        environment_id: envelope.environment_id,
+        source_kind: envelope.source_kind,
+        host_name,
+        machine_id,
+        protocol: protocol.to_ascii_lowercase(),
+        address,
+        port,
+        pid,
+        process_executable: optional_string(row, "process_executable")?
+            .or_else(|| optional_string_lossy(row, "executable")),
+        process_identity: optional_string(row, "process_identity")?,
+        container_id: optional_string(row, "container_id")?,
+        binding_confidence: optional_string(row, "binding_confidence")?,
+        observed_at: optional_timestamp(row, "observed_at")?,
+    })
 }
 
 fn looks_like_edge_network_fact(object: &serde_json::Map<String, Value>) -> ApiResult<bool> {

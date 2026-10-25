@@ -7,10 +7,12 @@ pub struct Migration {
 pub const INITIAL_SCHEMA_VERSION: &str = "0001_initial_schema";
 pub const PRESENCE_STALE_VERSION: &str = "0002_presence_stale";
 pub const HOST_ARCH_PRESENCE_VERSION: &str = "0003_host_arch_presence";
+pub const INSTANCE_ENDPOINT_VERSION: &str = "0004_instance_endpoint";
 
 pub const INITIAL_SCHEMA_SQL: &str = include_str!("../migrations/0001_initial_schema.sql");
 pub const PRESENCE_STALE_SQL: &str = include_str!("../migrations/0002_presence_stale.sql");
 pub const HOST_ARCH_PRESENCE_SQL: &str = include_str!("../migrations/0003_host_arch_presence.sql");
+pub const INSTANCE_ENDPOINT_SQL: &str = include_str!("../migrations/0004_instance_endpoint.sql");
 
 pub const MIGRATIONS: &[Migration] = &[
     Migration {
@@ -24,6 +26,10 @@ pub const MIGRATIONS: &[Migration] = &[
     Migration {
         version: HOST_ARCH_PRESENCE_VERSION,
         sql: HOST_ARCH_PRESENCE_SQL,
+    },
+    Migration {
+        version: INSTANCE_ENDPOINT_VERSION,
+        sql: INSTANCE_ENDPOINT_SQL,
     },
 ];
 
@@ -108,6 +114,18 @@ mod tests {
                 migration.version
             );
         }
+    }
+
+    #[test]
+    fn instance_endpoint_migration_keeps_history_and_indexes_the_live_path() {
+        let sql = super::INSTANCE_ENDPOINT_SQL;
+        assert!(sql.contains("CREATE TABLE IF NOT EXISTS instance_endpoint"));
+        // 关闭地址只写 valid_to，不删行：历史地址要查得到。
+        assert!(sql.contains("valid_to"));
+        assert!(sql.contains("WHERE valid_to IS NULL"));
+        // 不冗余归属列：查询侧走 service_instance → runtime_binding。
+        assert!(!sql.contains("host_id UUID"));
+        assert!(!sql.contains("process_id UUID"));
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use atlas_domain::{
     BusinessCatalogCandidate, HostCandidate, HostTelemetryCandidate, NetworkSegmentCandidate,
     ProcessRuntimeCandidate, ProcessTelemetryCandidate, ResponsibilityAssignmentCandidate,
-    SubjectCandidate,
+    ServiceEndpointCandidate, SubjectCandidate,
 };
 use serde::{Deserialize, Serialize};
 
@@ -23,6 +23,16 @@ pub struct ExtractedNetworkSegments {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExtractedProcessRuntimes {
     pub candidates: Vec<ProcessRuntimeCandidate>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExtractedServiceEndpoints {
+    pub candidates: Vec<ServiceEndpointCandidate>,
+    /// 输入里到底有没有 `service_endpoints` 字段。
+    ///
+    /// 这个区分很关键：**没这个字段**说明采集端不支持端点（macOS 上的旧探针就是这样），
+    /// 不能拿它当作「这台机器一个端口都没开」去清扫；**字段是空数组**才是真的没端口。
+    pub reported: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

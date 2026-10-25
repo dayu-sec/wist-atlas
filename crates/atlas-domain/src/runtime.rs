@@ -72,6 +72,26 @@ pub struct ServiceInstance {
     pub last_seen_at: DateTime<Utc>,
 }
 
+/// 某个服务实例的「当前监听地址」快照。
+///
+/// 没有归到 `ServiceInstance` 上是因为地址会随重建/重启变化，而且一个实例常有多个
+/// 监听地址；用 `valid_to` 关闭旧行保存历史，才能回答「它当时监听在哪」。
+/// 归属关系（主机/进程）由 `ServiceInstance` → `RuntimeBinding` 表达，这里不冗余。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InstanceEndpoint {
+    pub endpoint_id: Uuid,
+    pub tenant_id: TenantId,
+    pub instance_id: Uuid,
+    pub address: String,
+    pub port: i32,
+    pub protocol: String,
+    pub source: String,
+    pub valid_from: DateTime<Utc>,
+    pub valid_to: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ContainerRuntime {
     pub container_id: Uuid,

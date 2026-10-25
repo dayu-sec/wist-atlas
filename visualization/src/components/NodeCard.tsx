@@ -366,7 +366,15 @@ function RuntimeProcessCard({ node }: { node: HostProcessTopologyNode }) {
 
 function ServiceCard({ node }: { node: HostProcessTopologyNode }) {
   const instanceCount = numericProperty(node.properties, 'instanceCount');
-  const name = String(node.properties.name ?? node.label);
+  const name = String(node.properties.name ?? node.properties.serviceName ?? node.label);
+  const endpoints = endpointLabels(node.properties);
+  // 副标题优先给「在哪儿听」：服务卡片上最想知道的就是这个，
+  // 实例数是次要信息（点开右侧抽屉能看全）。
+  const subtitle = endpoints.length > 0
+    ? endpoints.join(' · ')
+    : instanceCount > 0
+      ? `${instanceCount} 个实例`
+      : '服务';
 
   return (
     <div className="flex h-full items-center gap-2.5 px-3.5">
@@ -381,12 +389,31 @@ function ServiceCard({ node }: { node: HostProcessTopologyNode }) {
         <div className="truncate text-[12px] font-semibold leading-4 text-[#101828]" title={name}>
           {name}
         </div>
-        <div className="mt-1 text-[9.5px] leading-3 text-[#667085]">
-          {instanceCount > 0 ? `${instanceCount} 个实例` : '服务'}
+        <div
+          className="mt-1 truncate font-mono text-[9.5px] leading-3 text-[#667085]"
+          title={subtitle}
+        >
+          {subtitle}
         </div>
       </div>
     </div>
   );
+}
+
+/** `endpoints` 是后端按 `{protocol, address, port}` 给的全集。 */
+function endpointLabels(properties: Record<string, unknown>): string[] {
+  const raw = properties.endpoints;
+  if (!Array.isArray(raw)) return [];
+
+  return raw
+    .map((item) =>
+      typeof item === 'object' && item !== null ? (item as Record<string, unknown>) : null,
+    )
+    .filter((item): item is Record<string, unknown> => Boolean(item))
+    .map((item) =>
+      `${String(item.protocol ?? 'tcp')}/${String(item.port ?? '')} ${String(item.address ?? '')}`.trim(),
+    )
+    .filter(Boolean);
 }
 
 function SubjectCard({ node }: { node: HostProcessTopologyNode }) {

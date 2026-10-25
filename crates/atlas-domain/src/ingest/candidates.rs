@@ -63,6 +63,29 @@ pub struct NetworkSegmentCandidate {
     pub iface_name: Option<String>,
 }
 
+/// 一个观测到的监听地址（模型里的 `InstEp` 候选）。
+///
+/// 这是「运行时事实」，不是业务服务定义：`executable` 只是用来给中心侧推断一个
+/// 可读的服务名，不表达「这就是某个业务服务」。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ServiceEndpointCandidate {
+    pub tenant_id: TenantId,
+    pub environment_id: Option<EnvironmentId>,
+    pub source_kind: SourceKind,
+    pub host_name: Option<String>,
+    pub machine_id: Option<String>,
+    pub protocol: String,
+    pub address: String,
+    pub port: i32,
+    /// 持有 socket 的进程。拿不到时只记地址。
+    pub pid: Option<i32>,
+    pub process_executable: Option<String>,
+    pub process_identity: Option<String>,
+    pub container_id: Option<String>,
+    pub binding_confidence: Option<String>,
+    pub observed_at: Option<ObservedAt>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct HostTelemetryCandidate {
     pub tenant_id: TenantId,

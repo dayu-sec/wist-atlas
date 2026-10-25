@@ -2,9 +2,9 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    BusinessDomain, HostInventory, HostNetAssoc, HostRuntimeState, NetworkSegment,
-    ProcessRuntimeState, ResponsibilityAssignment, RuntimeBinding, ServiceEntity, ServiceInstance,
-    Subject,
+    BusinessDomain, HostInventory, HostNetAssoc, HostRuntimeState, InstanceEndpoint,
+    NetworkSegment, ProcessRuntimeState, ResponsibilityAssignment, RuntimeBinding, ServiceEntity,
+    ServiceInstance, Subject,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -70,6 +70,9 @@ pub struct HostServiceInstanceView {
     pub instance: ServiceInstance,
     pub bindings: Vec<RuntimeBinding>,
     pub processes: Vec<ProcessRuntimeState>,
+    /// 这个实例当前实际监听的地址（`InstEp`）。空表示实例在跑但没开端口。
+    #[serde(default)]
+    pub endpoints: Vec<InstanceEndpoint>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -1,8 +1,9 @@
 use atlas_domain::{
-    HostInventory, HostNetAssoc, HostRuntimeState, NetworkDomain, NetworkSegment,
+    HostInventory, HostNetAssoc, HostRuntimeState, InstanceEndpoint, NetworkDomain, NetworkSegment,
     ProcessRuntimeState, ResponsibilityAssignment, RuntimeBinding, ServiceEntity, ServiceInstance,
     Subject, TenantId,
 };
+use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::{
@@ -184,6 +185,26 @@ impl AsyncRuntimeStore for InMemoryTopologyStore {
         page: Page,
     ) -> StorageResult<Vec<ServiceInstance>> {
         RuntimeStore::list_service_instances(self, service_id, page)
+    }
+    async fn upsert_instance_endpoint(&self, endpoint: &InstanceEndpoint) -> StorageResult<()> {
+        RuntimeStore::upsert_instance_endpoint(self, endpoint)
+    }
+    async fn list_instance_endpoints(
+        &self,
+        instance_id: Uuid,
+        page: Page,
+    ) -> StorageResult<Vec<InstanceEndpoint>> {
+        RuntimeStore::list_instance_endpoints(self, instance_id, page)
+    }
+    async fn close_instance_endpoint(
+        &self,
+        endpoint_id: Uuid,
+        at: DateTime<Utc>,
+    ) -> StorageResult<()> {
+        RuntimeStore::close_instance_endpoint(self, endpoint_id, at)
+    }
+    async fn list_instance_ids_for_host(&self, host_id: Uuid) -> StorageResult<Vec<Uuid>> {
+        RuntimeStore::list_instance_ids_for_host(self, host_id)
     }
     async fn upsert_runtime_binding(&self, binding: &RuntimeBinding) -> StorageResult<()> {
         RuntimeStore::upsert_runtime_binding(self, binding)

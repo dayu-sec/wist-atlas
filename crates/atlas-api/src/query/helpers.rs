@@ -136,6 +136,9 @@ where
                 .list_runtime_bindings_for_instance(instance.instance_id, Page::default())
                 .conv_err()?;
             let instance_processes = collect_bound_processes(&process_by_id, &instance_bindings);
+            let endpoints = store
+                .list_instance_endpoints(instance.instance_id, Page::default())
+                .conv_err()?;
             push_host_service_view(
                 &mut views,
                 service,
@@ -143,6 +146,7 @@ where
                     instance,
                     bindings: instance_bindings,
                     processes: instance_processes,
+                    endpoints,
                 },
             );
         }
@@ -202,6 +206,13 @@ where
             .await
             .conv_err()?;
             let instance_processes = collect_bound_processes(&process_by_id, &instance_bindings);
+            let endpoints = AsyncRuntimeStore::list_instance_endpoints(
+                store,
+                instance.instance_id,
+                Page::default(),
+            )
+            .await
+            .conv_err()?;
             push_host_service_view(
                 &mut views,
                 service,
@@ -209,6 +220,7 @@ where
                     instance,
                     bindings: instance_bindings,
                     processes: instance_processes,
+                    endpoints,
                 },
             );
         }

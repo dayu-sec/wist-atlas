@@ -300,6 +300,36 @@ fn print_first_host_process_topology_outputs_specialized_graph_json() {
     assert!(body.contains("\"objectKind\": \"ProcessRuntime\""));
 }
 
+#[test]
+fn print_first_host_process_topology_prints_service_endpoints() {
+    let app = TopologyMonolith::new_postgres_mock().unwrap();
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/atlas_edge_service_endpoint_sample.jsonl");
+    app.replay_jsonl(fixture).unwrap();
+
+    let result = app
+        .run(MonolithInput::PrintFirstHostProcessTopology)
+        .unwrap();
+    let body = match result {
+        MonolithRunResult::PrintJson(body) => body,
+        other => panic!(
+            "expected print json result, got {:?}",
+            std::mem::discriminant(&other)
+        ),
+    };
+
+    // 服务节点必须把「在哪儿听」带出去，否则前端只能显示一个服务名，
+    // 看不出暴露面。实例节点的标题直接就是监听地址。
+    assert!(body.contains("\"objectKind\": \"ServiceEntity\""));
+    assert!(body.contains("\"objectKind\": \"ServiceInstance\""));
+    assert!(body.contains("\"endpoints\""));
+    assert!(body.contains("\"port\": 22"));
+    assert!(body.contains("tcp/22 0.0.0.0"));
+    assert!(body.contains("\"edgeKind\": \"host_service_assoc\""));
+    // 没 pid 的那个端口不该凭空造一个服务出来。
+    assert!(!body.contains("\"port\": 9999"));
+}
+
 #[tokio::test]
 async fn http_router_returns_first_host_process_topology_in_memory() {
     let app = TopologyMonolith::new_in_memory();

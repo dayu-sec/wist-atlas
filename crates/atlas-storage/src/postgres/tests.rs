@@ -107,6 +107,197 @@ fn process_presence_columns_round_trip_and_revive() {
 }
 
 #[test]
+fn instance_endpoint_upsert_list_and_close() {
+    let store = PostgresTopologyStore::new(MemoryPostgresExecutor::default());
+    let tenant_id = TenantId(Uuid::new_v4());
+    let instance_id = Uuid::new_v4();
+    let valid_from = Utc::now();
+    let endpoint = InstanceEndpoint {
+        endpoint_id: Uuid::new_v4(),
+        tenant_id,
+        instance_id,
+        address: "10.20.1.11".to_string(),
+        port: 8080,
+        protocol: "http".to_string(),
+        source: "runtime_probe".to_string(),
+        valid_from,
+        valid_to: None,
+        created_at: valid_from,
+        updated_at: valid_from,
+    };
+
+    RuntimeStore::upsert_instance_endpoint(&store, &endpoint).unwrap();
+    // 同一个 endpoint_id 再写一次是覆盖，不是新增。
+    RuntimeStore::upsert_instance_endpoint(&store, &endpoint).unwrap();
+    assert_eq!(
+        RuntimeStore::list_instance_endpoints(&store, instance_id, Page::default()).unwrap(),
+        vec![endpoint.clone()]
+    );
+
+    let closed_at = valid_from + chrono::Duration::seconds(60);
+    RuntimeStore::close_instance_endpoint(&store, endpoint.endpoint_id, closed_at).unwrap();
+
+    // 关闭后不再出现在「当前地址」里；历史行仍在库里（不删行）。
+    assert!(
+        RuntimeStore::list_instance_endpoints(&store, instance_id, Page::default())
+            .unwrap()
+            .is_empty(),
+        "closed endpoint must not be listed as live"
+    );
+    RuntimeStore::close_instance_endpoint(&store, endpoint.endpoint_id, closed_at).unwrap();
+}
+
+#[test]
+fn instance_endpoint_upsert_keeps_the_window_start_until_it_is_closed() {
+    let store = PostgresTopologyStore::new(MemoryPostgresExecutor::default());
+    let tenant_id = TenantId(Uuid::new_v4());
+    let instance_id = Uuid::new_v4();
+    let started = Utc::now();
+    let endpoint = InstanceEndpoint {
+        endpoint_id: Uuid::new_v4(),
+        tenant_id,
+        instance_id,
+        address: "10.20.1.12".to_string(),
+        port: 9090,
+        protocol: "tcp".to_string(),
+        source: "runtime_probe".to_string(),
+        valid_from: started,
+        valid_to: None,
+        created_at: started,
+        updated_at: started,
+    };
+    RuntimeStore::upsert_instance_endpoint(&store, &endpoint).unwrap();
+
+    // 每份快照都会重写同一行。窗口还开着时，起点必须留在第一次看到的那一刻，
+    // 否则 `valid_from` 就退化成「上次上报时间」，`last_seen_at` 才是那个语义。
+    let later = endpoint.clone();
+    let later = InstanceEndpoint {
+        valid_from: started + chrono::Duration::hours(3),
+        updated_at: started + chrono::Duration::hours(3),
+        ..later
+    };
+    RuntimeStore::upsert_instance_endpoint(&store, &later).unwrap();
+    let live = RuntimeStore::list_instance_endpoints(&store, instance_id, Page::default()).unwrap();
+    assert_eq!(live[0].valid_from, started);
+    assert_eq!(live[0].updated_at, started + chrono::Duration::hours(3));
+
+    // 关掉再打开属于**新**一段窗口，起点要重新计。
+    let closed_at = started + chrono::Duration::hours(4);
+    RuntimeStore::close_instance_endpoint(&store, endpoint.endpoint_id, closed_at).unwrap();
+    let reopened_at = started + chrono::Duration::hours(5);
+    let reopened = InstanceEndpoint {
+        valid_from: reopened_at,
+        valid_to: None,
+        updated_at: reopened_at,
+        ..endpoint.clone()
+    };
+    RuntimeStore::upsert_instance_endpoint(&store, &reopened).unwrap();
+    let live = RuntimeStore::list_instance_endpoints(&store, instance_id, Page::default()).unwrap();
+    assert_eq!(live.len(), 1);
+    assert_eq!(live[0].valid_from, reopened_at);
+}
+
+#[test]
+fn list_instance_ids_for_host_skips_stale_processes_and_dedups() {
+    let store = PostgresTopologyStore::new(MemoryPostgresExecutor::default());
+    let tenant_id = TenantId(Uuid::new_v4());
+    let host_id = Uuid::new_v4();
+    let now = Utc::now();
+
+    let process = |stale_at: Option<chrono::DateTime<Utc>>| ProcessRuntimeState {
+        process_id: Uuid::new_v4(),
+        tenant_id,
+        host_id,
+        container_id: None,
+        external_ref: None,
+        pid: 1,
+        executable: "/usr/sbin/sshd".to_string(),
+        command_line: None,
+        process_state: None,
+        memory_rss_kib: None,
+        started_at: now,
+        observed_at: atlas_domain::ObservedAt(now),
+        stale_at,
+        ingest_scope: None,
+    };
+    let live = process(None);
+    let stale = process(Some(now));
+
+    let binding =
+        |instance_id: Uuid, object_type: RuntimeObjectType, object_id: Uuid| RuntimeBinding {
+            binding_id: Uuid::new_v4(),
+            instance_id,
+            object_type,
+            object_id,
+            scope: atlas_domain::BindingScope::Observed,
+            confidence: atlas_domain::Confidence::Medium,
+            source: "edge".to_string(),
+            validity: atlas_domain::ValidityWindow {
+                valid_from: now,
+                valid_to: None,
+            },
+            created_at: now,
+            updated_at: now,
+        };
+
+    let live_instance_id = Uuid::new_v4();
+    let stale_instance_id = Uuid::new_v4();
+    let container_instance_id = Uuid::new_v4();
+
+    RuntimeStore::upsert_process_runtime_state(&store, &live).unwrap();
+    RuntimeStore::upsert_process_runtime_state(&store, &stale).unwrap();
+    // 同一实例两个 binding：结果必须去重。
+    RuntimeStore::upsert_runtime_binding(
+        &store,
+        &binding(
+            live_instance_id,
+            RuntimeObjectType::Process,
+            live.process_id,
+        ),
+    )
+    .unwrap();
+    RuntimeStore::upsert_runtime_binding(
+        &store,
+        &binding(
+            live_instance_id,
+            RuntimeObjectType::Process,
+            live.process_id,
+        ),
+    )
+    .unwrap();
+    // 进程已 stale：它的实例不算活着。
+    RuntimeStore::upsert_runtime_binding(
+        &store,
+        &binding(
+            stale_instance_id,
+            RuntimeObjectType::Process,
+            stale.process_id,
+        ),
+    )
+    .unwrap();
+    // 只认 Process 绑定，容器绑定不参与。
+    RuntimeStore::upsert_runtime_binding(
+        &store,
+        &binding(
+            container_instance_id,
+            RuntimeObjectType::Container,
+            live.process_id,
+        ),
+    )
+    .unwrap();
+
+    assert_eq!(
+        RuntimeStore::list_instance_ids_for_host(&store, host_id).unwrap(),
+        vec![live_instance_id]
+    );
+    assert!(
+        RuntimeStore::list_instance_ids_for_host(&store, Uuid::new_v4())
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
 fn postgres_store_runs_migrations_and_records_exec_calls() {
     let executor = RecordingExecutor::default();
     let store = PostgresTopologyStore::new(executor.clone());
