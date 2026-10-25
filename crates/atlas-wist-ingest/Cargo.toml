@@ -1,0 +1,27 @@
+[package]
+name = "atlas-wist-ingest"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Consume the gateway's agent-discovery.jsonl (DSNAP sink) into wist-atlas"
+
+[lib]
+name = "atlas_wist_ingest"
+path = "src/lib.rs"
+
+[[bin]]
+name = "atlas-wist-ingest"
+path = "src/main.rs"
+
+[dependencies]
+atlas-api = { path = "../atlas-api" }
+atlas-domain = { path = "../atlas-domain" }
+atlas-storage = { path = "../atlas-storage" }
+atlas-wist-adapter = { path = "../atlas-wist-adapter" }
+chrono.workspace = true
+orion-error.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+uuid.workspace = true

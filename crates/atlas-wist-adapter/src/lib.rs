@@ -64,6 +64,8 @@ pub enum AdapterError {
     MissingReportSnapshot,
     /// 两条来源都没有给出 producer（`source.producer` 是必填）。
     MissingProducer,
+    /// sink 行里没有可用的 `body`（解析层就没有东西可转，不是“快照不完整”）。
+    MissingSinkBody { agent_id: String },
     /// `process.pid` / `net.if.prefix` 不是数字。
     NotNumeric {
         resource_id: String,
@@ -83,6 +85,9 @@ impl fmt::Display for AdapterError {
             Self::MissingReportSnapshot => write!(f, "report has no snapshot object"),
             Self::MissingProducer => {
                 write!(f, "report has no agent_id; pass --agent-id")
+            }
+            Self::MissingSinkBody { agent_id } => {
+                write!(f, "sink line has no `body` field (agent_id=`{agent_id}`)")
             }
             Self::NotNumeric {
                 resource_id,
@@ -325,6 +330,54 @@ pub fn envelope_from_report_json(
             source,
         })?;
     envelope_from_report(&report, agent_id, tenant, env)
+}
+
+/// 网关 `agent-discovery` sink 落下的一行（wparse 的 OML 信封）→ `atlas.in.edge.v1`。
+///
+/// 和 [`envelope_from_report_json`] 的区别只在一层：那里的输入是 `DSNAP:` 帧的**裸正文**，
+/// 而 sink 行把正文又套了一层 JSON 字符串（`body` 字段）。多出来的信封字段
+/// （`category` / `biz` / `sink` / `wp_oml_name`）是给网关排查用的，转换不需要。
+///
+/// 字段取舍：
+/// - `producer` 优先用正文里的 `agent_id`，缺失时才用行上的（两者本应一致）；
+/// - `env` 优先用调用方给的 `env`，否则用行上的 —— CLI 的显式配置比部署默认值可信。
+pub fn envelope_from_sink_line(
+    line: &str,
+    tenant: &str,
+    env_override: Option<&str>,
+) -> Result<EdgeEnvelope, AdapterError> {
+    let path = PathBuf::from("<sink-line>");
+    let row: SinkLine = serde_json::from_str(line).map_err(|source| AdapterError::Parse {
+        path: path.clone(),
+        source,
+    })?;
+
+    let body = row
+        .body
+        .as_deref()
+        .filter(|body| !body.trim().is_empty())
+        .ok_or(AdapterError::MissingSinkBody {
+            agent_id: row.agent_id.clone().unwrap_or_default(),
+        })?;
+
+    let env = env_override
+        .map(str::to_string)
+        .or_else(|| row.env.filter(|value| !value.trim().is_empty()));
+
+    envelope_from_report_json(body, row.agent_id.as_deref(), tenant, env.as_deref())
+}
+
+/// `agent-discovery.jsonl` 的一行。只声明我们看的字段，其余忽略。
+#[derive(Debug, Clone, Default, Deserialize)]
+struct SinkLine {
+    #[serde(default)]
+    agent_id: Option<String>,
+    /// `ReportDiscoverySnapshot` 的 JSON，**以字符串形式**嵌在行里。
+    #[serde(default)]
+    body: Option<String>,
+    /// wparse 的部署环境（如 `dev`）。
+    #[serde(default)]
+    env: Option<String>,
 }
 
 /// 同 [`envelope_from_report_json`]，但输入是已解析的文档。

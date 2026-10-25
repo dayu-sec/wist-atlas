@@ -5,6 +5,19 @@
 
 ## [未发布]
 
+### 新增（自动消费网关 sink 文件）
+
+- **新增 crate `atlas-wist-ingest` / 可执行文件 `atlas-wist-ingest`**：增量读网关
+  `agent-discovery` sink 落下的文件，转成 `atlas.in.edge.v1` 直接入库。从此不需要有人手跑
+  适配器、手拷文件、手敲 `import-jsonl`。
+  - **不丢帧**：网关的 `http_sink` 只有 `max_retries = 3`，之后帧就没了；sink 文件是追加写的，
+    atlas 停机期间帧还在长，恢复后自动补。
+  - **不需要新端口与新鉴权**：信任边界就是文件权限；写 atlas 的只有 atlas 自己。
+  - 偏移检查点原子写；只消费完整行（半写中的帧不会进解析器）；轮转/截断自动从 0 重读。
+  - 失败分两类：格式坏行跳过并推进（永远修不好），写库失败不推进（下一轮重试）。
+  - 配套：`atlas-wist-adapter` 新增 `envelope_from_sink_line`（sink 行里的 `body` 是**字符串**，
+    和 `DSNAP:` 帧的裸正文不是同一形状）。
+
 ### 新增（快照替换语义）
 
 - **`mode = snapshot` 现在会标记「这次没出现的进程」为 stale**，不再让退出的进程永久停在

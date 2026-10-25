@@ -124,6 +124,32 @@ cargo run -p atlas-app -- replay-jsonl /tmp/edge.jsonl
 映射的 golden fixture 在 [crates/atlas-wist-adapter/fixtures](./crates/atlas-wist-adapter/fixtures)，
 用 `cargo test -p atlas-wist-adapter` 守。
 
+### 自动消费网关的 sink 文件
+
+上面的适配器是**一次性**的（读一个快照、写一个信封）。要让它持续干活，用 `atlas-wist-ingest`：
+它增量读网关 `agent-discovery` sink 落下的文件，转成 `atlas.in.edge.v1` 直接入库。
+
+```bash
+DATABASE_URL='postgres://atlas:atlas@127.0.0.1:55432/wist_atlas' \
+  atlas-wist-ingest \
+    --input /var/lib/wist-gateway/data/out_dat/agent-discovery.jsonl \
+    --checkpoint /var/lib/atlas/discovery.offset.json \
+    --tenant <tenant-uuid> \
+    --store postgres
+```
+
+为什么是「读文件」而不是「让网关 POST 过来」：网关的 `http_sink` 只有 `max_retries = 3`，
+之后这一帧就丢了；而 sink 文件是追加写的，**atlas 停机期间帧还在长**，恢复后自动补。
+同时不需要新端口、也不需要为写入口设计鉴权 —— 写 atlas 的只有 atlas 自己。
+
+几个必须知道的行为：
+
+- `--checkpoint` **必须显式给**：worker 的状态不该跟着 CWD 走。
+- 只消费**完整行**（以 `\n` 结尾）；网关正在写的半帧不会进解析器。
+- 文件轮转 / 被截断 → 自动从 0 重读。重读是安全的：`ingest_id` 含 `snap_id`，重放幂等。
+- 坏行（非 JSON / 没有 `body` / 快照缺 host）跳过并推进；写库失败**不推进**，下一轮重试。
+- `--once` 只跑一轮，方便排查和 cron。
+
 ## PostgreSQL 开发环境
 
 repo 根下提供了最小 PostgreSQL 开发环境：
