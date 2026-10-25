@@ -6,7 +6,8 @@ pub mod service;
 
 pub use atlas_domain::{
     BusinessOverviewView, CatalogSummary, EffectiveResponsibilityView, HostProcessGroupView,
-    HostTopologyView, NetworkTopologyView, ProcessStateCount, ServiceTopologyView,
+    HostTopologyView, NetworkTopologyView, ProcessStateCount, ServiceSummaryView,
+    ServiceTopologyView,
 };
 pub use error::*;
 pub use ingest::*;

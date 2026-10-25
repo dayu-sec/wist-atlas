@@ -404,6 +404,62 @@ async fn http_router_returns_network_topology_for_a_segment() {
 }
 
 #[tokio::test]
+async fn http_router_lists_services_by_spread() {
+    let app = TopologyMonolith::new_in_memory();
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/atlas_edge_service_shared_sample.jsonl");
+    app.replay_jsonl(fixture).unwrap();
+
+    let router = build_http_router(HttpAppState::new(app));
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/api/services")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let payload: Value = serde_json::from_slice(&body).unwrap();
+
+    let services = payload["data"]["services"].as_array().unwrap();
+    assert_eq!(services.len(), 2);
+    // 铺得广的排前面：sshd 两台机都在跑，nginx 只在一台上。
+    assert_eq!(services[0]["name"], "sshd");
+    assert_eq!(services[0]["instanceCount"], 2);
+    assert_eq!(services[0]["hostCount"], 2);
+    assert_eq!(services[1]["name"], "nginx");
+    assert_eq!(services[1]["hostCount"], 1);
+}
+
+#[tokio::test]
+async fn http_router_lists_no_services_for_an_empty_catalog() {
+    let app = TopologyMonolith::new_in_memory();
+    let router = build_http_router(HttpAppState::new(app));
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/api/services")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let payload: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(payload["data"]["services"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
 async fn http_router_returns_404_for_unknown_network() {
     let app = TopologyMonolith::new_in_memory();
     let router = build_http_router(HttpAppState::new(app));

@@ -52,6 +52,78 @@ where
     Ok(items)
 }
 
+/// 活实例 → 主机：同一份快照里每个活服务实例落在哪台机器上。
+///
+/// 查询方向是**按主机**取的（`list_instance_ids_for_host` 一台机一条），不是按实例
+/// 逐条反查 binding —— 后者在「服务数 × 实例数」上会变成平方级查询。
+pub(super) async fn live_instance_hosts_async<S>(
+    store: &S,
+) -> ApiResult<std::collections::BTreeMap<Uuid, Uuid>>
+where
+    S: AsyncCatalogStore + AsyncRuntimeStore,
+{
+    let mut host_by_instance = std::collections::BTreeMap::new();
+    let page_limit = 200;
+    let mut offset = 0;
+    loop {
+        let hosts = AsyncCatalogStore::list_all_hosts(
+            store,
+            Page {
+                limit: page_limit,
+                offset,
+            },
+        )
+        .await
+        .conv_err()?;
+        let batch_len = hosts.len();
+        for host in hosts {
+            let instance_ids = AsyncRuntimeStore::list_instance_ids_for_host(store, host.host_id)
+                .await
+                .conv_err()?;
+            for instance_id in instance_ids {
+                host_by_instance.insert(instance_id, host.host_id);
+            }
+        }
+        if batch_len < page_limit as usize {
+            break;
+        }
+        offset += batch_len as u32;
+    }
+    Ok(host_by_instance)
+}
+
+/// 一个服务的全部实例。默认页大小 100，跨机房铺开的服务会超过它。
+pub(super) async fn list_all_service_instances_async<S>(
+    store: &S,
+    service_id: Uuid,
+) -> ApiResult<Vec<atlas_domain::ServiceInstance>>
+where
+    S: AsyncRuntimeStore,
+{
+    let mut items = Vec::new();
+    let page_limit = 200;
+    let mut offset = 0;
+    loop {
+        let batch = AsyncRuntimeStore::list_service_instances(
+            store,
+            service_id,
+            Page {
+                limit: page_limit,
+                offset,
+            },
+        )
+        .await
+        .conv_err()?;
+        let batch_len = batch.len();
+        items.extend(batch);
+        if batch_len < page_limit as usize {
+            break;
+        }
+        offset += batch_len as u32;
+    }
+    Ok(items)
+}
+
 /// 快照替换语义的读侧一半：**默认不返回已标 stale 的进程**。
 ///
 /// 语义上这些进程已经不在最新一份快照里了；留行是为了能回答「上周这台机有哪些进程」，

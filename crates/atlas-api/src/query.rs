@@ -2,7 +2,7 @@ use atlas_domain::{
     EffectiveResponsibilityView, HostProcessGroupView, HostProcessGroupsPageView,
     HostProcessOverviewView, HostServiceInstanceView, HostServiceView, HostSummaryView,
     HostTopologyView, NetworkTopologyView, ProcessRuntimeState, ProcessStateCount,
-    RuntimeObjectType,
+    RuntimeObjectType, ServiceSummaryView,
 };
 use atlas_storage::{
     AsyncCatalogStore, AsyncGovernanceStore, AsyncRuntimeStore, CatalogStore, GovernanceStore,
@@ -256,6 +256,67 @@ where
         Ok(views)
     }
 
+    /// 单租户部署下的「当前租户」：取第一台主机所属的租户。
+    ///
+    /// 多租户路由还没做，HTTP 层也没有租户上下文。与其在接口上加一个必填 query
+    /// 参数让前端去猜，不如按现有数据回答 —— 库里只有一个租户时这就是它。
+    pub async fn default_tenant_id_async(&self) -> ApiResult<Option<atlas_domain::TenantId>> {
+        let hosts = AsyncCatalogStore::list_all_hosts(
+            &self.store,
+            Page {
+                limit: 1,
+                offset: 0,
+            },
+        )
+        .await
+        .conv_err()?;
+        Ok(hosts.into_iter().next().map(|host| host.tenant_id))
+    }
+
+    /// 服务列表：哪个服务铺得最广。
+    ///
+    /// 端点明细不放进来（那属于服务焦点视图）；这里只回答「有多少实例、落在几台主机」。
+    /// 实例→主机靠 `live_instance_hosts_async` 按主机反查一次，不逐实例查 binding。
+    pub async fn service_summaries_async(
+        &self,
+        tenant_id: atlas_domain::TenantId,
+        page: Page,
+    ) -> ApiResult<Vec<ServiceSummaryView>> {
+        let services = AsyncCatalogStore::list_services(&self.store, tenant_id, page)
+            .await
+            .conv_err()?;
+        let host_by_instance = live_instance_hosts_async(&self.store).await?;
+
+        let mut views = Vec::with_capacity(services.len());
+        for service in services {
+            let instances =
+                list_all_service_instances_async(&self.store, service.service_id).await?;
+            let mut hosts = std::collections::BTreeSet::new();
+            let mut live_instances = 0usize;
+            for instance in &instances {
+                if let Some(host_id) = host_by_instance.get(&instance.instance_id) {
+                    live_instances += 1;
+                    hosts.insert(*host_id);
+                }
+            }
+            views.push(ServiceSummaryView {
+                service,
+                instance_count: live_instances,
+                host_count: hosts.len(),
+            });
+        }
+
+        // 铺得广的排前面：这个列表的用途是「先看哪套服务动了好几台机」。
+        views.sort_by(|left, right| {
+            right
+                .host_count
+                .cmp(&left.host_count)
+                .then(right.instance_count.cmp(&left.instance_count))
+                .then(left.service.name.cmp(&right.service.name))
+        });
+        Ok(views)
+    }
+
     pub async fn host_topology_view_async(
         &self,
         host_id: Uuid,
@@ -430,6 +491,7 @@ mod helpers;
 use helpers::{
     build_host_process_groups_page_view, build_host_process_overview_view, build_host_services,
     build_host_services_async, build_process_groups, list_all_process_runtime_states,
+    list_all_service_instances_async, live_instance_hosts_async,
 };
 // 焦点图的组装在 `atlas-app`，但「一台机的现役进程」这条读取语义只该有一份实现，
 // 所以在 crate 根上重新导出，避免两边各写一遍 stale 过滤和翻页口径。

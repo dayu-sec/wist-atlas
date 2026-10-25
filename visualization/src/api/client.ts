@@ -5,6 +5,7 @@ import type {
   HostProcessOverviewDto,
   HostProcessTopologyGraph,
   HostTopologyDto,
+  ServiceListDto,
 } from '../types/domain';
 
 const BASE = '/api';
@@ -40,6 +41,11 @@ export async function fetchFirstHostTopology(): Promise<ApiResponse<HostTopology
 /** 主机列表：顶栏切换器的数据源。默认不含已退役主机。 */
 export async function fetchHosts(): Promise<ApiResponse<HostListDto>> {
   return get<HostListDto>('/hosts');
+}
+
+/** 服务清单：按「铺得多广」排序，只带规模指标（端点属于服务焦点视图）。 */
+export async function fetchServices(): Promise<ApiResponse<ServiceListDto>> {
+  return get<ServiceListDto>('/services');
 }
 
 // V1 optional enhancement

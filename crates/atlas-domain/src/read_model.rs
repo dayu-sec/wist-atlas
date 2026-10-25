@@ -78,6 +78,19 @@ pub struct HostServiceView {
     pub instances: Vec<HostServiceInstanceView>,
 }
 
+/// 服务列表条目。
+///
+/// 与主机列表同一取舍：只放「选服务」需要的规模指标，不放端点明细 ——
+/// 端点属于服务焦点视图，塞进列表会把首页变成几十份端口清单。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ServiceSummaryView {
+    pub service: ServiceEntity,
+    /// 仍有存活进程绑定的实例数。采集侧停掉服务后这里会归零，而不是留着旧实例。
+    pub instance_count: usize,
+    /// 这些实例分布在几台主机上。这是「这套服务铺得多广」的唯一直接读数。
+    pub host_count: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HostServiceInstanceView {
     pub instance: ServiceInstance,

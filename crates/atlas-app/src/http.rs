@@ -154,6 +154,40 @@ struct HostProcessGroupsQuery {
     offset: Option<usize>,
 }
 
+#[derive(Debug, Clone, serde::Deserialize)]
+struct ServiceListQuery {
+    limit: Option<u32>,
+    offset: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ServiceListHttpEnvelope {
+    status: &'static str,
+    data: ServiceListHttpView,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ServiceListHttpView {
+    services: Vec<ServiceSummaryHttpItem>,
+    limit: u32,
+    offset: u32,
+}
+
+/// 服务列表只给规模指标：端点、实例明细都在服务焦点视图里。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ServiceSummaryHttpItem {
+    id: Uuid,
+    name: String,
+    service_type: String,
+    boundary: String,
+    external_ref: Option<String>,
+    instance_count: usize,
+    host_count: usize,
+}
+
 async fn healthz() -> &'static str {
     "ok"
 }
@@ -503,6 +537,86 @@ where
     }
 }
 
+async fn get_services(
+    State(state): State<HttpAppState>,
+    Query(query): Query<ServiceListQuery>,
+) -> Response {
+    // 服务数量是「不同监听程序」的量级（百级），默认一次给足；分页参数保留给大集群。
+    let limit = query.limit.unwrap_or(200).clamp(1, 500);
+    let offset = query.offset.unwrap_or(0);
+
+    match &state.app {
+        TopologyMonolith::Memory(store) => {
+            service_list_response(store.clone(), limit, offset).await
+        }
+        TopologyMonolith::PostgresMock(store) => {
+            service_list_response(store.clone(), limit, offset).await
+        }
+        TopologyMonolith::PostgresLive(store) => {
+            service_list_response(store.clone(), limit, offset).await
+        }
+    }
+}
+
+async fn service_list_response<S>(store: S, limit: u32, offset: u32) -> Response
+where
+    S: Clone + AsyncCatalogStore + AsyncRuntimeStore + AsyncGovernanceStore,
+{
+    let query = TopologyQueryService::new(store);
+    let tenant_id = match query.default_tenant_id_async().await {
+        Ok(Some(tenant_id)) => tenant_id,
+        // 空库不是错误：前端拿空列表就够了。
+        Ok(None) => {
+            return (
+                StatusCode::OK,
+                Json(ServiceListHttpEnvelope {
+                    status: "ok",
+                    data: ServiceListHttpView {
+                        services: Vec::new(),
+                        limit,
+                        offset,
+                    },
+                }),
+            )
+                .into_response();
+        }
+        Err(err) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+    };
+
+    match query
+        .service_summaries_async(tenant_id, Page { limit, offset })
+        .await
+    {
+        Ok(views) => {
+            let services: Vec<ServiceSummaryHttpItem> = views
+                .into_iter()
+                .map(|view| ServiceSummaryHttpItem {
+                    id: view.service.service_id,
+                    name: view.service.name,
+                    service_type: format!("{:?}", view.service.service_type),
+                    boundary: format!("{:?}", view.service.boundary),
+                    external_ref: view.service.external_ref,
+                    instance_count: view.instance_count,
+                    host_count: view.host_count,
+                })
+                .collect();
+            (
+                StatusCode::OK,
+                Json(ServiceListHttpEnvelope {
+                    status: "ok",
+                    data: ServiceListHttpView {
+                        services,
+                        limit,
+                        offset,
+                    },
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+    }
+}
+
 fn json_error(status: StatusCode, message: String) -> Response {
     (
         status,
@@ -583,6 +697,7 @@ pub(crate) fn build_http_router(state: HttpAppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
         .route("/api/hosts", get(get_hosts))
+        .route("/api/services", get(get_services))
         .route("/api/topology/host/first", get(get_first_host_topology))
         .route("/api/topology/host/{id}", get(get_host_topology))
         .route(

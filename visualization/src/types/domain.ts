@@ -135,6 +135,24 @@ export type HostListDto = {
   offset: number;
 };
 
+export type ServiceSummaryDto = {
+  id: string;
+  name: string;
+  serviceType: string;
+  boundary: string;
+  externalRef?: string | null;
+  /** 仍有存活进程的实例数。 */
+  instanceCount: number;
+  /** 这些实例落在几台主机上。 */
+  hostCount: number;
+};
+
+export type ServiceListDto = {
+  services: ServiceSummaryDto[];
+  limit: number;
+  offset: number;
+};
+
 export type HostProcessOverviewDto = {
   host: HostTopologyHost;
   totalProcesses: number;

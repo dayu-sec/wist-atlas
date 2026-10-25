@@ -13,6 +13,8 @@ type Props = {
   topGroups: TopGroupSummary[];
   generatedAt?: string | null;
   loading: boolean;
+  /** 点「服务」指标打开左栏的服务清单。 */
+  onOpenServices?: () => void;
 };
 
 /**
@@ -30,15 +32,16 @@ export default function HostSummaryCard({
   topGroups,
   generatedAt,
   loading,
+  onOpenServices,
 }: Props) {
   const os = [host?.osName, host?.osVersion].filter(Boolean).join(' ');
   const maxCount = topGroups.reduce((max, group) => Math.max(max, group.count), 0);
 
-  const metrics: { label: string; value: number }[] = [
+  const metrics: { label: string; value: number; onClick?: () => void }[] = [
     { label: '网段', value: segmentCount },
     { label: '进程', value: processCount },
     { label: '进程分组', value: groupCount },
-    { label: '服务', value: serviceCount },
+    { label: '服务', value: serviceCount, onClick: onOpenServices },
   ];
 
   return (
@@ -63,23 +66,41 @@ export default function HostSummaryCard({
       </div>
 
       <div className="mt-4 grid grid-cols-2 overflow-hidden rounded-[10px] border border-line">
-        {metrics.map((metric, index) => (
-          <div
-            key={metric.label}
-            className={[
-              'px-3 py-2.5',
-              index % 2 === 0 ? 'border-r border-line' : '',
-              index < 2 ? 'border-b border-line' : '',
-            ].join(' ')}
-          >
-            <div className="text-[9.5px] font-medium uppercase leading-none tracking-[0.08em] text-[#98a2b3]">
-              {metric.label}
+        {metrics.map((metric, index) => {
+          const cellClass = [
+            'px-3 py-2.5 text-left',
+            index % 2 === 0 ? 'border-r border-line' : '',
+            index < 2 ? 'border-b border-line' : '',
+            metric.onClick ? 'transition-colors hover:bg-[#f9fafb]' : '',
+          ].join(' ');
+          const content = (
+            <>
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="text-[9.5px] font-medium uppercase leading-none tracking-[0.08em] text-[#98a2b3]">
+                  {metric.label}
+                </span>
+                {metric.onClick && <span className="text-[9px] text-[#b4bcc8]">清单 ›</span>}
+              </div>
+              <div className="tnum mt-1 text-[18px] font-semibold leading-6 tracking-[-0.01em] text-ink">
+                {formatCount(metric.value)}
+              </div>
+            </>
+          );
+          return metric.onClick ? (
+            <button
+              key={metric.label}
+              type="button"
+              onClick={metric.onClick}
+              className={cellClass}
+            >
+              {content}
+            </button>
+          ) : (
+            <div key={metric.label} className={cellClass}>
+              {content}
             </div>
-            <div className="tnum mt-1 text-[18px] font-semibold leading-6 tracking-[-0.01em] text-ink">
-              {formatCount(metric.value)}
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       <div className="mt-4">

@@ -7,6 +7,7 @@ import LegendCard from './components/LegendCard';
 import HostSummaryCard from './components/HostSummaryCard';
 import StatusBar from './components/StatusBar';
 import NodeDetailPanel from './components/NodeDetailPanel';
+import ServiceListPanel from './components/ServiceListPanel';
 import { ChevronRight } from './components/icons';
 import { buildSearchIndex, countMatches } from './utils/search';
 import {
@@ -18,6 +19,7 @@ import {
   fetchHostTopology,
   fetchNetworkTopology,
   fetchServiceTopology,
+  fetchServices,
   loadFixture,
 } from './api/client';
 import type {
@@ -29,6 +31,7 @@ import type {
   HostProcessTopologyNode,
   LayerKind,
   NodeKind,
+  ServiceSummaryDto,
 } from './types/domain';
 
 const PROCESS_SUMMARY_PREFIX = 'process-summary:';
@@ -50,6 +53,11 @@ export default function App() {
   const [hosts, setHosts] = useState<HostSummaryDto[]>([]);
   const [networkId, setNetworkId] = useState('');
   const [serviceId, setServiceId] = useState('');
+  const [serviceListOpen, setServiceListOpen] = useState(false);
+  const [serviceListCollapsed, setServiceListCollapsed] = useState(false);
+  const [services, setServices] = useState<ServiceSummaryDto[] | null>(null);
+  const [serviceListLoading, setServiceListLoading] = useState(false);
+  const [serviceListError, setServiceListError] = useState<string | null>(null);
   const [expandedHosts, setExpandedHosts] = useState<Set<string>>(new Set());
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const [expandedServices, setExpandedServices] = useState<Set<string>>(new Set());
@@ -193,6 +201,34 @@ export default function App() {
     if (!trimmed) return;
     openService(trimmed);
   }, [serviceId, openService]);
+
+  /** 服务清单懒加载：不打开就不查，也不影响首屏。 */
+  const toggleServiceList = useCallback(() => {
+    setServiceListOpen((current) => {
+      const next = !current;
+      if (next) setServiceListCollapsed(false);
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!serviceListOpen || services) return;
+    let cancelled = false;
+    setServiceListLoading(true);
+    setServiceListError(null);
+    fetchServices().then((res) => {
+      if (cancelled) return;
+      setServiceListLoading(false);
+      if (res.status === 'ok') {
+        setServices(res.data.services);
+      } else {
+        setServiceListError(`[${res.code}] ${res.message}`);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [serviceListOpen, services]);
 
   // 关键：选中节点/输入搜索词都会让 App 重渲染，如果把 displayGraph 每次重建，
   // 画布的「图结构签名」就每次都变，点一下节点就会重新布局。
@@ -438,9 +474,22 @@ export default function App() {
             groupCount={groupCount}
             serviceCount={serviceCount}
             topGroups={topGroups}
-            generatedAt={state.hostTopology?.generatedAt ?? displayGraph?.metadata?.queryTime ?? null}
+            generatedAt={state.hostTopology?.generatedAt ?? null}
             loading={state.loading}
+            onOpenServices={toggleServiceList}
           />
+
+          {serviceListOpen && (
+            <ServiceListPanel
+              services={services}
+              loading={serviceListLoading}
+              error={serviceListError}
+              collapsed={serviceListCollapsed}
+              onToggle={() => setServiceListCollapsed((current) => !current)}
+              onClose={() => setServiceListOpen(false)}
+              onOpenService={openService}
+            />
+          )}
 
           <LegendCard kinds={presentKinds} />
 
