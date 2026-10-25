@@ -105,6 +105,10 @@ pub(super) fn decode_process_runtime_state(row: &[String]) -> StorageResult<Proc
         memory_rss_kib: parse_optional_i64(&row[9])?,
         started_at: parse_datetime(&row[10])?,
         observed_at: atlas_domain::ObservedAt(parse_datetime(&row[11])?),
+        stale_at: empty_to_none(&row[12])
+            .map(|value| parse_datetime(&value))
+            .transpose()?,
+        ingest_scope: empty_to_none(&row[13]),
     })
 }
 

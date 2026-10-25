@@ -295,6 +295,35 @@ impl AtlasInputEnvelope {
     }
 }
 
+impl IngestEnvelope {
+    /// 快照作用域：`schema:system:producer:tenant:env`。
+    ///
+    /// 快照替换语义靠它回答「哪些对象属于同一份完整快照」。只按 `tenant_id` 划会把
+    /// 同租户其它生产者的对象一起标 stale；`source_name` 已经是 `system:producer`。
+    ///
+    /// `env` 优先取生产方**声明**的 `source.env`，而不是解析后的 `environment_id`：
+    /// CLI 导入路径目前不传 `environment_id`，用它会得到空串，两个环境就混成一个作用域。
+    pub fn ingest_scope(&self) -> String {
+        let schema = self
+            .metadata
+            .get("schema")
+            .map(String::as_str)
+            .unwrap_or("");
+        let environment = self
+            .metadata
+            .get("source.env")
+            .map(String::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .or_else(|| self.environment_id.map(|id| id.0.to_string()))
+            .unwrap_or_default();
+        format!(
+            "{schema}:{}:{}:{environment}",
+            self.source_name, self.tenant_id.0
+        )
+    }
+}
+
 fn require_non_empty(value: &str, field: &'static str) -> DomainResult<()> {
     if value.trim().is_empty() {
         Err(DomainReason::FieldInvalid

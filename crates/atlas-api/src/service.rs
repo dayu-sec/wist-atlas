@@ -23,6 +23,8 @@ pub struct PipelineRunSummary {
     pub host_count: usize,
     pub network_count: usize,
     pub assoc_count: usize,
+    /// 本次快照替换清扫标成 stale 的进程数（非 snapshot 模式恒为 0）。
+    pub stale_process_count: u64,
 }
 
 pub struct TopologyIngestService<S> {
@@ -62,11 +64,17 @@ where
             .unwrap_or_default();
 
         let mut catalog = hydrate_catalog(&self.store, envelope.tenant_id).conv_err()?;
+        let scope = envelope.ingest_scope();
         materialize_business_catalog(&self.store, business_catalog, accepted_at).conv_err()?;
         let materialized =
             materialize_candidates(&self.store, &mut catalog, hosts, networks, accepted_at)
                 .conv_err()?;
-        materialize_processes(&self.store, &mut catalog, processes, accepted_at).conv_err()?;
+        let process_sweep =
+            materialize_processes(&self.store, &mut catalog, processes, accepted_at, &scope)
+                .conv_err()?;
+        let stale_process_count =
+            sweep_stale_processes(&self.store, &envelope, &process_sweep, &scope, accepted_at)
+                .conv_err()?;
         materialize_host_telemetry(&self.store, &mut catalog, host_telemetry).conv_err()?;
         materialize_process_telemetry(&self.store, &mut catalog, process_telemetry).conv_err()?;
         materialize_subjects_and_assignments(
@@ -86,6 +94,7 @@ where
                 host_count: materialized.0,
                 network_count: materialized.1,
                 assoc_count: materialized.2,
+                stale_process_count,
             },
         ))
     }
@@ -134,6 +143,7 @@ where
         let mut catalog = hydrate_catalog_async(&self.store, envelope.tenant_id)
             .await
             .conv_err()?;
+        let scope = envelope.ingest_scope();
         materialize_business_catalog_async(&self.store, business_catalog, accepted_at)
             .await
             .conv_err()?;
@@ -141,9 +151,19 @@ where
             materialize_candidates_async(&self.store, &mut catalog, hosts, networks, accepted_at)
                 .await
                 .conv_err()?;
-        materialize_processes_async(&self.store, &mut catalog, processes, accepted_at)
-            .await
-            .conv_err()?;
+        let process_sweep =
+            materialize_processes_async(&self.store, &mut catalog, processes, accepted_at, &scope)
+                .await
+                .conv_err()?;
+        let stale_process_count = sweep_stale_processes_async(
+            &self.store,
+            &envelope,
+            &process_sweep,
+            &scope,
+            accepted_at,
+        )
+        .await
+        .conv_err()?;
         materialize_host_telemetry_async(&self.store, &mut catalog, host_telemetry)
             .await
             .conv_err()?;
@@ -168,6 +188,7 @@ where
                 host_count: materialized.0,
                 network_count: materialized.1,
                 assoc_count: materialized.2,
+                stale_process_count,
             },
         ))
     }
@@ -190,13 +211,55 @@ where
 
 mod materialize;
 use materialize::{
-    hydrate_catalog, hydrate_catalog_async, materialize_business_catalog,
-    materialize_business_catalog_async, materialize_candidates, materialize_candidates_async,
-    materialize_host_telemetry, materialize_host_telemetry_async, materialize_process_telemetry,
+    ProcessSweep, hydrate_catalog, hydrate_catalog_async, mark_stale_processes,
+    mark_stale_processes_async, materialize_business_catalog, materialize_business_catalog_async,
+    materialize_candidates, materialize_candidates_async, materialize_host_telemetry,
+    materialize_host_telemetry_async, materialize_process_telemetry,
     materialize_process_telemetry_async, materialize_processes, materialize_processes_async,
     materialize_subjects_and_assignments, materialize_subjects_and_assignments_async,
     validate_and_record, validate_and_record_async,
 };
+
+/// 只在 `snapshot` 模式下做替换清扫。
+///
+/// `incremental` / `window` / `correction` 描述的都是**部分**观测，拿去当「全集」比对会把
+/// 没投递的对象全标死。
+fn sweep_stale_processes<S>(
+    store: &S,
+    envelope: &IngestEnvelope,
+    sweep: &ProcessSweep,
+    scope: &str,
+    at: DateTime<Utc>,
+) -> ApiResult<u64>
+where
+    S: RuntimeStore,
+{
+    if envelope.ingest_mode != atlas_domain::IngestMode::Snapshot {
+        return Ok(0);
+    }
+    Ok(mark_stale_processes(store, sweep, scope, at)
+        .conv_err()?
+        .marked)
+}
+
+async fn sweep_stale_processes_async<S>(
+    store: &S,
+    envelope: &IngestEnvelope,
+    sweep: &ProcessSweep,
+    scope: &str,
+    at: DateTime<Utc>,
+) -> ApiResult<u64>
+where
+    S: AsyncRuntimeStore,
+{
+    if envelope.ingest_mode != atlas_domain::IngestMode::Snapshot {
+        return Ok(0);
+    }
+    Ok(mark_stale_processes_async(store, sweep, scope, at)
+        .await
+        .conv_err()?
+        .marked)
+}
 
 #[cfg(test)]
 mod tests;

@@ -307,12 +307,13 @@ LIMIT NULLIF($2, '')::int4 OFFSET NULLIF($3, '')::int4
 pub const UPSERT_PROCESS_RUNTIME_STATE: &str = r#"
 INSERT INTO process_runtime_state (
     process_id, tenant_id, host_id, container_id, external_ref, pid, executable, command_line,
-    process_state, memory_rss_kib, started_at, observed_at
+    process_state, memory_rss_kib, started_at, observed_at, stale_at, ingest_scope
 ) VALUES (
     NULLIF($1, '')::uuid, NULLIF($2, '')::uuid, NULLIF($3, '')::uuid,
     NULLIF($4, '')::uuid, NULLIF($5, ''), NULLIF($6, '')::integer, $7,
     NULLIF($8, ''), NULLIF($9, ''), NULLIF($10, '')::bigint,
-    NULLIF($11, '')::timestamptz, NULLIF($12, '')::timestamptz
+    NULLIF($11, '')::timestamptz, NULLIF($12, '')::timestamptz,
+    NULLIF($13, '')::timestamptz, NULLIF($14, '')
 )
 ON CONFLICT (process_id) DO UPDATE SET
     tenant_id = EXCLUDED.tenant_id,
@@ -325,12 +326,16 @@ ON CONFLICT (process_id) DO UPDATE SET
     process_state = EXCLUDED.process_state,
     memory_rss_kib = EXCLUDED.memory_rss_kib,
     started_at = EXCLUDED.started_at,
-    observed_at = EXCLUDED.observed_at
+    observed_at = EXCLUDED.observed_at,
+    -- `stale_at` 跟着入参走，不单独保留：活的对象传 NULL ⇒ 复活时自动清掉标记。
+    stale_at = EXCLUDED.stale_at,
+    -- 作用域只“首次归属”：老行没有 scope 时补上，已有就不覆盖（同一对象可被多个生产者看见）。
+    ingest_scope = COALESCE(process_runtime_state.ingest_scope, EXCLUDED.ingest_scope)
 "#;
 
 pub const LIST_PROCESS_RUNTIME_STATES: &str = r#"
 SELECT process_id, tenant_id, host_id, container_id, external_ref, pid, executable, command_line,
-       process_state, memory_rss_kib, started_at, observed_at
+       process_state, memory_rss_kib, started_at, observed_at, stale_at, ingest_scope
 FROM process_runtime_state
 WHERE host_id = NULLIF($1, '')::uuid
 ORDER BY observed_at DESC, process_id ASC

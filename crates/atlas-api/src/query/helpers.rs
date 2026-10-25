@@ -35,7 +35,14 @@ where
         if batch_len == 0 {
             break;
         }
-        items.extend(batch);
+        // 快照替换语义的读侧一半：默认不返回已标 stale 的进程。它们已经不在最新一份
+        // 快照里了，留下是为了「上周这台机有哪些进程」，不是为了继续出现在现役视图里。
+        // 注意分页仍按**原始**批大小算（`batch_len`），不能按过滤后的算。
+        items.extend(
+            batch
+                .into_iter()
+                .filter(|process| process.stale_at.is_none()),
+        );
         if batch_len < page_limit as usize {
             break;
         }
@@ -45,6 +52,12 @@ where
     Ok(items)
 }
 
+/// 快照替换语义的读侧一半：**默认不返回已标 stale 的进程**。
+///
+/// 语义上这些进程已经不在最新一份快照里了；留行是为了能回答「上周这台机有哪些进程」，
+/// 不是为了让它们继续出现在现役视图里。
+///
+/// 分页必须按**原始**批大小算（`batch_len`）——按过滤后的算会跳过一大批活进程。
 pub(super) async fn list_all_process_runtime_states_async<S>(
     store: &S,
     host_id: Uuid,
@@ -71,7 +84,11 @@ where
         if batch_len == 0 {
             break;
         }
-        items.extend(batch);
+        items.extend(
+            batch
+                .into_iter()
+                .filter(|process| process.stale_at.is_none()),
+        );
         if batch_len < page_limit as usize {
             break;
         }

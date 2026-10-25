@@ -100,6 +100,18 @@ pub struct ProcessRuntimeState {
     pub memory_rss_kib: Option<i64>,
     pub started_at: DateTime<Utc>,
     pub observed_at: ObservedAt,
+    /// 第一次发现这个进程从**这个生产者**的完整快照里消失的时刻；`None` = 仍存活。
+    ///
+    /// 进程是 pid 复用 + 稳定 `process_id`（`machine:pid:identity`）+ upsert 写入的，
+    /// 所以不标 stale 的话，退出的进程会永久停在目录里，状态还停在退出前的那个值。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale_at: Option<DateTime<Utc>>,
+    /// 归属的快照作用域 `schema:system:producer:tenant:env`。
+    ///
+    /// 没有它就回答不了「哪些进程属于这份快照」—— 只按 host 划会把同一台主机上
+    /// 其它生产者（如容器采集器）报的进程一起标 stale。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ingest_scope: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -279,8 +279,14 @@ where
     summary.process_count = hosts
         .iter()
         .try_fold(0usize, |acc, host| {
-            RuntimeStore::list_process_runtime_states(store, host.host_id, full_page)
-                .map(|items| acc + items.len())
+            // 与现役视图同口径：已标 stale 的进程不在「现在有多少进程」里。
+            // 否则导入报告的 processes=N 会和页面上的数字对不上。
+            RuntimeStore::list_process_runtime_states(store, host.host_id, full_page).map(|items| {
+                acc + items
+                    .into_iter()
+                    .filter(|item| item.stale_at.is_none())
+                    .count()
+            })
         })
         .conv_err()?;
     summary.enriched_process_count = hosts
@@ -289,6 +295,7 @@ where
             RuntimeStore::list_process_runtime_states(store, host.host_id, full_page).map(|items| {
                 acc + items
                     .into_iter()
+                    .filter(|item| item.stale_at.is_none())
                     .filter(|item| item.process_state.is_some() || item.memory_rss_kib.is_some())
                     .count()
             })
@@ -333,9 +340,13 @@ where
             AsyncRuntimeStore::list_process_runtime_states(store, host.host_id, full_page)
                 .await
                 .conv_err()?;
-        summary.process_count += processes.len();
+        summary.process_count += processes
+            .iter()
+            .filter(|item| item.stale_at.is_none())
+            .count();
         summary.enriched_process_count += processes
             .iter()
+            .filter(|item| item.stale_at.is_none())
             .filter(|item| item.process_state.is_some() || item.memory_rss_kib.is_some())
             .count();
         summary.host_runtime_count +=

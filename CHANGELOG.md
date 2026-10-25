@@ -5,6 +5,20 @@
 
 ## [未发布]
 
+### 新增（快照替换语义）
+
+- **`mode = snapshot` 现在会标记「这次没出现的进程」为 stale**，不再让退出的进程永久停在
+  资产目录里。之前 `process_id` 是稳定 UUID + `ON CONFLICT DO UPDATE`，所以退出的进程
+  只会被覆盖、永远不会消失 —— pid 一换，目录很快就全是死进程。
+  - 按作用域 `(schema, system, producer, tenant, env)` 划界，同一台主机上其它生产者
+    （如容器采集器）报的进程不会被误标。
+  - **不删行**：只写 `stale_at`（首次消失时间）；查询与导入汇总默认不返回已 stale 的行。
+  - 进程重新出现时 `stale_at` 自动清掉；`observed_at` 保持最后一次真实观测时间。
+  - 三条防误标约束：空列表不清扫、有对象解析不到宿主就整体跳过、只动本次快照覆盖到的主机。
+  - `incremental` / `window` / `correction` 不做清扫（部分观测不能当全集比对）。
+- 迁移 `0002_presence_stale`：`process_runtime_state` 加 `stale_at` / `ingest_scope`
+  两列与两个部分索引，幂等（`ADD COLUMN IF NOT EXISTS`）。
+
 ### 变更（适配器移植到 Rust）
 
 - **发现快照适配器改用 Rust 实现**：新增 crate `atlas-wist-adapter` / 可执行文件

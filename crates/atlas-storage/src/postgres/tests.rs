@@ -21,6 +21,19 @@ fn core_upserts_are_idempotent() {
 }
 
 #[test]
+fn process_upsert_carries_the_presence_columns() {
+    // 写不进去：清扫标记永远看不见。读回不包含：复活永远清不掉标记。
+    assert!(sql::UPSERT_PROCESS_RUNTIME_STATE.contains("stale_at"));
+    assert!(sql::UPSERT_PROCESS_RUNTIME_STATE.contains("ingest_scope"));
+    // 两个新参数只能**追加**在末尾 —— 已有 12 个位次被所有调用方按序号依赖。
+    assert!(sql::UPSERT_PROCESS_RUNTIME_STATE.contains("$13"));
+    assert!(sql::UPSERT_PROCESS_RUNTIME_STATE.contains("$14"));
+
+    assert!(sql::LIST_PROCESS_RUNTIME_STATES.contains("stale_at"));
+    assert!(sql::LIST_PROCESS_RUNTIME_STATES.contains("ingest_scope"));
+}
+
+#[test]
 fn core_queries_include_pagination_where_expected() {
     for statement in [
         sql::LIST_HOSTS,
@@ -30,6 +43,63 @@ fn core_queries_include_pagination_where_expected() {
     ] {
         assert!(statement.contains("LIMIT"));
     }
+}
+
+#[test]
+fn process_presence_columns_round_trip_and_revive() {
+    let store = PostgresTopologyStore::new(MemoryPostgresExecutor::default());
+    let tenant_id = TenantId(Uuid::new_v4());
+    let now = Utc::now();
+    let host_id = Uuid::new_v4();
+    let host = HostInventory {
+        host_id,
+        tenant_id,
+        environment_id: None,
+        host_name: "node-presence".to_string(),
+        machine_id: Some("machine-presence".to_string()),
+        os_name: None,
+        os_version: None,
+        created_at: now,
+        last_inventory_at: now,
+    };
+    CatalogStore::upsert_host(&store, &host).unwrap();
+
+    let mut process = ProcessRuntimeState {
+        process_id: Uuid::new_v4(),
+        tenant_id,
+        host_id,
+        container_id: None,
+        external_ref: Some("machine-presence:pid:1:a".to_string()),
+        pid: 1,
+        executable: "/sbin/init".to_string(),
+        command_line: None,
+        process_state: None,
+        memory_rss_kib: None,
+        started_at: now,
+        observed_at: atlas_domain::ObservedAt(now),
+        stale_at: Some(now),
+        ingest_scope: Some("atlas.in.edge.v1:wist:agent-1:tenant:".to_string()),
+    };
+    RuntimeStore::upsert_process_runtime_state(&store, &process).unwrap();
+
+    let stored = RuntimeStore::list_process_runtime_states(&store, host_id, Page::default())
+        .unwrap()
+        .pop()
+        .expect("process row");
+    assert_eq!(stored.stale_at, Some(now));
+    assert_eq!(
+        stored.ingest_scope.as_deref(),
+        Some("atlas.in.edge.v1:wist:agent-1:tenant:")
+    );
+
+    // 重新出现：同一 process_id + stale_at = None ⇒ 标记被清掉。
+    process.stale_at = None;
+    RuntimeStore::upsert_process_runtime_state(&store, &process).unwrap();
+    let revived = RuntimeStore::list_process_runtime_states(&store, host_id, Page::default())
+        .unwrap()
+        .pop()
+        .expect("process row");
+    assert_eq!(revived.stale_at, None, "复活必须清掉 stale 标记");
 }
 
 #[test]
@@ -179,6 +249,8 @@ fn memory_postgres_executor_round_trips_minimal_p0_records() {
         memory_rss_kib: Some(7456),
         started_at: now,
         observed_at: atlas_domain::ObservedAt(now),
+        stale_at: None,
+        ingest_scope: Some("atlas.in.edge.v1:wist:agent-1:tenant:env".to_string()),
     };
     let instance = ServiceInstance {
         instance_id: Uuid::new_v4(),

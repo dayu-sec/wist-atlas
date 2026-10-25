@@ -185,7 +185,10 @@ pub(super) use governance::{
     materialize_subjects_and_assignments, materialize_subjects_and_assignments_async,
 };
 pub(super) use host::{materialize_candidates, materialize_candidates_async};
-pub(super) use process::{materialize_processes, materialize_processes_async};
+pub(super) use process::{
+    ProcessSweep, StaleSweep, mark_stale_processes, mark_stale_processes_async,
+    materialize_processes, materialize_processes_async,
+};
 pub(super) use telemetry::{
     materialize_host_telemetry, materialize_host_telemetry_async, materialize_process_telemetry,
     materialize_process_telemetry_async,

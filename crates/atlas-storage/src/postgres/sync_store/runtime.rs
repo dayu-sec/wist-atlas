@@ -102,6 +102,11 @@ where
                     .unwrap_or_default(),
                 state.started_at.to_rfc3339(),
                 state.observed_at.0.to_rfc3339(),
+                state
+                    .stale_at
+                    .map(|value| value.to_rfc3339())
+                    .unwrap_or_default(),
+                state.ingest_scope.clone().unwrap_or_default(),
             ],
         )?;
         Ok(())
