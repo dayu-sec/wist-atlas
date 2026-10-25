@@ -355,6 +355,17 @@ ORDER BY observed_at DESC, process_id ASC
 LIMIT NULLIF($2, '')::int4 OFFSET NULLIF($3, '')::int4
 "#;
 
+// 主机列表页的规模列。只数存活进程：退役的行仍留在表里（presence 语义），
+// 不过滤 `stale_at` 会把「历史上跑过多少进程」当成「现在有多少」。
+pub const LIST_HOST_PROCESS_COUNTS: &str = r#"
+SELECT host_id, COUNT(*) AS process_count
+FROM process_runtime_state
+WHERE stale_at IS NULL
+GROUP BY host_id
+ORDER BY host_id
+LIMIT NULLIF($1, '')::int4 OFFSET NULLIF($2, '')::int4
+"#;
+
 pub const UPSERT_SERVICE_INSTANCE: &str = r#"
 INSERT INTO service_instance (
     instance_id, tenant_id, service_id, workload_id, started_at, ended_at, last_seen_at

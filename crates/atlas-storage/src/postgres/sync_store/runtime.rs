@@ -131,6 +131,16 @@ where
             .collect()
     }
 
+    fn list_host_process_counts(&self, page: Page) -> StorageResult<Vec<(Uuid, i64)>> {
+        let rows = self.executor.query_rows(
+            sql::LIST_HOST_PROCESS_COUNTS,
+            &[page.limit.to_string(), page.offset.to_string()],
+        )?;
+        rows.into_iter()
+            .map(|row| decode_host_process_count(&row))
+            .collect()
+    }
+
     fn upsert_service_instance(
         &self,
         instance: &atlas_domain::ServiceInstance,

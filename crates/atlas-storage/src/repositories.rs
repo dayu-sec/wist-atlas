@@ -151,6 +151,13 @@ pub trait RuntimeStore {
         page: Page,
     ) -> StorageResult<Vec<ProcessRuntimeState>>;
 
+    /// 每台主机当前的存活进程数（`stale_at IS NULL`），已按 `host_id` 排序。
+    ///
+    /// 主机列表页要显示每台机的规模；让前端逐台翻页数进程会把一页列表变成
+    /// N 次查询，而这是 `process_runtime_state` 上一次 GROUP BY 就能算完的事。
+    /// 没有任何存活进程的主机不会出现在结果里（调用方按缺失当 0）。
+    fn list_host_process_counts(&self, page: Page) -> StorageResult<Vec<(Uuid, i64)>>;
+
     fn upsert_service_instance(&self, instance: &ServiceInstance) -> StorageResult<()>;
     fn get_service_instance(&self, instance_id: Uuid) -> StorageResult<Option<ServiceInstance>>;
     fn list_service_instances(
@@ -212,6 +219,7 @@ pub trait AsyncRuntimeStore: Sync {
         host_id: Uuid,
         page: Page,
     ) -> StorageResult<Vec<ProcessRuntimeState>>;
+    async fn list_host_process_counts(&self, page: Page) -> StorageResult<Vec<(Uuid, i64)>>;
     async fn upsert_service_instance(&self, instance: &ServiceInstance) -> StorageResult<()>;
     async fn get_service_instance(
         &self,

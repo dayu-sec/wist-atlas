@@ -170,6 +170,9 @@ impl AsyncRuntimeStore for InMemoryTopologyStore {
     ) -> StorageResult<Vec<ProcessRuntimeState>> {
         RuntimeStore::list_process_runtime_states(self, host_id, page)
     }
+    async fn list_host_process_counts(&self, page: Page) -> StorageResult<Vec<(Uuid, i64)>> {
+        RuntimeStore::list_host_process_counts(self, page)
+    }
     async fn upsert_service_instance(&self, instance: &ServiceInstance) -> StorageResult<()> {
         RuntimeStore::upsert_service_instance(self, instance)
     }

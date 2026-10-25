@@ -107,6 +107,45 @@ struct HostProcessOverviewQuery {
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
+struct HostListQuery {
+    /// 默认不开：退役主机保留行是为了历史，不该出现在「现在有哪几台机」。
+    include_stale: Option<bool>,
+    limit: Option<u32>,
+    offset: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HostListHttpEnvelope {
+    status: &'static str,
+    data: HostListHttpView,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HostListHttpView {
+    hosts: Vec<HostSummaryHttpItem>,
+    limit: u32,
+    offset: u32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HostSummaryHttpItem {
+    id: Uuid,
+    host_name: String,
+    machine_id: Option<String>,
+    os_name: Option<String>,
+    os_version: Option<String>,
+    arch: Option<String>,
+    process_count: i64,
+    segment_count: usize,
+    last_inventory_at: String,
+    stale: bool,
+    stale_at: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
 struct HostProcessGroupsQuery {
     limit: Option<usize>,
     offset: Option<usize>,
@@ -381,9 +420,74 @@ fn json_error(status: StatusCode, message: String) -> Response {
         .into_response()
 }
 
+async fn get_hosts(
+    State(state): State<HttpAppState>,
+    Query(query): Query<HostListQuery>,
+) -> Response {
+    let include_stale = query.include_stale.unwrap_or(false);
+    let limit = query.limit.unwrap_or(50).clamp(1, 500);
+    let offset = query.offset.unwrap_or(0);
+
+    match &state.app {
+        TopologyMonolith::Memory(store) => {
+            host_list_response(store.clone(), include_stale, limit, offset).await
+        }
+        TopologyMonolith::PostgresMock(store) => {
+            host_list_response(store.clone(), include_stale, limit, offset).await
+        }
+        TopologyMonolith::PostgresLive(store) => {
+            host_list_response(store.clone(), include_stale, limit, offset).await
+        }
+    }
+}
+
+async fn host_list_response<S>(store: S, include_stale: bool, limit: u32, offset: u32) -> Response
+where
+    S: Clone + AsyncCatalogStore + AsyncRuntimeStore + AsyncGovernanceStore,
+{
+    let query = TopologyQueryService::new(store);
+    match query
+        .host_summaries_async(Page { limit, offset }, include_stale)
+        .await
+    {
+        Ok(views) => {
+            let hosts: Vec<HostSummaryHttpItem> = views
+                .into_iter()
+                .map(|view| HostSummaryHttpItem {
+                    id: view.host.host_id,
+                    host_name: view.host.host_name,
+                    machine_id: view.host.machine_id,
+                    os_name: view.host.os_name,
+                    os_version: view.host.os_version,
+                    arch: view.host.arch,
+                    process_count: view.process_count,
+                    segment_count: view.segment_count,
+                    last_inventory_at: view.host.last_inventory_at.to_rfc3339(),
+                    stale: view.host.stale_at.is_some(),
+                    stale_at: view.host.stale_at.map(|at| at.to_rfc3339()),
+                })
+                .collect();
+            (
+                StatusCode::OK,
+                Json(HostListHttpEnvelope {
+                    status: "ok",
+                    data: HostListHttpView {
+                        hosts,
+                        limit,
+                        offset,
+                    },
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+    }
+}
+
 pub(crate) fn build_http_router(state: HttpAppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
+        .route("/api/hosts", get(get_hosts))
         .route("/api/topology/host/first", get(get_first_host_topology))
         .route("/api/topology/host/{id}", get(get_host_topology))
         .route(

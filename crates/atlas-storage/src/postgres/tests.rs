@@ -298,6 +298,61 @@ fn list_instance_ids_for_host_skips_stale_processes_and_dedups() {
 }
 
 #[test]
+fn list_host_process_counts_only_counts_live_processes() {
+    let store = PostgresTopologyStore::new(MemoryPostgresExecutor::default());
+    let tenant_id = TenantId(Uuid::new_v4());
+    let now = Utc::now();
+    let busy_host = Uuid::new_v4();
+    let quiet_host = Uuid::new_v4();
+    let retired_host = Uuid::new_v4();
+    let empty_host = Uuid::new_v4();
+
+    let process = |host_id: Uuid, stale_at: Option<chrono::DateTime<Utc>>| ProcessRuntimeState {
+        process_id: Uuid::new_v4(),
+        tenant_id,
+        host_id,
+        container_id: None,
+        external_ref: None,
+        pid: 1,
+        executable: "/usr/sbin/sshd".to_string(),
+        command_line: None,
+        process_state: None,
+        memory_rss_kib: None,
+        started_at: now,
+        observed_at: atlas_domain::ObservedAt(now),
+        stale_at,
+        ingest_scope: None,
+    };
+
+    for stale_at in [None, None, Some(now)] {
+        RuntimeStore::upsert_process_runtime_state(&store, &process(busy_host, stale_at)).unwrap();
+    }
+    RuntimeStore::upsert_process_runtime_state(&store, &process(quiet_host, None)).unwrap();
+    // 进程已全部退役的主机不该出现。
+    RuntimeStore::upsert_process_runtime_state(&store, &process(retired_host, Some(now))).unwrap();
+
+    let mut expected = vec![(busy_host, 2), (quiet_host, 1)];
+    expected.sort();
+    let counts = RuntimeStore::list_host_process_counts(&store, Page::default()).unwrap();
+    assert_eq!(counts, expected);
+    // 从未见过进程的主机也不该出现。
+    assert!(!counts.iter().any(|(host_id, _)| *host_id == empty_host));
+
+    // 分页跟在 ORDER BY host_id 之后，与 SQL 的 LIMIT/OFFSET 对齐。
+    assert_eq!(
+        RuntimeStore::list_host_process_counts(
+            &store,
+            Page {
+                limit: 1,
+                offset: 1
+            }
+        )
+        .unwrap(),
+        vec![expected[1]]
+    );
+}
+
+#[test]
 fn postgres_store_runs_migrations_and_records_exec_calls() {
     let executor = RecordingExecutor::default();
     let store = PostgresTopologyStore::new(executor.clone());

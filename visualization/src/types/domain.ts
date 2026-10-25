@@ -114,6 +114,27 @@ export type HostTopologyDto = {
   generatedAt: string;
 };
 
+/** `GET /api/hosts` 的条目：只够「选主机」用的规模信息，不带进程明细。 */
+export type HostSummaryDto = {
+  id: string;
+  hostName: string;
+  machineId?: string | null;
+  osName?: string | null;
+  osVersion?: string | null;
+  arch?: string | null;
+  processCount: number;
+  segmentCount: number;
+  lastInventoryAt: string;
+  stale: boolean;
+  staleAt?: string | null;
+};
+
+export type HostListDto = {
+  hosts: HostSummaryDto[];
+  limit: number;
+  offset: number;
+};
+
 export type HostProcessOverviewDto = {
   host: HostTopologyHost;
   totalProcesses: number;

@@ -331,6 +331,70 @@ fn print_first_host_process_topology_prints_service_endpoints() {
 }
 
 #[tokio::test]
+async fn http_router_lists_hosts_with_scale_metrics() {
+    let app = TopologyMonolith::new_in_memory();
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/atlas_edge_service_endpoint_sample.jsonl");
+    app.replay_jsonl(fixture).unwrap();
+
+    let router = build_http_router(HttpAppState::new(app));
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/api/hosts")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let payload: Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(payload["status"], "ok");
+    let hosts = payload["data"]["hosts"].as_array().unwrap();
+    assert_eq!(hosts.len(), 1);
+    assert_eq!(hosts[0]["hostName"], "local-host");
+    // 两个进程都是活的；退役进程不计数。
+    assert_eq!(hosts[0]["processCount"], 2);
+    assert_eq!(hosts[0]["segmentCount"], 0);
+    assert_eq!(hosts[0]["stale"], false);
+    assert!(hosts[0]["lastInventoryAt"].as_str().is_some());
+}
+
+#[tokio::test]
+async fn http_router_hides_stale_hosts_unless_asked() {
+    let app = TopologyMonolith::new_in_memory();
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/atlas_edge_host_process_sample.jsonl");
+    app.replay_jsonl(fixture).unwrap();
+
+    let router = build_http_router(HttpAppState::new(app));
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/api/hosts?include_stale=true")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let payload: Value = serde_json::from_slice(&body).unwrap();
+    // 默认会滤掉退役主机；显式带上 include_stale 时至少要包含现役那一台。
+    let hosts = payload["data"]["hosts"].as_array().unwrap();
+    assert!(!hosts.is_empty());
+    assert!(hosts.iter().any(|host| host["stale"] == false));
+}
+
+#[tokio::test]
 async fn http_router_returns_first_host_process_topology_in_memory() {
     let app = TopologyMonolith::new_in_memory();
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

@@ -83,6 +83,26 @@ impl RuntimeStore for InMemoryTopologyStore {
         })
     }
 
+    fn list_host_process_counts(&self, page: Page) -> StorageResult<Vec<(Uuid, i64)>> {
+        self.with_state(|state| {
+            let mut counts: std::collections::BTreeMap<Uuid, i64> =
+                std::collections::BTreeMap::new();
+            for item in state
+                .process_runtime_states
+                .iter()
+                .filter(|item| item.stale_at.is_none())
+            {
+                *counts.entry(item.host_id).or_insert(0) += 1;
+            }
+            // Uuid 的 BTreeMap 序与 SQL 的 ORDER BY host_id 一致。
+            counts
+                .into_iter()
+                .skip(page.offset as usize)
+                .take(page.limit as usize)
+                .collect()
+        })
+    }
+
     fn upsert_service_instance(
         &self,
         instance: &atlas_domain::ServiceInstance,

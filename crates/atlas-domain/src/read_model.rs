@@ -37,6 +37,19 @@ pub struct HostTopologyView {
     pub generated_at: DateTime<Utc>,
 }
 
+/// 主机列表条目。
+///
+/// 只放「选主机 / 判断这台机值不值得看」需要的东西：进程数与网段数都是规模指标，
+/// 不放进程明细 —— 列表里每台机都带全量数据会把首页变成几 MB。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HostSummaryView {
+    pub host: HostInventory,
+    /// 未退役的进程数（`stale_at IS NULL`）。
+    pub process_count: i64,
+    /// 关联网段数。进程多不等于暴露面大，两个数一起看才能选主机。
+    pub segment_count: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HostProcessOverviewView {
     pub host: HostInventory,

@@ -118,6 +118,14 @@ pub(super) fn decode_process_runtime_state(row: &[String]) -> StorageResult<Proc
     })
 }
 
+pub(super) fn decode_host_process_count(row: &[String]) -> StorageResult<(Uuid, i64)> {
+    Ok((
+        parse_uuid(&row[0])?,
+        // COUNT(*) 在分组里不会是 NULL；空串只会来自列序错位，归 0 是可以接受的兜底。
+        parse_optional_i64(&row[1])?.unwrap_or_default(),
+    ))
+}
+
 pub(super) fn decode_service(row: &[String]) -> StorageResult<ServiceEntity> {
     Ok(ServiceEntity {
         service_id: parse_uuid(&row[0])?,

@@ -14,12 +14,14 @@ import {
   fetchHostProcessOverview,
   fetchFirstHostProcessTopology,
   fetchHostProcessTopology,
+  fetchHosts,
   fetchHostTopology,
   fetchNetworkTopology,
   loadFixture,
 } from './api/client';
 import type {
   HostProcessGroupDto,
+  HostSummaryDto,
   LoadedProcessGroupsState,
   HostProcessTopologyEdge,
   HostProcessTopologyGraph,
@@ -43,6 +45,8 @@ const USE_FIXTURE = import.meta.env.VITE_USE_FIXTURE === '1';
 export default function App() {
   const [state, dispatch] = useAppState();
   const [hostId, setHostId] = useState('');
+  const [hostQueryId, setHostQueryId] = useState('');
+  const [hosts, setHosts] = useState<HostSummaryDto[]>([]);
   const [networkId, setNetworkId] = useState('');
   const [expandedHosts, setExpandedHosts] = useState<Set<string>>(new Set());
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
@@ -51,6 +55,24 @@ export default function App() {
   const [truncatedGroupsByHost, setTruncatedGroupsByHost] = useState<Record<string, number>>({});
   const [loadedGroupsByHost, setLoadedGroupsByHost] = useState<Record<string, LoadedProcessGroupsState>>({});
   const [groupPageLoadingByHost, setGroupPageLoadingByHost] = useState<Record<string, boolean>>({});
+
+  // 主机列表只用于顶栏切换器。
+  // 多于一台时默认聚焦第一台：左栏的资产卡、画布、地址栏才说的是同一台机器；
+  // 想看全局就用下拉里的「全部主机（总览）」（`hostId = ''`）。
+  useEffect(() => {
+    if (USE_FIXTURE) return;
+    let cancelled = false;
+    fetchHosts().then((res) => {
+      if (cancelled || res.status !== 'ok') return;
+      setHosts(res.data.hosts);
+      if (!DEFAULT_HOST_ID) {
+        setHostId((current) => current || res.data.hosts[0]?.id || '');
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const loadData = useCallback(() => {
     dispatch({ type: 'FETCH_GRAPH_START' });
@@ -88,7 +110,7 @@ export default function App() {
   }, [loadData]);
 
   const queryHost = useCallback(() => {
-    const trimmed = hostId.trim();
+    const trimmed = hostQueryId.trim();
     if (!trimmed) return;
     dispatch({ type: 'FETCH_GRAPH_START' });
     fetchHostProcessTopology(trimmed).then((res) => {
@@ -104,7 +126,7 @@ export default function App() {
         dispatch({ type: 'FETCH_GRAPH_ERROR', error: `[${res.code}] ${res.message}` });
       }
     });
-  }, [hostId, dispatch]);
+  }, [hostQueryId, dispatch]);
 
   const queryNetwork = useCallback(() => {
     const trimmed = networkId.trim();
@@ -352,6 +374,9 @@ export default function App() {
       <AppHeader
         host={railHost}
         hostName={railHost?.hostName ?? '未选择主机'}
+        hosts={hosts}
+        selectedHostId={hostId}
+        onSelectHost={(nextHostId) => setHostId(nextHostId)}
         scannedAt={state.hostTopology?.generatedAt ?? displayGraph?.metadata?.queryTime ?? null}
         loading={state.loading}
         onRefresh={loadData}
@@ -394,8 +419,8 @@ export default function App() {
                     id="host-id-input"
                     type="text"
                     placeholder="UUID"
-                    value={hostId}
-                    onChange={(event) => setHostId(event.target.value)}
+                    value={hostQueryId}
+                    onChange={(e) => setHostQueryId(e.target.value)}
                     className="h-7 min-w-0 flex-1 rounded-[7px] border border-line bg-[#f9fafb] px-2 font-mono text-[10.5px] text-ink placeholder:text-[#b4bcc8] focus:border-brand focus:bg-surface focus:outline-none focus:ring-2 focus:ring-brand/15"
                   />
                   <button

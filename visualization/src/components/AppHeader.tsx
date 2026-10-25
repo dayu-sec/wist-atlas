@@ -1,20 +1,34 @@
-import type { HostTopologyHost } from '../types/domain';
+import type { HostSummaryDto, HostTopologyHost } from '../types/domain';
 import { formatRelative } from '../utils/format';
 import { BrandMark, ChevronRight, RefreshIcon } from './icons';
 
 type Props = {
   host: HostTopologyHost | null;
   hostName: string;
+  /** 主机列表：多于一台时顶栏变成切换器。 */
+  hosts: HostSummaryDto[];
+  /** 当前聚焦的主机；空字符串 = 全部主机（总览）。 */
+  selectedHostId: string;
+  onSelectHost: (hostId: string) => void;
   scannedAt?: string | null;
   loading: boolean;
   onRefresh: () => void;
 };
 
 /**
- * 一条 52px 的顶栏承担三件事：产品身份、我在哪、这份数据有多新。
+ * 一条 52px 的顶栏承担四件事：产品身份、我在哪、换一台机器看、这份数据有多新。
  * 搜索/布局这些画布操作不放这里 —— 它们属于画布，见 CanvasToolbar。
  */
-export default function AppHeader({ host, hostName, scannedAt, loading, onRefresh }: Props) {
+export default function AppHeader({
+  host,
+  hostName,
+  hosts,
+  selectedHostId,
+  onSelectHost,
+  scannedAt,
+  loading,
+  onRefresh,
+}: Props) {
   const os = [host?.osName, host?.osVersion].filter(Boolean).join(' ');
   const relative = scannedAt ? formatRelative(scannedAt) : null;
 
@@ -32,9 +46,27 @@ export default function AppHeader({ host, hostName, scannedAt, loading, onRefres
         <ChevronRight className="size-3 shrink-0 text-[#d0d5dd]" />
         <span className="shrink-0 text-[#98a2b3]">主机</span>
         <ChevronRight className="size-3 shrink-0 text-[#d0d5dd]" />
-        <span className="truncate font-medium text-ink" title={hostName}>
-          {hostName}
-        </span>
+        {hosts.length > 1 ? (
+          <select
+            value={selectedHostId}
+            onChange={(event) => onSelectHost(event.target.value)}
+            aria-label="切换主机"
+            title={`共 ${hosts.length} 台主机`}
+            className="h-6 max-w-[220px] truncate rounded-md border border-line bg-surface px-1.5 text-[12px] font-medium text-ink focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/15"
+          >
+            <option value="">全部主机（总览）</option>
+            {hosts.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.hostName}
+                {item.stale ? '（已退役）' : ''}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <span className="truncate font-medium text-ink" title={hostName}>
+            {hostName}
+          </span>
+        )}
       </nav>
 
       {os && (

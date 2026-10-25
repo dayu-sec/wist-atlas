@@ -243,6 +243,25 @@ impl PostgresExecutor for MemoryPostgresExecutor {
                 .filter(|row| row[2] == params[0])
                 .cloned()
                 .collect(),
+            value if value == sql::LIST_HOST_PROCESS_COUNTS => {
+                // 内存替身自己算 GROUP BY：只数 stale_at（第 12 列）为空的存活进程。
+                let mut counts: std::collections::BTreeMap<&str, i64> =
+                    std::collections::BTreeMap::new();
+                for row in state.process_runtime_states.values() {
+                    if row[12].is_empty() {
+                        *counts.entry(row[2].as_str()).or_insert(0) += 1;
+                    }
+                }
+                // BTreeMap 已按 host_id 有序，与 SQL 的 ORDER BY host_id 对齐；分页在排序后。
+                let limit = params[0].parse::<usize>().unwrap_or(usize::MAX);
+                let offset = params[1].parse::<usize>().unwrap_or(0);
+                counts
+                    .into_iter()
+                    .skip(offset)
+                    .take(limit)
+                    .map(|(host_id, count)| vec![host_id.to_string(), count.to_string()])
+                    .collect()
+            }
             value if value == sql::GET_SERVICE_INSTANCE => state
                 .service_instances
                 .get(&params[0])

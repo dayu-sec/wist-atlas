@@ -1,5 +1,6 @@
 import type {
   ApiResponse,
+  HostListDto,
   HostProcessGroupsPageDto,
   HostProcessOverviewDto,
   HostProcessTopologyGraph,
@@ -34,6 +35,11 @@ export async function fetchHostTopology(hostId: string): Promise<ApiResponse<Hos
 
 export async function fetchFirstHostTopology(): Promise<ApiResponse<HostTopologyDto>> {
   return get<HostTopologyDto>('/topology/host/first');
+}
+
+/** 主机列表：顶栏切换器的数据源。默认不含已退役主机。 */
+export async function fetchHosts(): Promise<ApiResponse<HostListDto>> {
+  return get<HostListDto>('/hosts');
 }
 
 // V1 optional enhancement
