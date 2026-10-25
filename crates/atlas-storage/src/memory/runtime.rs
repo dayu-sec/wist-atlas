@@ -103,6 +103,48 @@ impl RuntimeStore for InMemoryTopologyStore {
         })
     }
 
+    fn upsert_container_runtime(
+        &self,
+        container: &atlas_domain::ContainerRuntime,
+    ) -> StorageResult<()> {
+        self.with_state(|state| {
+            if let Some(existing) = state
+                .container_runtimes
+                .iter_mut()
+                .find(|item| item.container_id == container.container_id)
+            {
+                *existing = container.clone();
+            } else {
+                state.container_runtimes.push(container.clone());
+            }
+        })
+    }
+
+    fn list_container_runtimes_for_host(
+        &self,
+        host_id: Uuid,
+        page: Page,
+    ) -> StorageResult<Vec<atlas_domain::ContainerRuntime>> {
+        self.with_state(|state| {
+            let mut rows: Vec<atlas_domain::ContainerRuntime> = state
+                .container_runtimes
+                .iter()
+                .filter(|item| item.host_id == host_id && item.stale_at.is_none())
+                .cloned()
+                .collect();
+            // 与 SQL 的 `ORDER BY container_name, container_id` 对齐。
+            rows.sort_by(|left, right| {
+                left.container_name
+                    .cmp(&right.container_name)
+                    .then(left.container_id.cmp(&right.container_id))
+            });
+            rows.into_iter()
+                .skip(page.offset as usize)
+                .take(page.limit as usize)
+                .collect()
+        })
+    }
+
     fn upsert_service_instance(
         &self,
         instance: &atlas_domain::ServiceInstance,

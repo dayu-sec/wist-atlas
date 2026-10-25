@@ -366,6 +366,48 @@ ORDER BY host_id
 LIMIT NULLIF($1, '')::int4 OFFSET NULLIF($2, '')::int4
 "#;
 
+pub const UPSERT_CONTAINER_RUNTIME: &str = r#"
+INSERT INTO container_runtime (
+    container_id, tenant_id, pod_id, host_id, runtime_type, runtime_namespace,
+    container_name, image_ref, external_ref, started_at, last_seen_at, stale_at, ingest_scope,
+    pod_uid, pod_name, k8s_namespace
+) VALUES (
+    NULLIF($1, '')::uuid, NULLIF($2, '')::uuid, NULLIF($3, '')::uuid,
+    NULLIF($4, '')::uuid, $5, NULLIF($6, ''), NULLIF($7, ''), NULLIF($8, ''),
+    NULLIF($9, ''), NULLIF($10, '')::timestamptz, NULLIF($11, '')::timestamptz,
+    NULLIF($12, '')::timestamptz, NULLIF($13, ''),
+    NULLIF($14, ''), NULLIF($15, ''), NULLIF($16, '')
+)
+ON CONFLICT (container_id) DO UPDATE SET
+    tenant_id = EXCLUDED.tenant_id,
+    pod_id = EXCLUDED.pod_id,
+    host_id = EXCLUDED.host_id,
+    runtime_type = EXCLUDED.runtime_type,
+    runtime_namespace = EXCLUDED.runtime_namespace,
+    container_name = EXCLUDED.container_name,
+    image_ref = EXCLUDED.image_ref,
+    external_ref = EXCLUDED.external_ref,
+    started_at = EXCLUDED.started_at,
+    last_seen_at = EXCLUDED.last_seen_at,
+    stale_at = EXCLUDED.stale_at,
+    ingest_scope = EXCLUDED.ingest_scope,
+    pod_uid = EXCLUDED.pod_uid,
+    pod_name = EXCLUDED.pod_name,
+    k8s_namespace = EXCLUDED.k8s_namespace
+"#;
+
+// 主机的容器列表：只给活着的（`stale_at IS NULL`）。退役行留着是为了回溯「上周跑过
+// 哪些容器」，不该再出现在现役视图里 —— 与进程、端点的读侧口径一致。
+pub const LIST_CONTAINER_RUNTIMES_FOR_HOST: &str = r#"
+SELECT container_id, tenant_id, pod_id, host_id, runtime_type, runtime_namespace,
+       container_name, image_ref, external_ref, started_at, last_seen_at, stale_at, ingest_scope,
+       pod_uid, pod_name, k8s_namespace
+FROM container_runtime
+WHERE host_id = NULLIF($1, '')::uuid AND stale_at IS NULL
+ORDER BY container_name ASC NULLS LAST, container_id ASC
+LIMIT NULLIF($2, '')::int4 OFFSET NULLIF($3, '')::int4
+"#;
+
 pub const UPSERT_SERVICE_INSTANCE: &str = r#"
 INSERT INTO service_instance (
     instance_id, tenant_id, service_id, workload_id, started_at, ended_at, last_seen_at

@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::ApiResult;
 use crate::ingest::{
-    IngestJobRecord, extract_business_catalog_candidates, extract_host_candidates,
-    extract_host_telemetry_candidates, extract_network_segment_candidates,
+    IngestJobRecord, extract_business_catalog_candidates, extract_container_runtime_candidates,
+    extract_host_candidates, extract_host_telemetry_candidates, extract_network_segment_candidates,
     extract_process_runtime_candidates, extract_process_telemetry_candidates,
     extract_responsibility_assignment_candidates, extract_service_endpoint_candidates,
     extract_subject_candidates,
@@ -35,6 +35,12 @@ pub struct PipelineRunSummary {
     /// 有监听地址但没入目录的候选数（宿主解析不到 / 找不到持有进程 / 可执行名为空）。
     /// 大于 0 说明采集侧给了端口但 pid 没解析出来，是排障的第一线索。
     pub unresolved_endpoint_count: usize,
+    /// 本次写进去的容器数。
+    pub container_count: usize,
+    /// 本次快照替换清扫标成 stale 的容器数（非 snapshot 模式恒为 0）。
+    pub stale_container_count: u64,
+    /// 宿主解析不到的容器候选数。大于 0 说明采集侧报了容器但我们不知道怎么归属。
+    pub unresolved_container_count: usize,
 }
 
 pub struct TopologyIngestService<S> {
@@ -61,6 +67,7 @@ where
         let hosts = extract_host_candidates(&envelope)?.candidates;
         let networks = extract_network_segment_candidates(&envelope)?.candidates;
         let processes = extract_process_runtime_candidates(&envelope)?.candidates;
+        let container_extraction = extract_container_runtime_candidates(&envelope)?;
         let endpoint_extraction = extract_service_endpoint_candidates(&envelope)?;
         let business_catalog = extract_business_catalog_candidates(&envelope)
             .map(|result| result.candidates)
@@ -95,6 +102,19 @@ where
         let stale_process_count =
             sweep_stale_processes(&self.store, &envelope, &process_sweep, &scope, accepted_at)
                 .conv_err()?;
+        let container_sweep = materialize_containers(
+            &self.store,
+            &catalog,
+            container_extraction.candidates,
+            accepted_at,
+            &scope,
+        )
+        .conv_err()?;
+        let stale_container_count = if container_extraction.reported {
+            mark_stale_containers(&self.store, &container_sweep, &scope, accepted_at).conv_err()?
+        } else {
+            0
+        };
         // 端点必须在进程之后物化：它要按 pid 找到持有 socket 的进程行。
         let endpoint_sweep = materialize_service_endpoints(
             &self.store,
@@ -129,6 +149,9 @@ where
                 service_endpoint_count: endpoint_sweep.materialized,
                 stale_endpoint_count: endpoint_sweep.closed,
                 unresolved_endpoint_count: endpoint_sweep.unresolved,
+                container_count: container_sweep.seen.len(),
+                stale_container_count,
+                unresolved_container_count: container_sweep.unresolved,
             },
         ))
     }
@@ -162,6 +185,7 @@ where
         let hosts = extract_host_candidates(&envelope)?.candidates;
         let networks = extract_network_segment_candidates(&envelope)?.candidates;
         let processes = extract_process_runtime_candidates(&envelope)?.candidates;
+        let containers = extract_container_runtime_candidates(&envelope)?;
         let endpoints = extract_service_endpoint_candidates(&envelope)?;
         let business_catalog = extract_business_catalog_candidates(&envelope)
             .map(|result| result.candidates)
@@ -209,6 +233,22 @@ where
         )
         .await
         .conv_err()?;
+        let container_sweep = materialize_containers_async(
+            &self.store,
+            &catalog,
+            containers.candidates,
+            accepted_at,
+            &scope,
+        )
+        .await
+        .conv_err()?;
+        let stale_container_count = if containers.reported {
+            mark_stale_containers_async(&self.store, &container_sweep, &scope, accepted_at)
+                .await
+                .conv_err()?
+        } else {
+            0
+        };
         // 端点必须在进程之后物化：它要按 pid 找到持有 socket 的进程行。
         let endpoint_sweep = materialize_service_endpoints_async(
             &self.store,
@@ -249,6 +289,9 @@ where
                 service_endpoint_count: endpoint_sweep.materialized,
                 stale_endpoint_count: endpoint_sweep.closed,
                 unresolved_endpoint_count: endpoint_sweep.unresolved,
+                container_count: container_sweep.seen.len(),
+                stale_container_count,
+                unresolved_container_count: container_sweep.unresolved,
             },
         ))
     }
@@ -271,14 +314,16 @@ where
 
 mod materialize;
 use materialize::{
-    MaterializedHosts, ProcessSweep, hydrate_catalog, hydrate_catalog_async, mark_stale_hosts,
-    mark_stale_hosts_async, mark_stale_processes, mark_stale_processes_async,
-    materialize_business_catalog, materialize_business_catalog_async, materialize_candidates,
-    materialize_candidates_async, materialize_host_telemetry, materialize_host_telemetry_async,
-    materialize_process_telemetry, materialize_process_telemetry_async, materialize_processes,
-    materialize_processes_async, materialize_service_endpoints,
-    materialize_service_endpoints_async, materialize_subjects_and_assignments,
-    materialize_subjects_and_assignments_async, validate_and_record, validate_and_record_async,
+    ContainerSweep, MaterializedHosts, ProcessSweep, hydrate_catalog, hydrate_catalog_async,
+    mark_stale_containers, mark_stale_containers_async, mark_stale_hosts, mark_stale_hosts_async,
+    mark_stale_processes, mark_stale_processes_async, materialize_business_catalog,
+    materialize_business_catalog_async, materialize_candidates, materialize_candidates_async,
+    materialize_containers, materialize_containers_async, materialize_host_telemetry,
+    materialize_host_telemetry_async, materialize_process_telemetry,
+    materialize_process_telemetry_async, materialize_processes, materialize_processes_async,
+    materialize_service_endpoints, materialize_service_endpoints_async,
+    materialize_subjects_and_assignments, materialize_subjects_and_assignments_async,
+    validate_and_record, validate_and_record_async,
 };
 
 /// 主机退役清扫（只在 `snapshot` 模式下）。

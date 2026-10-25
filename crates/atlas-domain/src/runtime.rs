@@ -18,6 +18,22 @@ pub enum RuntimeType {
     Docker,
     CriO,
     Process,
+    /// 采集侧报了一个我们不认识的运行时（podman、自定义 root、k3s 的变体…）。
+    /// 归成 `Process` 会在卡片上写一个错的运行时，不如承认「不知道」。
+    Unknown,
+}
+
+impl RuntimeType {
+    /// 把采集侧的运行时字符串（`containerd` / `docker` / `cri-o`）归一化成枚举。
+    pub fn from_reported(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "containerd" => RuntimeType::Containerd,
+            "docker" => RuntimeType::Docker,
+            "cri-o" | "crio" | "cri_o" => RuntimeType::CriO,
+            "process" => RuntimeType::Process,
+            _ => RuntimeType::Unknown,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -104,6 +120,25 @@ pub struct ContainerRuntime {
     pub image_ref: Option<String>,
     pub started_at: Option<DateTime<Utc>>,
     pub last_seen_at: DateTime<Utc>,
+    /// 采集侧的容器 id 原值（`3f2c9f3c1b8e…`），排查时要能对回运行时自己的 id。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_ref: Option<String>,
+    /// K8s 线索原样保留：现在还没有 pod 目录可以关联，但丢了它就再也拿不回来了。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pod_uid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pod_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub k8s_namespace: Option<String>,
+    /// 第一次发现这个容器从**这个生产者**的完整快照里消失的时刻；`None` = 仍存在。
+    ///
+    /// 与进程同一套语义：容器被删了不删行，`stale_at` 保留首次消失时间，
+    /// 否则「上周这台机跑过哪些容器」就答不了。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale_at: Option<DateTime<Utc>>,
+    /// 归属的快照作用域 `schema:system:producer:tenant:env`，清扫只在同作用域内比对。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ingest_scope: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -404,6 +404,52 @@ async fn http_router_returns_network_topology_for_a_segment() {
 }
 
 #[tokio::test]
+async fn http_router_exposes_containers_on_the_host_view() {
+    let app = TopologyMonolith::new_in_memory();
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/atlas_edge_container_sample.jsonl");
+    app.replay_jsonl(fixture).unwrap();
+
+    let host_id = app
+        .store()
+        .unwrap()
+        .list_all_hosts(Page::default())
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap()
+        .host_id;
+
+    let router = build_http_router(HttpAppState::new(app));
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/topology/host/{host_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let payload: Value = serde_json::from_slice(&body).unwrap();
+
+    let containers = payload["data"]["containers"].as_array().unwrap();
+    assert_eq!(containers.len(), 2);
+    // 嵌套的 domain 对象保持 snake_case（与 services / processGroups 一致），
+    // 只有 HTTP 自己的 DTO 字段是 camelCase。
+    assert_eq!(containers[0]["container_name"], "nginx");
+    assert_eq!(containers[0]["runtime_type"], "Containerd");
+    assert_eq!(containers[0]["image_ref"], "nginx:1.27");
+    assert_eq!(containers[0]["pod_name"], "nginx-abc");
+    assert_eq!(containers[1]["container_name"], "redis");
+    assert!(containers[1]["pod_name"].is_null());
+}
+
+#[tokio::test]
 async fn http_router_lists_services_by_spread() {
     let app = TopologyMonolith::new_in_memory();
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

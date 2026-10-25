@@ -8,11 +8,13 @@ pub const INITIAL_SCHEMA_VERSION: &str = "0001_initial_schema";
 pub const PRESENCE_STALE_VERSION: &str = "0002_presence_stale";
 pub const HOST_ARCH_PRESENCE_VERSION: &str = "0003_host_arch_presence";
 pub const INSTANCE_ENDPOINT_VERSION: &str = "0004_instance_endpoint";
+pub const CONTAINER_RUNTIME_VERSION: &str = "0005_container_runtime";
 
 pub const INITIAL_SCHEMA_SQL: &str = include_str!("../migrations/0001_initial_schema.sql");
 pub const PRESENCE_STALE_SQL: &str = include_str!("../migrations/0002_presence_stale.sql");
 pub const HOST_ARCH_PRESENCE_SQL: &str = include_str!("../migrations/0003_host_arch_presence.sql");
 pub const INSTANCE_ENDPOINT_SQL: &str = include_str!("../migrations/0004_instance_endpoint.sql");
+pub const CONTAINER_RUNTIME_SQL: &str = include_str!("../migrations/0005_container_runtime.sql");
 
 pub const MIGRATIONS: &[Migration] = &[
     Migration {
@@ -30,6 +32,10 @@ pub const MIGRATIONS: &[Migration] = &[
     Migration {
         version: INSTANCE_ENDPOINT_VERSION,
         sql: INSTANCE_ENDPOINT_SQL,
+    },
+    Migration {
+        version: CONTAINER_RUNTIME_VERSION,
+        sql: CONTAINER_RUNTIME_SQL,
     },
 ];
 

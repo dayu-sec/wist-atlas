@@ -133,6 +133,7 @@ function DrillButton({ children, onClick }: { children: React.ReactNode; onClick
 
 function HostDetail({ topology }: { topology: HostTopologyDto }) {
   const os = [topology.host.osName, topology.host.osVersion].filter(Boolean).join(' ');
+  const containers = topology.containers ?? [];
 
   return (
     <div className="space-y-5">
@@ -148,9 +149,48 @@ function HostDetail({ topology }: { topology: HostTopologyDto }) {
         <div className="grid grid-cols-3 gap-2">
           <Metric label="网段" value={topology.networkSegments.length} />
           <Metric label="进程" value={topology.processes.length} />
-          <Metric label="服务" value={topology.services.length} />
+          <Metric label="容器" value={containers.length} />
         </div>
       </Section>
+
+      {containers.length > 0 && (
+        <Section title={`容器（${containers.length}）`}>
+          <ul className="space-y-1.5">
+            {containers.map((container) => (
+              <li
+                key={container.container_id}
+                className="rounded-[8px] border border-[#f2f4f7] bg-[#f9fafb] px-2.5 py-1.5"
+              >
+                <div className="flex items-baseline justify-between gap-2">
+                  <span
+                    className="truncate text-[11px] font-medium text-[#344054]"
+                    title={container.container_name ?? container.container_id}
+                  >
+                    {container.container_name ?? container.container_id.slice(0, 12)}
+                  </span>
+                  <span className="shrink-0 font-mono text-[9.5px] text-[#98a2b3]">
+                    {container.runtime_type}
+                  </span>
+                </div>
+                {container.image_ref && (
+                  <div
+                    className="mt-0.5 truncate font-mono text-[9.5px] leading-3 text-[#667085]"
+                    title={container.image_ref}
+                  >
+                    {container.image_ref}
+                  </div>
+                )}
+                {container.pod_name && (
+                  <div className="mt-0.5 truncate text-[9.5px] leading-3 text-[#98a2b3]">
+                    {container.k8s_namespace ? `${container.k8s_namespace} / ` : ''}
+                    {container.pod_name}
+                  </div>
+                )}
+              </li>
+            ))}
+          </ul>
+        </Section>
+      )}
 
       {topology.networkSegments.length > 0 && (
         <Section title={`网络接口 ${topology.networkSegments.length}`}>

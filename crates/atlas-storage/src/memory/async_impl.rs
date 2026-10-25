@@ -173,6 +173,19 @@ impl AsyncRuntimeStore for InMemoryTopologyStore {
     async fn list_host_process_counts(&self, page: Page) -> StorageResult<Vec<(Uuid, i64)>> {
         RuntimeStore::list_host_process_counts(self, page)
     }
+    async fn upsert_container_runtime(
+        &self,
+        container: &atlas_domain::ContainerRuntime,
+    ) -> StorageResult<()> {
+        RuntimeStore::upsert_container_runtime(self, container)
+    }
+    async fn list_container_runtimes_for_host(
+        &self,
+        host_id: Uuid,
+        page: Page,
+    ) -> StorageResult<Vec<atlas_domain::ContainerRuntime>> {
+        RuntimeStore::list_container_runtimes_for_host(self, host_id, page)
+    }
     async fn upsert_service_instance(&self, instance: &ServiceInstance) -> StorageResult<()> {
         RuntimeStore::upsert_service_instance(self, instance)
     }

@@ -86,6 +86,32 @@ pub struct ServiceEndpointCandidate {
     pub observed_at: Option<ObservedAt>,
 }
 
+/// 一个观测到的容器（模型里的 `ContainerRuntime` 候选）。
+///
+/// `container_key` 是采集侧的容器 id 原值（`3f2c9f3c1b8e…`）。资产 id 由它派生出稳定
+/// UUID，所以这里必须保留：丢了它就只能靠（主机 + 容器名）猜身份，同名重建会被当成同一个容器。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContainerRuntimeCandidate {
+    pub tenant_id: TenantId,
+    pub environment_id: Option<EnvironmentId>,
+    pub source_kind: SourceKind,
+    pub host_name: Option<String>,
+    pub machine_id: Option<String>,
+    pub container_key: String,
+    /// `docker` / `containerd` / `cri-o`。解析不了的类型当 `process` 处理不如直接丢弃。
+    pub runtime_type: String,
+    pub runtime_namespace: Option<String>,
+    pub container_name: Option<String>,
+    pub image_ref: Option<String>,
+    /// K8s 线索（平铺后）：`k8s.namespace` / `k8s.pod_uid` / `k8s.pod_name` / `k8s.container_name`。
+    pub k8s_namespace: Option<String>,
+    pub k8s_pod_uid: Option<String>,
+    pub k8s_pod_name: Option<String>,
+    pub k8s_container_name: Option<String>,
+    pub started_at: Option<ObservedAt>,
+    pub observed_at: Option<ObservedAt>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct HostTelemetryCandidate {
     pub tenant_id: TenantId,

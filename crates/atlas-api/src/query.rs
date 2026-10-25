@@ -99,6 +99,7 @@ where
             .conv_err()?
             .into_iter()
             .max_by_key(|state| state.observed_at.0);
+        let containers = list_all_containers_for_host(&self.store, host.host_id)?;
 
         Ok(Some(HostTopologyView {
             host,
@@ -108,6 +109,7 @@ where
             network_segments,
             network_assocs,
             services,
+            containers,
             assignments,
             generated_at: Utc::now(),
         }))
@@ -359,6 +361,7 @@ where
                 .conv_err()?
                 .into_iter()
                 .max_by_key(|state| state.observed_at.0);
+        let containers = list_all_containers_for_host_async(&self.store, host.host_id).await?;
 
         Ok(Some(HostTopologyView {
             host,
@@ -368,6 +371,7 @@ where
             network_segments,
             network_assocs,
             services,
+            containers,
             assignments,
             generated_at: Utc::now(),
         }))
@@ -490,7 +494,8 @@ where
 mod helpers;
 use helpers::{
     build_host_process_groups_page_view, build_host_process_overview_view, build_host_services,
-    build_host_services_async, build_process_groups, list_all_process_runtime_states,
+    build_host_services_async, build_process_groups, list_all_containers_for_host,
+    list_all_containers_for_host_async, list_all_process_runtime_states,
     list_all_service_instances_async, live_instance_hosts_async,
 };
 // 焦点图的组装在 `atlas-app`，但「一台机的现役进程」这条读取语义只该有一份实现，

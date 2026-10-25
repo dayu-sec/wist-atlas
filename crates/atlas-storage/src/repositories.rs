@@ -1,7 +1,7 @@
 use atlas_domain::{
-    BusinessDomain, ClusterInventory, ExternalIdentityLink, ExternalSyncCursor, HostInventory,
-    HostNetAssoc, HostRuntimeState, InstanceEndpoint, NamespaceInventory, NetworkDomain,
-    NetworkSegment, ObjectKind, PodInventory, PodPlacement, ProcessRuntimeState,
+    BusinessDomain, ClusterInventory, ContainerRuntime, ExternalIdentityLink, ExternalSyncCursor,
+    HostInventory, HostNetAssoc, HostRuntimeState, InstanceEndpoint, NamespaceInventory,
+    NetworkDomain, NetworkSegment, ObjectKind, PodInventory, PodPlacement, ProcessRuntimeState,
     ResponsibilityAssignment, RuntimeBinding, ServiceEntity, ServiceInstance, Subject, Subsystem,
     SystemBoundary, TenantId, WorkloadEntity, WorkloadPodMembership,
 };
@@ -151,6 +151,16 @@ pub trait RuntimeStore {
         page: Page,
     ) -> StorageResult<Vec<ProcessRuntimeState>>;
 
+    fn upsert_container_runtime(&self, container: &ContainerRuntime) -> StorageResult<()>;
+    /// 这台主机**当前活着**的容器（`stale_at IS NULL`）。
+    ///
+    /// 退役行留在表里供回溯，但不能进现役视图 —— 与进程、端口的读侧口径一致。
+    fn list_container_runtimes_for_host(
+        &self,
+        host_id: Uuid,
+        page: Page,
+    ) -> StorageResult<Vec<ContainerRuntime>>;
+
     /// 每台主机当前的存活进程数（`stale_at IS NULL`），已按 `host_id` 排序。
     ///
     /// 主机列表页要显示每台机的规模；让前端逐台翻页数进程会把一页列表变成
@@ -219,6 +229,12 @@ pub trait AsyncRuntimeStore: Sync {
         host_id: Uuid,
         page: Page,
     ) -> StorageResult<Vec<ProcessRuntimeState>>;
+    async fn upsert_container_runtime(&self, container: &ContainerRuntime) -> StorageResult<()>;
+    async fn list_container_runtimes_for_host(
+        &self,
+        host_id: Uuid,
+        page: Page,
+    ) -> StorageResult<Vec<ContainerRuntime>>;
     async fn list_host_process_counts(&self, page: Page) -> StorageResult<Vec<(Uuid, i64)>>;
     async fn upsert_service_instance(&self, instance: &ServiceInstance) -> StorageResult<()>;
     async fn get_service_instance(

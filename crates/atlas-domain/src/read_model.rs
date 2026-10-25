@@ -2,9 +2,9 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    BusinessDomain, HostInventory, HostNetAssoc, HostRuntimeState, InstanceEndpoint,
-    NetworkSegment, ProcessRuntimeState, ResponsibilityAssignment, RuntimeBinding, ServiceEntity,
-    ServiceInstance, Subject,
+    BusinessDomain, ContainerRuntime, HostInventory, HostNetAssoc, HostRuntimeState,
+    InstanceEndpoint, NetworkSegment, ProcessRuntimeState, ResponsibilityAssignment,
+    RuntimeBinding, ServiceEntity, ServiceInstance, Subject,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -33,6 +33,12 @@ pub struct HostTopologyView {
     pub network_segments: Vec<NetworkSegment>,
     pub network_assocs: Vec<HostNetAssoc>,
     pub services: Vec<HostServiceView>,
+    /// 这台主机上跑着的容器（已退役的不算）。
+    ///
+    /// 容器不进画布：一台开发机常见的容器数是 0~2，为它单独开一层节点类型、
+    /// 一套卡片和一条版式车道不划算；先在主机详情里列清楚。
+    #[serde(default)]
+    pub containers: Vec<ContainerRuntime>,
     pub assignments: Vec<ResponsibilityAssignment>,
     pub generated_at: DateTime<Utc>,
 }

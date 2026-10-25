@@ -52,6 +52,68 @@ where
     Ok(items)
 }
 
+/// 一台机的全部活容器。默认页大小 100，节点上跑几十个 Pod 是常态。
+pub(super) fn list_all_containers_for_host<S>(
+    store: &S,
+    host_id: Uuid,
+) -> ApiResult<Vec<atlas_domain::ContainerRuntime>>
+where
+    S: RuntimeStore,
+{
+    let mut items = Vec::new();
+    let page_limit = 200;
+    let mut offset = 0;
+    loop {
+        let batch = store
+            .list_container_runtimes_for_host(
+                host_id,
+                Page {
+                    limit: page_limit,
+                    offset,
+                },
+            )
+            .conv_err()?;
+        let batch_len = batch.len();
+        items.extend(batch);
+        if batch_len < page_limit as usize {
+            break;
+        }
+        offset += batch_len as u32;
+    }
+    Ok(items)
+}
+
+pub(super) async fn list_all_containers_for_host_async<S>(
+    store: &S,
+    host_id: Uuid,
+) -> ApiResult<Vec<atlas_domain::ContainerRuntime>>
+where
+    S: AsyncRuntimeStore,
+{
+    let mut items = Vec::new();
+    let page_limit = 200;
+    let mut offset = 0;
+    loop {
+        let batch = AsyncRuntimeStore::list_container_runtimes_for_host(
+            store,
+            host_id,
+            Page {
+                limit: page_limit,
+                offset,
+            },
+        )
+        .await
+        .conv_err()?;
+        let batch_len = batch.len();
+        items.extend(batch);
+        if batch_len < page_limit as usize {
+            break;
+        }
+        offset += batch_len as u32;
+    }
+    Ok(items)
+}
+
 /// 活实例 → 主机：同一份快照里每个活服务实例落在哪台机器上。
 ///
 /// 查询方向是**按主机**取的（`list_instance_ids_for_host` 一台机一条），不是按实例

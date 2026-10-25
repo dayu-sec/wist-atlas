@@ -126,6 +126,45 @@ pub(super) fn decode_host_process_count(row: &[String]) -> StorageResult<(Uuid, 
     ))
 }
 
+pub(super) fn decode_container_runtime(
+    row: &[String],
+) -> StorageResult<atlas_domain::ContainerRuntime> {
+    Ok(atlas_domain::ContainerRuntime {
+        container_id: parse_uuid(&row[0])?,
+        tenant_id: TenantId(parse_uuid(&row[1])?),
+        pod_id: parse_optional_uuid(&row[2])?,
+        host_id: parse_uuid(&row[3])?,
+        runtime_type: parse_runtime_type(&row[4])?,
+        runtime_namespace: empty_to_none(&row[5]),
+        container_name: empty_to_none(&row[6]),
+        image_ref: empty_to_none(&row[7]),
+        external_ref: empty_to_none(&row[8]),
+        started_at: empty_to_none(&row[9])
+            .map(|value| parse_datetime(&value))
+            .transpose()?,
+        last_seen_at: parse_datetime(&row[10])?,
+        stale_at: empty_to_none(&row[11])
+            .map(|value| parse_datetime(&value))
+            .transpose()?,
+        ingest_scope: empty_to_none(&row[12]),
+        pod_uid: empty_to_none(&row[13]),
+        pod_name: empty_to_none(&row[14]),
+        k8s_namespace: empty_to_none(&row[15]),
+    })
+}
+
+/// 枚举列存的是 Rust 变体名（`Containerd` / `CriO`），不是采集侧的小写字符串。
+pub(super) fn parse_runtime_type(value: &str) -> StorageResult<atlas_domain::RuntimeType> {
+    match value {
+        "Containerd" => Ok(atlas_domain::RuntimeType::Containerd),
+        "Docker" => Ok(atlas_domain::RuntimeType::Docker),
+        "CriO" => Ok(atlas_domain::RuntimeType::CriO),
+        "Process" => Ok(atlas_domain::RuntimeType::Process),
+        "Unknown" => Ok(atlas_domain::RuntimeType::Unknown),
+        other => Err(decode_failed(format!("unsupported runtime type: {other}"))),
+    }
+}
+
 pub(super) fn decode_service(row: &[String]) -> StorageResult<ServiceEntity> {
     Ok(ServiceEntity {
         service_id: parse_uuid(&row[0])?,

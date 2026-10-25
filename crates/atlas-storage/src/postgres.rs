@@ -1,7 +1,7 @@
 use atlas_domain::{
-    HostInventory, HostNetAssoc, HostRuntimeState, InstanceEndpoint, NetworkDomain, NetworkSegment,
-    ObjectKind, ProcessRuntimeState, ResponsibilityAssignment, RuntimeBinding, RuntimeObjectType,
-    ServiceEntity, ServiceInstance, Subject, TenantId,
+    ContainerRuntime, HostInventory, HostNetAssoc, HostRuntimeState, InstanceEndpoint,
+    NetworkDomain, NetworkSegment, ObjectKind, ProcessRuntimeState, ResponsibilityAssignment,
+    RuntimeBinding, RuntimeObjectType, ServiceEntity, ServiceInstance, Subject, TenantId,
 };
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
@@ -228,6 +228,16 @@ impl AsyncRuntimeStore for PostgresTopologyStore<MemoryPostgresExecutor> {
     }
     async fn list_host_process_counts(&self, page: Page) -> StorageResult<Vec<(Uuid, i64)>> {
         RuntimeStore::list_host_process_counts(self, page)
+    }
+    async fn upsert_container_runtime(&self, container: &ContainerRuntime) -> StorageResult<()> {
+        RuntimeStore::upsert_container_runtime(self, container)
+    }
+    async fn list_container_runtimes_for_host(
+        &self,
+        host_id: Uuid,
+        page: Page,
+    ) -> StorageResult<Vec<ContainerRuntime>> {
+        RuntimeStore::list_container_runtimes_for_host(self, host_id, page)
     }
     async fn upsert_service_instance(&self, instance: &ServiceInstance) -> StorageResult<()> {
         RuntimeStore::upsert_service_instance(self, instance)

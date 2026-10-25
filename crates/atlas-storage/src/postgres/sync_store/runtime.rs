@@ -141,6 +141,58 @@ where
             .collect()
     }
 
+    fn upsert_container_runtime(
+        &self,
+        container: &atlas_domain::ContainerRuntime,
+    ) -> StorageResult<()> {
+        self.executor.exec(
+            sql::UPSERT_CONTAINER_RUNTIME,
+            &[
+                container.container_id.to_string(),
+                container.tenant_id.0.to_string(),
+                container.pod_id.map(|v| v.to_string()).unwrap_or_default(),
+                container.host_id.to_string(),
+                format!("{:?}", container.runtime_type),
+                container.runtime_namespace.clone().unwrap_or_default(),
+                container.container_name.clone().unwrap_or_default(),
+                container.image_ref.clone().unwrap_or_default(),
+                container.external_ref.clone().unwrap_or_default(),
+                container
+                    .started_at
+                    .map(|v| v.to_rfc3339())
+                    .unwrap_or_default(),
+                container.last_seen_at.to_rfc3339(),
+                container
+                    .stale_at
+                    .map(|v| v.to_rfc3339())
+                    .unwrap_or_default(),
+                container.ingest_scope.clone().unwrap_or_default(),
+                container.pod_uid.clone().unwrap_or_default(),
+                container.pod_name.clone().unwrap_or_default(),
+                container.k8s_namespace.clone().unwrap_or_default(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn list_container_runtimes_for_host(
+        &self,
+        host_id: Uuid,
+        page: Page,
+    ) -> StorageResult<Vec<atlas_domain::ContainerRuntime>> {
+        let rows = self.executor.query_rows(
+            sql::LIST_CONTAINER_RUNTIMES_FOR_HOST,
+            &[
+                host_id.to_string(),
+                page.limit.to_string(),
+                page.offset.to_string(),
+            ],
+        )?;
+        rows.into_iter()
+            .map(|row| decode_container_runtime(&row))
+            .collect()
+    }
+
     fn upsert_service_instance(
         &self,
         instance: &atlas_domain::ServiceInstance,

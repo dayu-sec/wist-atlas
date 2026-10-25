@@ -110,8 +110,26 @@ export type HostTopologyDto = {
   networkSegments: Record<string, unknown>[];
   networkAssocs: Record<string, unknown>[];
   services: HostTopologyService[];
+  /** 嵌套的 domain 对象保持 snake_case（与 services 一致）。 */
+  containers: HostContainerDto[];
   assignments: Record<string, unknown>[];
   generatedAt: string;
+};
+
+/** 一个容器。只读：资产来自采集，不在控制台里改。 */
+export type HostContainerDto = {
+  container_id: string;
+  host_id: string;
+  runtime_type: string;
+  runtime_namespace?: string | null;
+  container_name?: string | null;
+  image_ref?: string | null;
+  external_ref?: string | null;
+  started_at?: string | null;
+  last_seen_at: string;
+  pod_uid?: string | null;
+  pod_name?: string | null;
+  k8s_namespace?: string | null;
 };
 
 /** `GET /api/hosts` 的条目：只够「选主机」用的规模信息，不带进程明细。 */
@@ -202,6 +220,8 @@ export type AppAction =
   | { type: 'FETCH_GRAPH_START' }
   | { type: 'FETCH_GRAPH_SUCCESS'; graph: HostProcessTopologyGraph }
   | { type: 'FETCH_HOST_TOPOLOGY_SUCCESS'; hostTopology: HostTopologyDto | null }
+  /** 图换主机时清空资产卡；**同一台主机则保留** —— 否则两份请求谁后回来就把对方抹掉。 */
+  | { type: 'CLEAR_HOST_TOPOLOGY_UNLESS'; hostObjectId: string }
   | { type: 'FETCH_GRAPH_ERROR'; error: string }
   | { type: 'SELECT_NODE'; nodeId: string | null }
   | { type: 'TOGGLE_LAYER'; layer: LayerKind }

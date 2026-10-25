@@ -716,3 +716,90 @@ fn service_endpoints_are_omitted_when_the_snapshot_has_none() {
     let json = serde_json::to_string(&built).expect("serialize");
     assert!(!json.contains("service_endpoints"));
 }
+
+// ── 容器 ──────────────────────────────────────────────
+
+#[test]
+fn container_resources_become_container_rows_with_k8s_hints() {
+    let resources = vec![
+        host_resource(),
+        resource(
+            "3f2c9f3c1b8e",
+            CONTAINER_KIND,
+            &[
+                ("container.id", "3f2c9f3c1b8e"),
+                ("container.name", "nginx"),
+                ("container.runtime", "containerd"),
+                ("container.runtime.namespace", "k8s.io"),
+                ("k8s.namespace.name", "prod"),
+                ("k8s.pod.uid", "pod-uid-1"),
+                ("k8s.pod.name", "nginx-abc"),
+                ("k8s.container.name", "nginx"),
+            ],
+        ),
+    ];
+
+    let built = envelope(&resources, &[]);
+    assert_eq!(built.payload.containers.len(), 1);
+    let container = &built.payload.containers[0];
+    assert_eq!(container.id, "3f2c9f3c1b8e");
+    assert_eq!(container.name.as_deref(), Some("nginx"));
+    assert_eq!(container.runtime.as_deref(), Some("containerd"));
+    assert_eq!(container.runtime_namespace.as_deref(), Some("k8s.io"));
+    assert_eq!(container.observed_at, OBSERVED_AT);
+    let k8s = container.k8s.as_ref().expect("k8s block");
+    assert_eq!(k8s.namespace.as_deref(), Some("prod"));
+    assert_eq!(k8s.pod_name.as_deref(), Some("nginx-abc"));
+}
+
+#[test]
+fn a_container_without_k8s_hints_has_no_k8s_block() {
+    // 空 `k8s: {}` 会被下游当成「这是 K8s 容器」，比不出现更糟。
+    let resources = vec![
+        host_resource(),
+        resource(
+            "7a1b2c3d4e5f",
+            CONTAINER_KIND,
+            &[
+                ("container.id", "7a1b2c3d4e5f"),
+                ("container.name", "redis"),
+                ("container.runtime", "docker"),
+            ],
+        ),
+    ];
+
+    let built = envelope(&resources, &[]);
+    assert_eq!(built.payload.containers.len(), 1);
+    assert!(built.payload.containers[0].k8s.is_none());
+    let json = serde_json::to_string(&built).expect("serialize");
+    assert!(!json.contains("\"k8s\""));
+}
+
+#[test]
+fn a_container_without_an_id_is_skipped_but_the_snapshot_survives() {
+    // 容器缺 id 连身份都没有，跳过它；但不能因此让整份快照失败。
+    let resources = vec![
+        host_resource(),
+        resource("nameless", CONTAINER_KIND, &[("container.name", "ghost")]),
+        resource(
+            "7a1b2c3d4e5f",
+            CONTAINER_KIND,
+            &[
+                ("container.id", "7a1b2c3d4e5f"),
+                ("container.name", "redis"),
+            ],
+        ),
+    ];
+
+    let built = envelope(&resources, &[]);
+    assert_eq!(built.payload.containers.len(), 1);
+    assert_eq!(built.payload.containers[0].name.as_deref(), Some("redis"));
+}
+
+#[test]
+fn containers_are_omitted_when_the_snapshot_has_none() {
+    let built = envelope(&[host_resource()], &[]);
+    assert!(built.payload.containers.is_empty());
+    let json = serde_json::to_string(&built).expect("serialize");
+    assert!(!json.contains("\"containers\""));
+}

@@ -95,7 +95,12 @@ export default function App() {
         setLoadedGroupsByHost({});
         setGroupPageLoadingByHost({});
         dispatch({ type: 'FETCH_GRAPH_SUCCESS', graph: res.data });
-        dispatch({ type: 'FETCH_HOST_TOPOLOGY_SUCCESS', hostTopology: null });
+        // 只在新图换了主机时清空资产卡：无条件清空会和下面的资产卡加载抢跑。
+        dispatch({
+          type: 'CLEAR_HOST_TOPOLOGY_UNLESS',
+          hostObjectId:
+            res.data.nodes.find((node) => node.objectKind === 'HostInventory')?.objectId ?? '',
+        });
       } else {
         dispatch({ type: 'FETCH_GRAPH_ERROR', error: res.message });
       }
@@ -477,6 +482,7 @@ export default function App() {
             generatedAt={state.hostTopology?.generatedAt ?? null}
             loading={state.loading}
             onOpenServices={toggleServiceList}
+            containerCount={state.hostTopology?.containers?.length ?? 0}
           />
 
           {serviceListOpen && (

@@ -39,6 +39,7 @@ struct MemoryPostgresState {
     host_net_assocs: std::collections::BTreeMap<String, Vec<String>>,
     host_runtime_states: std::collections::BTreeMap<String, Vec<String>>,
     process_runtime_states: std::collections::BTreeMap<String, Vec<String>>,
+    container_runtimes: std::collections::BTreeMap<String, Vec<String>>,
     service_instances: std::collections::BTreeMap<String, Vec<String>>,
     instance_endpoints: std::collections::BTreeMap<String, Vec<String>>,
     runtime_bindings: std::collections::BTreeMap<String, Vec<String>>,
@@ -131,6 +132,11 @@ impl PostgresExecutor for MemoryPostgresExecutor {
             value if value == sql::UPSERT_PROCESS_RUNTIME_STATE => {
                 state
                     .process_runtime_states
+                    .insert(params[0].clone(), params.to_vec());
+            }
+            value if value == sql::UPSERT_CONTAINER_RUNTIME => {
+                state
+                    .container_runtimes
                     .insert(params[0].clone(), params.to_vec());
             }
             value if value == sql::UPSERT_SERVICE_INSTANCE => {
@@ -243,6 +249,16 @@ impl PostgresExecutor for MemoryPostgresExecutor {
                 .filter(|row| row[2] == params[0])
                 .cloned()
                 .collect(),
+            value if value == sql::LIST_CONTAINER_RUNTIMES_FOR_HOST => {
+                // 内存替身自己做 WHERE host_id = ? AND stale_at IS NULL；
+                // 列序：0=container_id 3=host_id 11=stale_at。
+                state
+                    .container_runtimes
+                    .values()
+                    .filter(|row| row[3] == params[0] && row[11].is_empty())
+                    .cloned()
+                    .collect()
+            }
             value if value == sql::LIST_HOST_PROCESS_COUNTS => {
                 // 内存替身自己算 GROUP BY：只数 stale_at（第 12 列）为空的存活进程。
                 let mut counts: std::collections::BTreeMap<&str, i64> =

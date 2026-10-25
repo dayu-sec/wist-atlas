@@ -1,6 +1,6 @@
 use atlas_domain::{
-    BusinessCatalogCandidate, HostCandidate, HostTelemetryCandidate, IngestEnvelope,
-    NetworkSegmentCandidate, ProcessRuntimeCandidate, ProcessTelemetryCandidate,
+    BusinessCatalogCandidate, ContainerRuntimeCandidate, HostCandidate, HostTelemetryCandidate,
+    IngestEnvelope, NetworkSegmentCandidate, ProcessRuntimeCandidate, ProcessTelemetryCandidate,
     ResponsibilityAssignmentCandidate, ServiceEndpointCandidate, SubjectType,
 };
 use serde_json::Value;
@@ -207,6 +207,66 @@ pub fn extract_service_endpoint_candidates(
     Ok(ExtractedServiceEndpoints {
         candidates,
         reported,
+    })
+}
+
+/// 提取容器。
+///
+/// 只认 `containers[]` 数组：这是新开的契约字段，没有存量单对象输入要兼容。
+/// `reported` 区分「没这个字段」与「空数组」—— 前者不能触发清扫。
+pub fn extract_container_runtime_candidates(
+    envelope: &IngestEnvelope,
+) -> ApiResult<ExtractedContainerRuntimes> {
+    let payload = object_payload(envelope)?;
+    let mut candidates = Vec::new();
+
+    let rows = optional_array(payload, "containers")?;
+    let reported = rows.is_some();
+    if let Some(rows) = rows {
+        candidates.reserve(rows.len());
+        for row in rows {
+            let row = row.as_object().ok_or(invalid_field_type("containers[]"))?;
+            candidates.push(container_candidate_from_row(envelope, row)?);
+        }
+    }
+
+    Ok(ExtractedContainerRuntimes {
+        candidates,
+        reported,
+    })
+}
+
+fn container_candidate_from_row(
+    envelope: &IngestEnvelope,
+    row: &serde_json::Map<String, Value>,
+) -> ApiResult<ContainerRuntimeCandidate> {
+    // 容器 id 是身份的唯一依据：没有它就派生不出稳定资产 id。
+    let container_key = required_string_like(row, "id")?;
+    let k8s = row.get("k8s").and_then(Value::as_object);
+
+    Ok(ContainerRuntimeCandidate {
+        tenant_id: envelope.tenant_id,
+        environment_id: envelope.environment_id,
+        source_kind: envelope.source_kind,
+        host_name: optional_string(row, "host_name")?
+            .or_else(|| optional_string_lossy(row, "host_ref"))
+            .or_else(|| optional_string_lossy(row, "hostname")),
+        machine_id: optional_string(row, "machine_id")?,
+        container_key,
+        // 拿不到运行时就不猜：猜成 docker 会在卡片上写一个错的运行时。
+        runtime_type: optional_string(row, "runtime")?.unwrap_or_else(|| "unknown".to_string()),
+        runtime_namespace: optional_string(row, "runtime_namespace")?,
+        container_name: optional_string(row, "name")?,
+        image_ref: match optional_string(row, "image")? {
+            Some(image) => Some(image),
+            None => optional_string(row, "image_ref")?,
+        },
+        k8s_namespace: k8s.and_then(|k8s| optional_string_lossy(k8s, "namespace")),
+        k8s_pod_uid: k8s.and_then(|k8s| optional_string_lossy(k8s, "pod_uid")),
+        k8s_pod_name: k8s.and_then(|k8s| optional_string_lossy(k8s, "pod_name")),
+        k8s_container_name: k8s.and_then(|k8s| optional_string_lossy(k8s, "container_name")),
+        started_at: optional_timestamp(row, "started_at")?,
+        observed_at: optional_timestamp(row, "observed_at")?,
     })
 }
 

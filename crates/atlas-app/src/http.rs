@@ -54,6 +54,7 @@ struct HostTopologyHttpView {
     network_segments: Vec<atlas_domain::NetworkSegment>,
     network_assocs: Vec<atlas_domain::HostNetAssoc>,
     services: Vec<atlas_domain::HostServiceView>,
+    containers: Vec<atlas_domain::ContainerRuntime>,
     assignments: Vec<atlas_domain::ResponsibilityAssignment>,
     generated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -329,6 +330,7 @@ where
                     network_segments: view.network_segments,
                     network_assocs: view.network_assocs,
                     services: view.services,
+                    containers: view.containers,
                     assignments: view.assignments,
                     generated_at: view.generated_at,
                 },

@@ -175,6 +175,7 @@ where
 }
 
 mod business;
+mod container;
 mod endpoint;
 mod governance;
 mod host;
@@ -182,6 +183,10 @@ mod process;
 mod telemetry;
 
 pub(super) use business::{materialize_business_catalog, materialize_business_catalog_async};
+pub(super) use container::{
+    ContainerSweep, mark_stale_containers, mark_stale_containers_async, materialize_containers,
+    materialize_containers_async,
+};
 pub(super) use endpoint::{
     EndpointSweep, materialize_service_endpoints, materialize_service_endpoints_async,
 };

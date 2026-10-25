@@ -39,6 +39,7 @@ const IFACE_KIND: &str = "network_interface";
 const ADDR_KIND: &str = "ip_address";
 const PROCESS_KIND: &str = "process";
 const SERVICE_ENDPOINT_KIND: &str = "service_endpoint";
+const CONTAINER_KIND: &str = "container";
 
 /// agentd 没有真实机器标识时的 `host.id` 前缀。
 const HOSTNAME_PREFIX: &str = "hostname:";
@@ -156,6 +157,11 @@ pub struct Payload {
     /// 老适配器输出没有这个字段，所以空列表不序列化 —— 保持与 0.1.x 输出一致。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub service_endpoints: Vec<ServiceEndpoint>,
+    /// 容器事实。同样地：老适配器没有这个字段，空列表不序列化。
+    ///
+    /// 「字段不存在」与「空数组」在中心侧语义不同：前者说明没采，不能触发快照清扫。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub containers: Vec<Container>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -241,7 +247,44 @@ pub struct ServiceEndpoint {
     pub binding_confidence: Option<String>,
 }
 
-// ── 输入：agentd 的快照形状（容错） ─────────────────────────
+/// 一个观测到的容器。
+///
+/// 与进程一样只表达观测事实：`image` / `k8s` 都是采集侧的原文，中心侧据此建资产，
+/// 不在这里做「这算哪个业务服务」的推断。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Container {
+    /// 运行时自己的容器 id（`3f2c9f3c1b8e…`）。中心侧用它派生稳定资产 id。
+    pub id: String,
+    pub host_ref: String,
+    pub observed_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// `containerd` / `docker` / …，采集侧原值。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_namespace: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub k8s: Option<ContainerK8s>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContainerK8s {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pod_uid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pod_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_name: Option<String>,
+}
+
+// ── 输入：agentd 的快照形状（容错） ───────────────────────────────────
 
 /// `ReportDiscoverySnapshot`（`DSNAP:` 帧正文）。
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -342,6 +385,12 @@ pub fn build_envelope(
         machine_id.as_deref(),
         meta.generated_at,
     )?;
+    let containers = build_containers(
+        resources,
+        &host_name,
+        machine_id.as_deref(),
+        meta.generated_at,
+    );
 
     Ok(EdgeEnvelope {
         schema: EDGE_SCHEMA.to_string(),
@@ -363,6 +412,7 @@ pub fn build_envelope(
             interfaces,
             processes,
             service_endpoints,
+            containers,
         },
     })
 }
@@ -771,6 +821,69 @@ fn build_service_endpoints(
             .then_with(|| left.address.cmp(&right.address))
     });
     Ok(endpoints)
+}
+
+/// 把 `container` 资源投影成 payload 里的 `containers[]`。
+///
+/// 不返回 `Result`：容器缺字段最多是少一条资产，不值得让整份快照失败；
+/// 没 id 的容器连身份都没有，直接跳过。
+fn build_containers(
+    resources: &[SnapshotResource],
+    host_name: &str,
+    machine_id: Option<&str>,
+    generated_at: &str,
+) -> Vec<Container> {
+    let mut containers: Vec<Container> = Vec::new();
+
+    for resource in resources
+        .iter()
+        .filter(|resource| resource.kind == CONTAINER_KIND)
+    {
+        let Some(id) = attr(&resource.attributes, "container.id") else {
+            continue;
+        };
+        // 顺序与 payload 字段对齐（id 唯一，不需要额外的去重 key）。
+        if containers.iter().any(|item| item.id == id) {
+            continue;
+        }
+
+        let observed_at = if resource.discovered_at.trim().is_empty() {
+            generated_at.to_string()
+        } else {
+            resource.discovered_at.clone()
+        };
+
+        // K8s 线索只在真拿到时才输出：全空的 `k8s: {}` 会让下游以为这是 K8s 容器。
+        let k8s = ContainerK8s {
+            namespace: attr(&resource.attributes, "k8s.namespace.name"),
+            pod_uid: attr(&resource.attributes, "k8s.pod.uid"),
+            pod_name: attr(&resource.attributes, "k8s.pod.name"),
+            container_name: attr(&resource.attributes, "k8s.container.name"),
+        };
+        let has_k8s = k8s.namespace.is_some()
+            || k8s.pod_uid.is_some()
+            || k8s.pod_name.is_some()
+            || k8s.container_name.is_some();
+
+        containers.push(Container {
+            id,
+            host_ref: host_name.to_string(),
+            observed_at,
+            machine_id: machine_id.map(str::to_string),
+            name: attr(&resource.attributes, "container.name"),
+            runtime: attr(&resource.attributes, "container.runtime"),
+            runtime_namespace: attr(&resource.attributes, "container.runtime.namespace"),
+            image: attr(&resource.attributes, "container.image"),
+            k8s: has_k8s.then_some(k8s),
+        });
+    }
+
+    containers.sort_by(|left, right| {
+        left.name
+            .cmp(&right.name)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    containers
 }
 
 /// 这个地址值不值得进资产目录。

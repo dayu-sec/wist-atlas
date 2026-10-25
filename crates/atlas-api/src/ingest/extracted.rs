@@ -1,7 +1,7 @@
 use atlas_domain::{
-    BusinessCatalogCandidate, HostCandidate, HostTelemetryCandidate, NetworkSegmentCandidate,
-    ProcessRuntimeCandidate, ProcessTelemetryCandidate, ResponsibilityAssignmentCandidate,
-    ServiceEndpointCandidate, SubjectCandidate,
+    BusinessCatalogCandidate, ContainerRuntimeCandidate, HostCandidate, HostTelemetryCandidate,
+    NetworkSegmentCandidate, ProcessRuntimeCandidate, ProcessTelemetryCandidate,
+    ResponsibilityAssignmentCandidate, ServiceEndpointCandidate, SubjectCandidate,
 };
 use serde::{Deserialize, Serialize};
 
@@ -23,6 +23,14 @@ pub struct ExtractedNetworkSegments {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExtractedProcessRuntimes {
     pub candidates: Vec<ProcessRuntimeCandidate>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExtractedContainerRuntimes {
+    pub candidates: Vec<ContainerRuntimeCandidate>,
+    /// 输入里到底有没有 `containers` 字段 —— 语义与 `ExtractedServiceEndpoints::reported`
+    /// 一致：没这个字段说明采集端不支持容器，不能当作「这台机一个容器都没有」去清扫。
+    pub reported: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

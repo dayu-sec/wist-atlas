@@ -15,6 +15,8 @@ type Props = {
   loading: boolean;
   /** 点「服务」指标打开左栏的服务清单。 */
   onOpenServices?: () => void;
+  /** 这台主机的容器数。为 0 时不占位置。 */
+  containerCount?: number;
 };
 
 /**
@@ -33,6 +35,7 @@ export default function HostSummaryCard({
   generatedAt,
   loading,
   onOpenServices,
+  containerCount = 0,
 }: Props) {
   const os = [host?.osName, host?.osVersion].filter(Boolean).join(' ');
   const maxCount = topGroups.reduce((max, group) => Math.max(max, group.count), 0);
@@ -102,6 +105,13 @@ export default function HostSummaryCard({
           );
         })}
       </div>
+
+      {containerCount > 0 && (
+        <div className="mt-2 flex items-center justify-between text-[10.5px]">
+          <span className="text-[#98a2b3]">容器</span>
+          <span className="tnum text-[#475467]">{formatCount(containerCount)}</span>
+        </div>
+      )}
 
       <div className="mt-4">
         <div className="flex items-baseline justify-between">

@@ -5,6 +5,32 @@
 
 ## [未发布]
 
+### 新增（容器资产：采集 → 存储 → 视图）
+
+- **采集侧已就绪**：agentd 的 container discovery 早就把容器当 `kind="container"` 的资源上报
+  （`container.id` / `name` / `runtime` / `runtime.namespace` / `k8s.*`），但适配器一直没投影。
+  现在 `atlas-wist-adapter` 输出 `payload.containers[]`：空列表**不序列化** —— 「字段不存在」
+  与「空数组」在中心侧语义不同，前者说明没采，不能触发清扫。
+- **存储**：新表 `container_runtime`（migration `0005`）。与进程同一套 presence 语义：
+  `stale_at` 保留首次消失时间、`ingest_scope` 限定清扫作用域。`container_id` 由
+  「租户 + 运行时容器 id」派生稳定 UUID，容器重建会拿到新 id —— 旧容器是被替换掉的。
+  K8s 线索（`pod_uid` / `pod_name` / `k8s_namespace`）原样存下：pod 目录还没有，
+  丢了就再也拿不回来。
+- **物化与清扫**：`containers[]` → `container_runtime`；两条自我限制照抄进程 ——
+  只比同作用域的行、快照不完整（宿主解析不到 / 列表为空）就不清扫。
+  `PipelineRunSummary` 新增 `container_count` / `stale_container_count` /
+  `unresolved_container_count`。
+- **视图**：`GET /api/topology/host/{id}` 新增 `containers[]`；主机详情面板给出
+  「容器（N）」清单（名字 / 运行时 / 镜像 / K8s pod），左栏资产卡多一行「容器 N」。
+- **容器暂不上画布**：一台开发机常见的容器数是 0~2，为它单独开一层节点类型、
+  一套卡片和一条版式车道不划算；先在主机详情里列清楚。
+
+### 修复（资产卡与图请求抢跑）
+
+- 左栏资产卡原来在每次图加载成功时**无条件清空**，而「加载资产卡」是另一条并行请求：
+  小图 + 快接口下后回来的图请求会把已经加载好的资产卡抹掉（盘点时间显示 `—`、
+  服务/进程分组全空）。现在只在图**换了主机**时才清空。
+
 ### 新增（服务清单：`GET /api/services`）
 
 - 返回每个服务的**实例数**与**主机数**，按主机数（其次实例数）降序 —— 这个列表的
