@@ -100,6 +100,30 @@ cargo run -p atlas-app -- file fixtures/file-ingest/small-office.json
 
 目标态外部输入数据示例放在 [fixtures/external-input/target](./fixtures/external-input/target)，协议规范见 [doc/external-integration/external-input-spec.md](./doc/external-integration/external-input-spec.md)。
 
+### wist-agentd 发现快照接入
+
+边缘侧（`wist-agentd` 发、网关数据面的 `DSNAP:` 通道收）的发现快照，用 `atlas-wist-adapter`
+转成 `atlas.in.edge.v1`，再走上面的 `replay-jsonl` / `file` 入口：
+
+```bash
+# 从 agentd 的 state 目录（离线，不需要网关）
+cargo run -p atlas-wist-adapter -- \
+  --state-dir /var/lib/wist-agentd/state --agent-id mac-local-01 \
+  --tenant tenant-demo --env dev --out /tmp/edge.jsonl --jsonl
+
+# 从一帧 DSNAP: 的正文（网关 agent-discovery sink 落的那一行里的 body 字段）
+cargo run -p atlas-wist-adapter -- \
+  --report /tmp/dsnap-body.json --tenant tenant-demo --env dev \
+  --out /tmp/edge.jsonl --jsonl
+
+cargo run -p atlas-app -- replay-jsonl /tmp/edge.jsonl
+```
+
+映射规则（发现面 → 资源 kind → atlas 模型）见
+[doc/external-integration/warp-insight-adapter-spec.md](./doc/external-integration/warp-insight-adapter-spec.md)。
+映射的 golden fixture 在 [crates/atlas-wist-adapter/fixtures](./crates/atlas-wist-adapter/fixtures)，
+用 `cargo test -p atlas-wist-adapter` 守。
+
 ## PostgreSQL 开发环境
 
 repo 根下提供了最小 PostgreSQL 开发环境：

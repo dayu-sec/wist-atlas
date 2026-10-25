@@ -1,0 +1,20 @@
+[package]
+name = "atlas-wist-adapter"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Convert wist-agentd discovery snapshots into atlas.in.edge.v1 envelopes"
+
+[lib]
+name = "atlas_wist_adapter"
+path = "src/lib.rs"
+
+[[bin]]
+name = "atlas-wist-adapter"
+path = "src/main.rs"
+
+[dependencies]
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true

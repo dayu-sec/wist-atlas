@@ -410,3 +410,28 @@ adapter 不理解的 `attributes`、`runtime_facts`、`labels` 必须保留到 r
 - `process` 转 `ProcRtCand + SwEv`；在代码模型落地前，`ProcRtCand` 可降级为 process resource ev。
 - `container` 转 `CtrRtCand + RtBindEv`，有 K8s 线索时补 `PodCand`；在代码模型落地前，`CtrRtCand` 可降级为 container resource ev。
 - target 只作为 ev，不作为最终采集配置或服务对象。
+
+---
+
+## 13. 落地实现（截至 0.1.x）
+
+| 项 | 实际 |
+|---|---|
+| 代码 | `crates/atlas-wist-adapter`（lib + bin），可执行文件 `atlas-wist-adapter` |
+| 输入 | `--report`（一帧 `DSNAP:` 正文）或 `--state-dir`（agentd 的 `state/discovery/`） |
+| 输出 | `atlas.in.edge.v1`，`payload = { hosts[], interfaces[], processes[] }` |
+| 黄金样本 | `crates/atlas-wist-adapter/fixtures/macos-trimmed.{json,expected.json}` |
+| 门禁 | `cargo test -p atlas-wist-adapter` |
+
+两点与前面的规划**有意**不同，按实际实现：
+
+1. **不保留原文**：§12 说的「在 `payload.warp_insight` 里保留完整对象以支持回放」没有落地。
+   适配器做的是逐字段投影（`hosts / interfaces / processes`），因为那就是 `atlas-api` 的
+   `extract_host_candidates` / `extract_network_segment_candidates` / `extract_process_runtime_candidates`
+   实际读的形状。要回放，保留 `DSNAP:` 原帧就行（它是字节），不必在信封里再存一份。
+2. **输入解析不用 `wist-contracts` 类型**：那些类型带 `deny_unknown_fields`，新版 agentd
+   多一个字段就会把旧版适配器的**整帧**打回。适配器自行声明只读消费的子集，
+   未知字段忽略（由单元测试钉住这个行为）。
+
+尚未实现（仍在 §12 的范围内）：`container`，以及 `ProcRtCand` / `CtrRtCand` 这类结构化候选。
+当前进程只作为 `processes[]` 行给出，由 `atlas-api` 侧落地成 runtime 候选。

@@ -1,0 +1,207 @@
+{
+  "api_version": "v1",
+  "kind": "report_discovery_snapshot",
+  "report_id": "disc_mac-local-01_1",
+  "agent_id": "mac-local-01",
+  "instance_id": "mac-local-01",
+  "snapshot_id": "discovery:5:2026-10-25T07:56:36.488195Z",
+  "revision": 5,
+  "generated_at": "2026-10-25T07:56:36.488195Z",
+  "report_attempt": 1,
+  "report_mode": "full_snapshot",
+  "reported_at": "2026-10-25T07:56:38.736786Z",
+  "snapshot": {
+    "schema_version": "v1",
+    "snapshot_id": "discovery:5:2026-10-25T07:56:36.488195Z",
+    "revision": 5,
+    "generated_at": "2026-10-25T07:56:36.488195Z",
+    "origins": [
+      {
+        "origin_id": "local_runtime:host:2026-10-25T07:56:34.061342Z",
+        "probe": "host",
+        "source": "local_runtime",
+        "observed_at": "2026-10-25T07:56:34.061342Z"
+      }
+    ],
+    "resources": [
+      {
+        "resource_id": "machine-abc123",
+        "kind": "host",
+        "origin_idx": 0,
+        "attributes": {
+          "host.id": "machine-abc123",
+          "host.name": "mac-01"
+        },
+        "discovered_at": "2026-10-25T07:56:34.061342Z",
+        "last_seen_at": "2026-10-25T07:56:34.061342Z",
+        "health": "healthy",
+        "source": "host"
+      },
+      {
+        "resource_id": "machine-abc123:if:en0",
+        "kind": "network_interface",
+        "origin_idx": 1,
+        "attributes": {
+          "host.id": "machine-abc123",
+          "host.name": "mac-01",
+          "net.if.name": "en0",
+          "net.if.mac": "aa:bb:cc:dd:ee:ff",
+          "net.if.state": "up"
+        },
+        "discovered_at": "2026-10-25T07:56:34.061342Z",
+        "last_seen_at": "2026-10-25T07:56:34.061342Z",
+        "health": "healthy",
+        "source": "network"
+      },
+      {
+        "resource_id": "machine-abc123:if:en0:ip:c0a803b5",
+        "kind": "ip_address",
+        "origin_idx": 1,
+        "attributes": {
+          "host.id": "machine-abc123",
+          "host.name": "mac-01",
+          "net.if.addr": "192.168.3.181",
+          "net.if.cidr": "192.168.3.181/24",
+          "net.if.gateway": "192.168.3.1",
+          "net.if.name": "en0",
+          "net.if.prefix": "24",
+          "network.interface.ref": "machine-abc123:if:en0"
+        },
+        "discovered_at": "2026-10-25T07:56:34.061342Z",
+        "last_seen_at": "2026-10-25T07:56:34.061342Z",
+        "health": "healthy",
+        "source": "network"
+      },
+      {
+        "resource_id": "machine-abc123:if:lo0",
+        "kind": "network_interface",
+        "origin_idx": 1,
+        "attributes": {
+          "host.id": "machine-abc123",
+          "host.name": "mac-01",
+          "net.if.name": "lo0",
+          "net.if.state": "up"
+        },
+        "discovered_at": "2026-10-25T07:56:34.061342Z",
+        "last_seen_at": "2026-10-25T07:56:34.061342Z",
+        "health": "healthy",
+        "source": "network"
+      },
+      {
+        "resource_id": "machine-abc123:if:lo0:ip:7f000001",
+        "kind": "ip_address",
+        "origin_idx": 1,
+        "attributes": {
+          "host.id": "machine-abc123",
+          "host.name": "mac-01",
+          "net.if.addr": "127.0.0.1",
+          "net.if.cidr": "127.0.0.1/8",
+          "net.if.name": "lo0",
+          "net.if.prefix": "8",
+          "network.interface.ref": "machine-abc123:if:lo0"
+        },
+        "discovered_at": "2026-10-25T07:56:34.061342Z",
+        "last_seen_at": "2026-10-25T07:56:34.061342Z",
+        "health": "healthy",
+        "source": "network"
+      },
+      {
+        "resource_id": "machine-abc123:if:en1:ip:0a000005",
+        "kind": "ip_address",
+        "origin_idx": 1,
+        "attributes": {
+          "host.id": "machine-abc123",
+          "host.name": "mac-01",
+          "net.if.addr": "10.0.0.5",
+          "net.if.prefix": "8",
+          "net.if.name": "en1"
+        },
+        "discovered_at": "2026-10-25T07:56:34.061342Z",
+        "last_seen_at": "2026-10-25T07:56:34.061342Z",
+        "health": "healthy",
+        "source": "network"
+      },
+      {
+        "resource_id": "machine-abc123:pid:1:ps_lstart:aaa",
+        "kind": "process",
+        "origin_idx": 3,
+        "attributes": {
+          "process.executable.name": "/sbin/launchd",
+          "process.pid": "1"
+        },
+        "discovered_at": "2026-10-25T07:56:34.061342Z",
+        "last_seen_at": "2026-10-25T07:56:34.061342Z",
+        "health": "healthy",
+        "source": "process"
+      },
+      {
+        "resource_id": "machine-abc123:pid:210:ps_lstart:bbb",
+        "kind": "process",
+        "origin_idx": 3,
+        "attributes": {
+          "process.executable.name": "/usr/sbin/sshd",
+          "process.pid": "210"
+        },
+        "discovered_at": "2026-10-25T07:56:35.120000Z",
+        "last_seen_at": "2026-10-25T07:56:35.120000Z",
+        "health": "healthy",
+        "source": "process"
+      },
+      {
+        "resource_id": "machine-abc123:pid:300:ps_lstart:ccc",
+        "kind": "process",
+        "origin_idx": 3,
+        "attributes": {
+          "process.executable.name": "/usr/bin/nginx",
+          "process.pid": "300"
+        },
+        "discovered_at": "2026-10-25T07:56:35.120000Z",
+        "last_seen_at": "2026-10-25T07:56:35.120000Z",
+        "health": "healthy",
+        "source": "process"
+      }
+    ],
+    "targets": [
+      {
+        "target_id": "machine-abc123:host",
+        "kind": "host",
+        "origin_idx": 0,
+        "resource_ref": "machine-abc123",
+        "execution_hints": {
+          "host.name": "mac-01"
+        },
+        "state": "active"
+      },
+      {
+        "target_id": "machine-abc123:pid:1:ps_lstart:aaa:process",
+        "kind": "process",
+        "origin_idx": 3,
+        "resource_ref": "machine-abc123:pid:1:ps_lstart:aaa",
+        "execution_hints": {
+          "process.identity": "ps_lstart:aaa"
+        },
+        "state": "active"
+      },
+      {
+        "target_id": "machine-abc123:pid:210:ps_lstart:bbb:process",
+        "kind": "process",
+        "origin_idx": 3,
+        "resource_ref": "machine-abc123:pid:210:ps_lstart:bbb",
+        "execution_hints": {
+          "process.identity": "ps_lstart:bbb"
+        },
+        "state": "active"
+      },
+      {
+        "target_id": "machine-abc123:pid:300:ps_lstart:ccc:process",
+        "kind": "process",
+        "origin_idx": 3,
+        "resource_ref": "machine-abc123:pid:300:ps_lstart:ccc",
+        "execution_hints": {
+          "process.identity": "ps_lstart:ccc"
+        },
+        "state": "active"
+      }
+    ]
+  }
+}

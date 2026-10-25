@@ -3,6 +3,20 @@
 本文件记录 `wist-atlas` 的所有重要变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [未发布]
+
+### 变更（适配器移植到 Rust）
+
+- **发现快照适配器改用 Rust 实现**：新增 crate `atlas-wist-adapter` / 可执行文件
+  `atlas-wist-adapter`，替换 0.1.0 的 `scripts/wist-snapshot-to-atlas.py`。
+  - 命令行开关（`--state-dir` / `--report` / `--agent-id` / `--tenant` / `--env` / `--out` / `--jsonl`）
+    与 `atlas.in.edge.v1` 输出**逐字节一致**，切换不需要改调用方。
+  - 换成 Rust 的理由：映射规则能被 `cargo test` 守住、能进 CI，而一个脚本改错一个属性名
+    只会静默产出空资产。
+  - 输入解析**故意**不用 `wist-contracts` 的类型：那些类型带 `deny_unknown_fields`，
+    对新版 agentd 多出来的字段会把**整帧**打回 —— 对消费端那是反的。
+  - 裁剪过的 macOS fixture（1 host / 2 网卡 / 3 进程）作为 golden，改映射规则必须同步重新生成。
+
 ## [0.1.0-alpha] - 2026-10-25
 
 首个以 `wist-atlas` 之名发布的版本（前身 `dayu-topology`）。

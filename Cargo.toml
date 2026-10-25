@@ -5,6 +5,7 @@ members = [
   "crates/atlas-api",
   "crates/atlas-sync",
   "crates/atlas-app",
+  "crates/atlas-wist-adapter",
 ]
 resolver = "2"
 
