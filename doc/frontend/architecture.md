@@ -420,18 +420,15 @@ type TopologyApi = {
 
 ## 13. 部署约束
 
-当前只固定原则，不提前绑定实现细节：
+前端已独立到 `wist-atlas-web` 仓，与 API 同域部署：
 
-- 前端与 API 建议同域部署
-- 静态资源可由未来 HTTP 单体入口直接提供
-- 构建产物目录和 static 目录位置可在实现阶段再固定
+- `wist-atlas-web` 自行构建静态资源，并由镜像内的 nginx 托管
+- nginx 把 `/api` 反代到 `wist-atlas`，浏览器只看到一个入口
+- `wist-atlas` 只提供 HTTP API，不再托管前端静态资源
+- 开发态由 Vite 把 `/api` 代理到本地后端
+- 完整部署编排在 `wist-atlas-stack`
 
-当前不建议在架构文档里提前写死：
-
-- 必须放入 `atlas-api/static/`
-- 必须由某个特定 crate 单独 serve
-
-因为当前系统真正已落地的是单体装配方向，而不是独立 API server 形态。
+这样前端可以独立构建、独立发版，API 契约是两者之间唯一的耦合面。
 
 ---
 

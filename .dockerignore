@@ -1,0 +1,12 @@
+target
+.git
+.github
+doc
+fixtures
+scripts
+docker-compose.yml
+Dockerfile
+.dockerignore
+.vscode
+.idea
+.DS_Store

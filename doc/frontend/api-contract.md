@@ -528,18 +528,13 @@ read model / query service
 
 ## 11. 部署约束
 
-当前只固定部署原则：
+前端已独立到 `wist-atlas-web` 仓，部署约束固定为：
 
-- 前端和 API 建议同域
-- API 和静态文件由未来 HTTP 单体入口统一提供是推荐方案
-- 具体 static 目录位置可以在实现阶段再决定
+- 前端和 API 同域：`wist-atlas-web` 的 nginx 把 `/api` 反代到 `wist-atlas`
+- 前端静态资源由 `wist-atlas-web` 自己构建和托管，不在后端仓
+- 本文档定义的 API 契约是两者之间唯一的耦合面
 
-当前不在本文档中提前写死：
-
-- 静态文件必须位于 `atlas-api/static/`
-- 必须由某个特定 crate 承担 HTTP serve
-
-因为这些是实现装配决策，不是前后端契约本身。
+编排细节由 `wist-atlas-stack` 负责，不属于前后端契约。
 
 ---
 
