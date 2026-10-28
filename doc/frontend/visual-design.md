@@ -1,6 +1,6 @@
 # 拓扑可视化视觉改版
 
-> 状态：已落地到 `visualization/`，`localhost:5173` 可直接看。
+> 状态：已落地到独立前端仓 `wist-atlas-web/`，`localhost:5173` 可直接看。
 > 截图见本目录 [`visual/`](./visual/)。
 
 ## 1. 上一版为什么「难看」
@@ -109,7 +109,7 @@ bridge101          MacBook-Pro-2    1,120 进程 / 705 程序
 ## 7. 验证
 
 ```bash
-cd visualization
+cd ../wist-atlas-web
 npm run lint
 npm run build
 ```
