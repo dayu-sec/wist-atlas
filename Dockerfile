@@ -10,8 +10,9 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 RUN cargo build --release -p atlas-app -p atlas-wist-ingest
 
-# 运行时只需要 wget 做容器健康检查；用 busybox 避免 apt 依赖。
-FROM busybox:stable AS busybox
+# 运行时只需要 wget 做容器健康检查；用静态 musl busybox，避免 apt 依赖，
+# 也避免 glibc 版本不匹配（busybox:stable 需要 GLIBC_2.38，bookworm 只有 2.36）。
+FROM busybox:stable-musl AS busybox
 
 FROM debian:bookworm-slim
 

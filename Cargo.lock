@@ -30,7 +30,7 @@ dependencies = [
 
 [[package]]
 name = "atlas-api"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "atlas-domain",
  "atlas-storage",
@@ -43,7 +43,7 @@ dependencies = [
 
 [[package]]
 name = "atlas-app"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "atlas-api",
  "atlas-domain",
@@ -61,7 +61,7 @@ dependencies = [
 
 [[package]]
 name = "atlas-domain"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "chrono",
  "orion-error",
@@ -72,7 +72,7 @@ dependencies = [
 
 [[package]]
 name = "atlas-storage"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "atlas-domain",
  "chrono",
@@ -84,7 +84,7 @@ dependencies = [
 
 [[package]]
 name = "atlas-sync"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "atlas-api",
  "atlas-domain",
@@ -99,7 +99,7 @@ dependencies = [
 
 [[package]]
 name = "atlas-wist-adapter"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "chrono",
  "serde",
@@ -108,7 +108,7 @@ dependencies = [
 
 [[package]]
 name = "atlas-wist-ingest"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "atlas-api",
  "atlas-domain",

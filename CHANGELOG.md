@@ -3,6 +3,14 @@
 本文件记录 `wist-atlas` 的所有重要变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.3.1] - 2026-10-28
+
+### 修复
+
+- 后端镜像健康检查改用静态 musl busybox：`busybox:stable` 动态链接 `GLIBC_2.38`，
+  在 Debian bookworm（2.36）上执行即报 `GLIBC_2.38 not found`，容器被判为 unhealthy。
+- 应用本身无变更；`v0.3.0` 的 API 镜像可运行，但 stack 的 `service_healthy` 依赖会卡住，请升级到本版。
+
 ## [0.3.0] - 2026-10-28
 
 ### 变更（仓库拆分：前端独立、交付分层）
