@@ -3,6 +3,23 @@
 本文件记录 `wist-atlas` 的所有重要变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.3.0] - 2026-10-28
+
+### 变更（仓库拆分：前端独立、交付分层）
+
+- 前端从 `visualization/` 拆到独立仓 `wist-atlas-web`，含完整提交历史；本仓只保留后端与 API 契约。
+- 前端构建产物从 `build/` 改为 `dist/`，发布态由 `wist-atlas-web` 镜像内的 nginx 托管静态资源，
+  并把 `/api` 反代到 `wist-atlas`；后端不再承担静态托管。
+- 新增后端 `Dockerfile`（产出 `wist-atlas` 与 `atlas-wist-ingest`）与 CI / release 流水线；
+  release 推送多架构镜像到 GHCR。
+- 新增编排仓 `wist-atlas-stack`：compose 组合 `web` + `atlas` + `postgres`，变量走 gops。
+- `doc/frontend/{architecture,api-contract,visual-design}.md` 的部署说明改为独立前端仓 + 同域反代。
+
+### 配套
+
+- 前端：`wist-atlas-web v0.1.0`
+- 编排：`wist-atlas-stack v0.1.0`
+
 ## [未发布]
 
 ### 新增（服务焦点图显示容器）
