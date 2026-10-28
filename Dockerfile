@@ -17,7 +17,6 @@ FROM debian:bookworm-slim
 
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=busybox /bin/busybox /bin/busybox
-RUN /bin/busybox --install -s /bin
 
 COPY --from=builder /src/target/release/wist-atlas /usr/local/bin/wist-atlas
 COPY --from=builder /src/target/release/atlas-wist-ingest /usr/local/bin/atlas-wist-ingest
@@ -26,7 +25,7 @@ USER 10001:10001
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
-  CMD wget -q -O /dev/null http://127.0.0.1:8080/healthz || exit 1
+  CMD ["/bin/busybox", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
 
 ENTRYPOINT ["wist-atlas"]
 CMD ["postgres-live", "serve", "--listen", "0.0.0.0:8080"]
