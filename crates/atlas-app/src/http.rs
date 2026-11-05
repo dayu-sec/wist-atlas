@@ -723,7 +723,7 @@ where
 pub(crate) fn build_http_router(state: HttpAppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
-        // 数据面写入入口：与 evidence 同形的三字段（cust_id / cmd_id / content）。
+        // 数据面写入入口：`{cust_id, content}`（证据服务那边多一个 cmd_id，是它的幂等键）。
         // body 上限单独放宽（axum 默认 2 MB，放不下 0.9 MB 的快照加上多进程主机）。
         .route(
             "/internal/atlas",

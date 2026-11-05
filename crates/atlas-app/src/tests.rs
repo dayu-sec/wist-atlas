@@ -1110,11 +1110,10 @@ fn dsnap_sink_line(host_name: &str) -> String {
     .to_string()
 }
 
-/// 三字段信封：`{cust_id, cmd_id, content}`（与 `wist-evidence` 同形）。
+/// 两字段信封：`{cust_id, content}`。
 fn ingest_request(cust_id: &str, content: Value) -> Request<Body> {
     let body = serde_json::json!({
         "cust_id": cust_id,
-        "cmd_id": "cmd-discovery-1",
         "content": content,
     });
     Request::builder()
@@ -1205,9 +1204,9 @@ async fn http_ingest_rejects_a_non_uuid_cust_id() {
 }
 
 #[tokio::test]
-async fn http_ingest_rejects_a_body_that_is_not_the_three_fields() {
+async fn http_ingest_rejects_a_body_that_is_not_the_contract() {
     let router = build_http_router(HttpAppState::new(TopologyMonolith::new_in_memory()));
-    // 旧信封（sink 行直接当 body）不再是契约：缺 cust_id / cmd_id / content 就 400。
+    // 旧信封（sink 行直接当 body）不再是契约：缺 cust_id / content 就 400。
     let response = router
         .oneshot(
             Request::builder()
@@ -1225,17 +1224,16 @@ async fn http_ingest_rejects_a_body_that_is_not_the_three_fields() {
         payload["message"]
             .as_str()
             .unwrap()
-            .contains("cust_id, cmd_id, content"),
+            .contains("cust_id, content"),
         "{payload}"
     );
 }
 
 #[tokio::test]
-async fn http_ingest_rejects_an_empty_cmd_id() {
+async fn http_ingest_rejects_an_empty_cust_id() {
     let router = build_http_router(HttpAppState::new(TopologyMonolith::new_in_memory()));
     let body = serde_json::json!({
-        "cust_id": INGEST_TENANT,
-        "cmd_id": "   ",
+        "cust_id": "   ",
         "content": dsnap_content("build-01"),
     });
 
@@ -1251,7 +1249,13 @@ async fn http_ingest_rejects_an_empty_cmd_id() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(json_body(response).await["message"], "cmd_id must not be empty");
+    assert!(
+        json_body(response).await["message"]
+            .as_str()
+            .unwrap()
+            .contains("UUID"),
+        "空 cust_id 应该按「不是 UUID」报错"
+    );
 }
 
 #[tokio::test]

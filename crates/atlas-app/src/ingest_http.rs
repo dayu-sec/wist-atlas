@@ -1,4 +1,4 @@
-//! 数据面写入端点：**三字段**（`cust_id` / `cmd_id` / `content`），与 `wist-evidence` 同形。
+//! 数据面写入端点：**两字段**（`cust_id` / `content`）。
 //!
 //! 与 [`atlas_wist_ingest`]（增量读网关 sink 文件）是**同一份数据、同一个转换函数**，
 //! 区别只在传输：
@@ -10,14 +10,15 @@
 //! 两者可以并存：同一个 sink group 挂 `file_json_sink` + `http_sink`，HTTP 走热路径、
 //! 文件留作回放。这个端点不假设网关只走其一。
 //!
-//! ## 为什么是三字段
+//! ## 为什么只有两字段
 //!
-//! 数据面只需要说清三件事：谁的、哪次动作、产物是什么。`cust_id` 就是 atlas 的租户，
-//! `content` 是网关的 DSNAP 记录（对象或数组），其余维度由服务端决定 —— 与
-//! `wist-evidence` 的 `POST /internal/evidence` 同一个形状，数据面可以用同一套 OML 习惯。
+//! 写入只需要说清两件事：**谁的**（`cust_id` = atlas 租户）和 **看到什么**（`content` = DSNAP 记录）。
+//! 证据服务那边是三字段，多一个 `cmd_id`，因为证据是「一次命令的产物」，需要一个幂等键；
+//! atlas 是**状态快照**，幂等键在快照自己身上（`snap_id` → `ingest_id`）。
+//! 为了“形状一样”再加一个不参与判重的 id，只会让数据面临时编值。
 //!
-//! **一处刻意的差异**：atlas 的幂等由快照里的 `snap_id` 决定（`ingest_id` 含它），
-//! 所以回执不报 `duplicates`；`cmd_id` 是链路追踪 id，不参与判重。
+//! 代价是回执不报 `duplicates`：同一快照重复投递在库里就是同一次 upsert，
+//! 回执上区分不了，也不应该假装能区分。
 //!
 //! ## 回执语义
 //!
@@ -64,15 +65,17 @@ pub(crate) struct EdgeIngestQuery {
     env: Option<String>,
 }
 
-/// **三字段**写入请求，与 `wist-evidence` 同形。
+/// 写入请求：**两字段**（`cust_id` / `content`）。
+///
+/// 证据服务那边是三字段，多出来的 `cmd_id` 是因为它写的是「一次命令的产物」，需要一个幂等键。
+/// atlas 写的是一份**状态快照**：自己的幂等键在 `content` 里（`snap_id` → `ingest_id`），
+/// 再加一个不参与判重的 id 只会让数据面临时编值。所以这里不加。
 ///
 /// `deny_unknown_fields` 不要开：数据面可能带上别的信封字段，多一个键不该让一帧合法快照进 rescue。
 #[derive(Debug, Deserialize)]
 struct AtlasWrite {
     /// 客户 = atlas 租户（UUID）。**它同时是分区维度**，不接受外部租户别名。
     cust_id: String,
-    /// 链路追踪 id。atlas 的幂等由快照 `snap_id` 决定，这个值不参与判重。
-    cmd_id: String,
     /// 网关的 DSNAP 记录：单个对象，或 `batch_size > 1` 时的对象数组。
     content: Value,
 }
@@ -123,11 +126,12 @@ pub(crate) async fn ingest_atlas(
         Err(err) => {
             return ingest_error(
                 StatusCode::BAD_REQUEST,
-                format!("body must be {{cust_id, cmd_id, content}}: {err}"),
+                format!("body must be {{cust_id, content}}: {err}"),
             );
         }
     };
 
+    // 空串也走 UUID 校验那条路（报「不是 UUID」比报「不能为空」更能说明该填什么）。
     let tenant_ref = write.cust_id.trim().to_string();
     let tenant_id = match Uuid::parse_str(&tenant_ref) {
         Ok(id) => TenantId(id),
@@ -141,9 +145,7 @@ pub(crate) async fn ingest_atlas(
             );
         }
     };
-    if write.cmd_id.trim().is_empty() {
-        return ingest_error(StatusCode::BAD_REQUEST, "cmd_id must not be empty");
-    }
+
 
     // 数组是 `batch_size > 1` 的形态；单对象是默认形态。两种都收。
     let records = match write.content {

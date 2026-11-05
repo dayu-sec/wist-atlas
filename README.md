@@ -151,7 +151,7 @@ HTTP 通道现在也支持（见下一节），两者可以并存。
 
 ### HTTP 接收（数据面直接投递）
 
-`serve` 模式下另开了一个写入端点，**与 `wist-evidence` 同一个三字段形状**：
+`serve` 模式下另开了一个写入端点，**两字段**：
 
 ```text
 POST /internal/atlas[?env=<env>]
@@ -159,16 +159,18 @@ Content-Type: application/json
 
 {
   "cust_id": "<atlas 租户 UUID>",
-  "cmd_id": "cmd-20261105-001",
   "content": { ... }          // DSNAP 记录：单个对象，或 batch_size>1 时的对象数组
 }
 ```
 
 | 字段 | 必填 | 说明 |
 |---|---|---|
-| `cust_id` | ✅ | atlas 的租户 UUID（不是外部 tenant ref）。对象键 / 分区维度都用它 |
-| `cmd_id` | ✅ | 链路追踪 id，**不参与判重**（判重靠快照里的 `snap_id`） |
+| `cust_id` | ✅ | atlas 的租户 UUID（不是外部 tenant ref）。索引分区维度就用它 |
 | `content` | ✅ | 网关的 DSNAP 记录；与读文件路径是**同一个转换函数**（`convert_sink_line`） |
+
+> 为什么比证据服务少一个 `cmd_id`：证据写的是「一次命令的产物」，`cmd_id` 是它的幂等键；
+> atlas 写的是**状态快照**，幂等键在快照自己身上（`snap_id` → `ingest_id`）。
+> 为一个不参与判重的字段强制数据面编值，只会让契约变钝。
 
 - `content` 里的 `env` 不传就用 sink 行上的值；query 上的 `?env=` 优先级更高。
 - body 上限 16 MB（axum 默认只有 2 MB），单请求最多 64 条记录。

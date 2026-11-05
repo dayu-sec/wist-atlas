@@ -5,16 +5,19 @@
 
 ## [未发布]
 
-### 新增（HTTP 接收 DSNAP：数据面直接投递，三字段契约）
+### 新增（HTTP 接收 DSNAP：数据面直接投递，两字段契约）
 
-`serve` 模式新增 `POST /internal/atlas[?env=<env>]`，**与 `wist-evidence` 同一个三字段形状**：
+`serve` 模式新增 `POST /internal/atlas[?env=<env>]`：
 
 ```json
-{ "cust_id": "<租户 UUID>", "cmd_id": "cmd-...", "content": { /* DSNAP 记录或数组 */ } }
+{ "cust_id": "<租户 UUID>", "content": { /* DSNAP 记录或数组 */ } }
 ```
 
-wparse 的 `agent-discovery` sink 分组可以直接把 `DSNAP:` 记录 POST 过来，不再必须落文件；
-一套 OML / 连接器习惯可以同时接 evidence 与 atlas。
+wparse 的 `agent-discovery` sink 分组可以直接把 `DSNAP:` 记录 POST 过来，不再必须落文件。
+
+- **两字段而不是三字段**：证据服务的 `cmd_id` 是它自己的幂等键（写入是「一次命令的产物」）；
+  atlas 写的是状态快照，幂等键在快照里（`snap_id`），再加一个不参与判重的 id 只会让数据面编值。
+  多传的键（如旧的 `cmd_id`）会被忽略，不会让一帧合法快照进 rescue。
 
 - **与文件路径共用一份转换**：`content` 就是 sink 文件里那一行（单个对象或对象数组），
   经 `atlas_wist_ingest::convert_sink_line` 转 `atlas.in.edge.v1`，两条入口不会各写一份解析。
