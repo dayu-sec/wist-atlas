@@ -19,6 +19,7 @@ atlas-api = { path = "../atlas-api" }
 atlas-domain = { path = "../atlas-domain" }
 atlas-storage = { path = "../atlas-storage" }
 atlas-sync = { path = "../atlas-sync" }
+atlas-wist-ingest = { path = "../atlas-wist-ingest" }
 tokio.workspace = true
 uuid.workspace = true
 

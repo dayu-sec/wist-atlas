@@ -2,10 +2,10 @@ use atlas_api::TopologyQueryService;
 use atlas_storage::{AsyncCatalogStore, AsyncGovernanceStore, AsyncRuntimeStore, Page};
 use axum::{
     Json, Router,
-    extract::{Path as AxumPath, Query, State},
+    extract::{DefaultBodyLimit, Path as AxumPath, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
 };
 use serde::Serialize;
 use uuid::Uuid;
@@ -16,6 +16,7 @@ use crate::graph::{
     HostProcessTopologyGraph, build_host_process_topology_graph_async,
     build_network_topology_graph_async, build_service_topology_graph_async,
 };
+use crate::ingest_http::{MAX_INGEST_BODY_BYTES, ingest_atlas};
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct VisualizationEnvelope {
@@ -97,11 +98,23 @@ struct HostTopologyHostDto {
 #[derive(Clone)]
 pub(crate) struct HttpAppState {
     app: TopologyMonolith,
+    /// `Some` = 写探针已启用（由 serve 启动时开）——`/healthz` 多一个 `probe` 块。
+    probe: Option<crate::probe::SharedProbe>,
 }
 
 impl HttpAppState {
     pub(crate) fn new(app: TopologyMonolith) -> Self {
-        Self { app }
+        Self { app, probe: None }
+    }
+
+    /// 打开写探针状态位：`/healthz` 会把最近一次探针结果一并报出去。
+    pub(crate) fn with_probe(mut self, probe: crate::probe::SharedProbe) -> Self {
+        self.probe = Some(probe);
+        self
+    }
+
+    pub(crate) fn app(&self) -> &TopologyMonolith {
+        &self.app
     }
 }
 
@@ -189,8 +202,17 @@ struct ServiceSummaryHttpItem {
     host_count: usize,
 }
 
-async fn healthz() -> &'static str {
-    "ok"
+async fn healthz(State(state): State<HttpAppState>) -> Json<serde_json::Value> {
+    let mut body = serde_json::json!({ "status": "ok" });
+    // 开了写探针就把最近一次结果带出去：上游能区分「进程活着」与「真写得进去」。
+    // 字段形状与 `wist-evidence` 的 `probe` 块保持一致，星象台的接口可用性页只认这一份。
+    if let Some(probe) = state.probe.as_ref()
+        && let Ok(status) = probe.read()
+        && let Ok(value) = serde_json::to_value(&*status)
+    {
+        body["probe"] = value;
+    }
+    Json(body)
 }
 
 async fn get_host_process_topology(
@@ -664,6 +686,9 @@ where
         Ok(views) => {
             let hosts: Vec<HostSummaryHttpItem> = views
                 .into_iter()
+                // 写探针的主机不进展示：它不是资产，只是「写入能跑通」的证据。
+                // 与 evidence 把 `_probe` 从列表里藏起来是同一条纪律。
+                .filter(|view| view.host.host_name != crate::probe::PROBE_HOST)
                 .map(|view| HostSummaryHttpItem {
                     id: view.host.host_id,
                     host_name: view.host.host_name,
@@ -698,6 +723,12 @@ where
 pub(crate) fn build_http_router(state: HttpAppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
+        // 数据面写入入口：与 evidence 同形的三字段（cust_id / cmd_id / content）。
+        // body 上限单独放宽（axum 默认 2 MB，放不下 0.9 MB 的快照加上多进程主机）。
+        .route(
+            "/internal/atlas",
+            post(ingest_atlas).layer(DefaultBodyLimit::max(MAX_INGEST_BODY_BYTES)),
+        )
         .route("/api/hosts", get(get_hosts))
         .route("/api/services", get(get_services))
         .route("/api/topology/host/first", get(get_first_host_topology))

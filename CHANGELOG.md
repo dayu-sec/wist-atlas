@@ -3,32 +3,57 @@
 本文件记录 `wist-atlas` 的所有重要变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [0.3.1] - 2026-10-28
-
-### 修复
-
-- 后端镜像健康检查改用静态 musl busybox：`busybox:stable` 动态链接 `GLIBC_2.38`，
-  在 Debian bookworm（2.36）上执行即报 `GLIBC_2.38 not found`，容器被判为 unhealthy。
-- 应用本身无变更；`v0.3.0` 的 API 镜像可运行，但 stack 的 `service_healthy` 依赖会卡住，请升级到本版。
-
-## [0.3.0] - 2026-10-28
-
-### 变更（仓库拆分：前端独立、交付分层）
-
-- 前端从 `visualization/` 拆到独立仓 `wist-atlas-web`，含完整提交历史；本仓只保留后端与 API 契约。
-- 前端构建产物从 `build/` 改为 `dist/`，发布态由 `wist-atlas-web` 镜像内的 nginx 托管静态资源，
-  并把 `/api` 反代到 `wist-atlas`；后端不再承担静态托管。
-- 新增后端 `Dockerfile`（产出 `wist-atlas` 与 `atlas-wist-ingest`）与 CI / release 流水线；
-  release 推送多架构镜像到 GHCR。
-- 新增编排仓 `wist-atlas-stack`：compose 组合 `web` + `atlas` + `postgres`，变量走 gops。
-- `doc/frontend/{architecture,api-contract,visual-design}.md` 的部署说明改为独立前端仓 + 同域反代。
-
-### 配套
-
-- 前端：`wist-atlas-web v0.1.0`
-- 编排：`wist-atlas-stack v0.1.0`
-
 ## [未发布]
+
+### 新增（HTTP 接收 DSNAP：数据面直接投递，三字段契约）
+
+`serve` 模式新增 `POST /internal/atlas[?env=<env>]`，**与 `wist-evidence` 同一个三字段形状**：
+
+```json
+{ "cust_id": "<租户 UUID>", "cmd_id": "cmd-...", "content": { /* DSNAP 记录或数组 */ } }
+```
+
+wparse 的 `agent-discovery` sink 分组可以直接把 `DSNAP:` 记录 POST 过来，不再必须落文件；
+一套 OML / 连接器习惯可以同时接 evidence 与 atlas。
+
+- **与文件路径共用一份转换**：`content` 就是 sink 文件里那一行（单个对象或对象数组），
+  经 `atlas_wist_ingest::convert_sink_line` 转 `atlas.in.edge.v1`，两条入口不会各写一份解析。
+- **回执语义对齐数据面**：全部成功（含幂等重复）`200` + `{count, ingested, rejected, hosts, failures}`；
+  永久性失败 `400` 并带 `failures[]`；写库失败 `503` 让数据面重试；body 超限 `413`。
+- **刻意与 evidence 不同的一点**：不报 `duplicates` —— 幂等由快照 `snap_id` 决定，回执上区分不了。
+- **body 上限 16 MB**（axum 默认 2 MB 放不下一帧快照），单请求最多 64 条记录；空 `content` 按
+  「请求发错了」拒掉，不当成一次空快照。
+- **不要求 `Content-Type`**：数据面的 http 连接器默认不带它，用 415 拒掉合法快照是最难排查的一类故障。
+- 新增 `crates/atlas-app/src/ingest_http.rs`；`atlas-app` 依赖 `atlas-wist-ingest`（复用转换）。
+
+数据面侧配见 `wist-console-stack/examples/warp-parse/`（`atlas_uplink.toml` + `40-atlas_sink.toml`）。
+部署注意：端点尚未鉴权（与网关内部接入端点同一档降级），只绑环回或内网；
+`http` 连接器能发 HTTPS 但没有 TLS 参数，自签证书验不过。文件 sink 建议保留作回放。
+
+### 新增（可视化：深色 / 浅色双主题 + 聚焦模式 + 状态 / 示例遥测）
+
+设计记录与截图见 [`doc/frontend/visual-design.md`](doc/frontend/visual-design.md)。
+
+- **双主题**：新增 `useTheme` + 顶栏月亮/太阳切换。`index.css` 用一套语义令牌
+  （`--color-shell/canvas/surface/ink/...`）在 `[data-theme="dark"]` 下换值，组件不再写
+  `dark:` 变体；`index.html` 的同步脚本避免刷新闪白。默认跟随 `prefers-color-scheme`，
+  手动选择持久化到 `localStorage`。cytoscape 连线颜色随主题切换，不重建实例、不重排。
+- **聚焦模式**：`focusNodeId` 进 reducer（`FOCUS_NODE` / `CLEAR_FOCUS`）。卡片双击或抽屉
+  「在图中聚焦」进入；只亮焦点 + 一跳邻居，其余压暗；镜头收到「焦点 + 一跳邻居」并给右侧
+  抽屉留 336px；聚焦条、抽屉、`Esc` 都能退出。抽屉保持覆盖层，选中节点不再让整图跳一下。
+- **状态色**：新增 `resolveNodeStatus`：主机/运行时看盘点新鲜度，网段看关联关系，
+  进程看 state；顶栏汇总「全部正常 / N 注意 / N 异常」，图例、卡片、抽屉共用一份状态。
+  没有遥测就返回 `未采集`，不硬编健康。
+- **示例遥测**：新增 `buildTelemetry`（确定性示例值）+ 顶栏「示例数据」开关。
+  网段卡显示 ↓/↑，主机卡/左栏显示吞吐与 sparkline，运行时卡显示进程状态分布，
+  详情抽屉显示吞吐/状态/趋势。**开发环境默认开、生产默认关**；所有示例值带「示例」标识，
+  关闭后显示「遥测未接入」，不冒充真实数据。
+- **节点卡**：网段卡右侧加吞吐列，主机卡加吞吐行 + 迷你 sparkline（高度 176），运行时卡加
+  状态分布条 + 「聚焦中」角标；服务/容器/分组卡补状态点；`NODE_STYLES` 改 CSS 变量。
+- **修复**：sparkline 只设 viewBox 不设高度导致图表被拉满（详情抽屉里尤其明显）；深色下
+  cytoscape 连线颜色；聚焦时抽屉遮挡焦点卡片。
+- 新增 `hooks/useTheme.ts`、`utils/status.ts`、`utils/telemetry.ts`、`components/Sparkline.tsx`、
+  `StatusDot.tsx`、`FocusBar.tsx`；`npm run lint` / `tsc -b` / `vite build` 均通过。
 
 ### 新增（服务焦点图显示容器）
 
@@ -207,6 +232,31 @@
 - **限制**：macOS 的探针还没写（agentd 的 `discover_service_endpoints()` 在非 Linux
   平台直接返回空）。本机验证靠构造快照，见
   `doc/external-integration/warp-insight-adapter-spec.md` §7.4。
+
+## [0.3.1] - 2026-10-28
+
+### 修复
+
+- 后端镜像健康检查改用静态 musl busybox：`busybox:stable` 动态链接 `GLIBC_2.38`，
+  在 Debian bookworm（2.36）上执行即报 `GLIBC_2.38 not found`，容器被判为 unhealthy。
+- 应用本身无变更；`v0.3.0` 的 API 镜像可运行，但 stack 的 `service_healthy` 依赖会卡住，请升级到本版。
+
+## [0.3.0] - 2026-10-28
+
+### 变更（仓库拆分：前端独立、交付分层）
+
+- 前端从 `visualization/` 拆到独立仓 `wist-atlas-web`，含完整提交历史；本仓只保留后端与 API 契约。
+- 前端构建产物从 `build/` 改为 `dist/`，发布态由 `wist-atlas-web` 镜像内的 nginx 托管静态资源，
+  并把 `/api` 反代到 `wist-atlas`；后端不再承担静态托管。
+- 新增后端 `Dockerfile`（产出 `wist-atlas` 与 `atlas-wist-ingest`）与 CI / release 流水线；
+  release 推送多架构镜像到 GHCR。
+- 新增编排仓 `wist-atlas-stack`：compose 组合 `web` + `atlas` + `postgres`，变量走 gops。
+- `doc/frontend/{architecture,api-contract,visual-design}.md` 的部署说明改为独立前端仓 + 同域反代。
+
+### 配套
+
+- 前端：`wist-atlas-web v0.1.0`
+- 编排：`wist-atlas-stack v0.1.0`
 
 ## [0.2.0] - 2026-10-25
 

@@ -72,6 +72,10 @@ pub struct VisualizationExportSummary {
 mod http;
 use http::{HttpAppState, build_http_router};
 
+mod ingest_http;
+
+mod probe;
+
 mod graph;
 mod run;
 use run::{run_with_postgres_store, run_with_postgres_store_async, run_with_store};
@@ -278,7 +282,30 @@ impl TopologyMonolith {
                 .with_detail(format!("parse listen address {listen}: {err}"))
         })?;
 
-        let state = HttpAppState::new(self.clone());
+        // 写探针：默认关，`WIST_ATLAS_PROBE=on` 才开（与 evidence 的 `[probe].enabled` 同一条纪律）。
+        // 开启后每 `WIST_ATLAS_PROBE_INTERVAL_SECS`（默认 300）往保留租户写一份最小快照。
+        let probe = if std::env::var("WIST_ATLAS_PROBE").as_deref() == Ok("on") {
+            let interval_ms = std::env::var("WIST_ATLAS_PROBE_INTERVAL_SECS")
+                .ok()
+                .and_then(|raw| raw.trim().parse::<u64>().ok())
+                .unwrap_or(300);
+            // 0 会让探针变成死循环狂打自己的库。
+            let interval_secs = interval_ms.max(1);
+            let shared = probe::new_shared();
+            probe::spawn(
+                self.clone(),
+                shared.clone(),
+                std::time::Duration::from_secs(interval_secs),
+            );
+            Some(shared)
+        } else {
+            None
+        };
+
+        let mut state = HttpAppState::new(self.clone());
+        if let Some(probe) = probe {
+            state = state.with_probe(probe);
+        }
         let router = build_http_router(state);
 
         let listener = tokio::net::TcpListener::bind(addr).await.map_err(|err| {

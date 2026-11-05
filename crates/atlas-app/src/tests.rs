@@ -1044,3 +1044,355 @@ async fn http_router_returns_host_process_groups_page() {
     assert_eq!(payload["data"]["offset"], 0);
     assert_eq!(payload["data"]["hasMore"], false);
 }
+
+// ── HTTP 接收（DSNAP → atlas）────────────────────────────────
+
+const INGEST_TENANT: &str = "4d3c2b1a-0000-4000-8000-000000000001";
+
+/// 造一行**真形状**的 sink 记录：`body` 是 `ReportDiscoverySnapshot` 的 JSON 字符串，
+/// 外面再套 wparse 的 OML 信封。与网关 `agent-discovery.jsonl` 的一行同构。
+fn dsnap_sink_line(host_name: &str) -> String {
+    let observed_at = "2026-10-26T02:20:30Z";
+    let report = serde_json::json!({
+        "api_version": "v1",
+        "kind": "report_discovery_snapshot",
+        "report_id": format!("disc_{host_name}"),
+        "agent_id": format!("agent-{host_name}"),
+        "instance_id": format!("agent-{host_name}"),
+        "snapshot_id": format!("snap-{host_name}"),
+        "revision": 1,
+        "generated_at": observed_at,
+        "report_attempt": 1,
+        "report_mode": "full_snapshot",
+        "reported_at": observed_at,
+        "snapshot": {
+            "schema_version": "v1",
+            "snapshot_id": format!("snap-{host_name}"),
+            "revision": 1,
+            "generated_at": observed_at,
+            "origins": [],
+            "resources": [
+                {
+                    "resource_id": format!("machine-{host_name}"),
+                    "kind": "host",
+                    "origin_idx": 0,
+                    "attributes": {
+                        "host.id": format!("machine-{host_name}"),
+                        "host.name": host_name,
+                        "os.name": "Ubuntu",
+                        "os.type": "linux",
+                        "os.version": "6.8.0",
+                        "host.arch": "x86_64"
+                    },
+                    "discovered_at": observed_at,
+                    "last_seen_at": observed_at,
+                    "health": "healthy",
+                    "source": "host"
+                }
+            ],
+            "targets": []
+        }
+    });
+
+    serde_json::json!({
+        "schema": "v1",
+        "agent_id": format!("agent-{host_name}"),
+        "observed_at": observed_at,
+        "seq": 1,
+        "category": "agent.discovery",
+        "log_desc": "Agent 发现快照",
+        "body": report.to_string(),
+        "biz": "agent-discovery",
+        "env": "dev",
+        "sink": "json",
+        "wp_oml_name": "agent_discovery_snapshot"
+    })
+    .to_string()
+}
+
+/// 三字段信封：`{cust_id, cmd_id, content}`（与 `wist-evidence` 同形）。
+fn ingest_request(cust_id: &str, content: Value) -> Request<Body> {
+    let body = serde_json::json!({
+        "cust_id": cust_id,
+        "cmd_id": "cmd-discovery-1",
+        "content": content,
+    });
+    Request::builder()
+        .method("POST")
+        .uri("/internal/atlas")
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
+/// 把 sink 行字符串转回 JSON 对象（`content` 里放一个对象）。
+fn dsnap_content(host_name: &str) -> Value {
+    serde_json::from_str(&dsnap_sink_line(host_name)).unwrap()
+}
+
+async fn json_body(response: axum::response::Response) -> Value {
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    serde_json::from_slice(&bytes).unwrap()
+}
+
+#[tokio::test]
+async fn http_ingest_accepts_a_dsnap_content_and_writes_the_host() {
+    let router = build_http_router(HttpAppState::new(TopologyMonolith::new_in_memory()));
+
+    let response = router
+        .clone()
+        .oneshot(ingest_request(INGEST_TENANT, dsnap_content("build-01")))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload = json_body(response).await;
+    assert_eq!(payload["status"], "accepted");
+    assert_eq!(payload["count"], 1);
+    assert_eq!(payload["ingested"], 1);
+    assert_eq!(payload["rejected"], 0);
+    assert_eq!(payload["hosts"], 1);
+
+    // 走同一个 router 的读接口确认真的落库了（不是只回了个 200）。
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/api/hosts")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let payload = json_body(response).await;
+    let hosts = payload["data"]["hosts"].as_array().unwrap();
+    assert_eq!(hosts.len(), 1);
+    assert_eq!(hosts[0]["hostName"], "build-01");
+    assert_eq!(hosts[0]["osName"], "Ubuntu");
+}
+
+#[tokio::test]
+async fn http_ingest_accepts_an_array_in_content() {
+    let router = build_http_router(HttpAppState::new(TopologyMonolith::new_in_memory()));
+    let content = Value::Array(vec![dsnap_content("build-01"), dsnap_content("build-02")]);
+
+    let response = router
+        .oneshot(ingest_request(INGEST_TENANT, content))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload = json_body(response).await;
+    assert_eq!(payload["count"], 2);
+    assert_eq!(payload["ingested"], 2);
+    assert_eq!(payload["hosts"], 2);
+}
+
+#[tokio::test]
+async fn http_ingest_rejects_a_non_uuid_cust_id() {
+    let router = build_http_router(HttpAppState::new(TopologyMonolith::new_in_memory()));
+
+    let response = router
+        .oneshot(ingest_request("tenant-demo", dsnap_content("build-01")))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let payload = json_body(response).await;
+    assert_eq!(payload["status"], "error");
+    assert!(
+        payload["message"].as_str().unwrap().contains("UUID"),
+        "{payload}"
+    );
+}
+
+#[tokio::test]
+async fn http_ingest_rejects_a_body_that_is_not_the_three_fields() {
+    let router = build_http_router(HttpAppState::new(TopologyMonolith::new_in_memory()));
+    // 旧信封（sink 行直接当 body）不再是契约：缺 cust_id / cmd_id / content 就 400。
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/internal/atlas")
+                .header("content-type", "application/json")
+                .body(Body::from(dsnap_sink_line("build-01")))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let payload = json_body(response).await;
+    assert!(
+        payload["message"]
+            .as_str()
+            .unwrap()
+            .contains("cust_id, cmd_id, content"),
+        "{payload}"
+    );
+}
+
+#[tokio::test]
+async fn http_ingest_rejects_an_empty_cmd_id() {
+    let router = build_http_router(HttpAppState::new(TopologyMonolith::new_in_memory()));
+    let body = serde_json::json!({
+        "cust_id": INGEST_TENANT,
+        "cmd_id": "   ",
+        "content": dsnap_content("build-01"),
+    });
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/internal/atlas")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(json_body(response).await["message"], "cmd_id must not be empty");
+}
+
+#[tokio::test]
+async fn http_ingest_reports_a_record_without_body_as_permanent() {
+    let router = build_http_router(HttpAppState::new(TopologyMonolith::new_in_memory()));
+    // 少了 `body`：数据面这一帧永远修不好，回 400 让它进 rescue 而不是无限重试。
+    let record = serde_json::json!({
+        "schema": "v1",
+        "agent_id": "agent-x",
+        "env": "dev"
+    });
+
+    let response = router
+        .oneshot(ingest_request(INGEST_TENANT, record))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let payload = json_body(response).await;
+    assert_eq!(payload["status"], "rejected");
+    assert_eq!(payload["ingested"], 0);
+    assert_eq!(payload["rejected"], 1);
+    assert_eq!(payload["failures"][0]["kind"], "permanent");
+    assert_eq!(payload["failures"][0]["index"], 0);
+}
+
+#[tokio::test]
+async fn http_ingest_rejects_an_empty_content_array() {
+    let router = build_http_router(HttpAppState::new(TopologyMonolith::new_in_memory()));
+
+    let response = router
+        .oneshot(ingest_request(INGEST_TENANT, Value::Array(Vec::new())))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(
+        json_body(response).await["message"]
+            .as_str()
+            .unwrap()
+            .contains("empty content")
+    );
+}
+
+#[tokio::test]
+async fn http_ingest_is_idempotent_for_the_same_snapshot() {
+    let router = build_http_router(HttpAppState::new(TopologyMonolith::new_in_memory()));
+    let content = dsnap_content("build-01");
+
+    for _ in 0..2 {
+        let response = router
+            .clone()
+            .oneshot(ingest_request(INGEST_TENANT, content.clone()))
+            .await
+            .unwrap();
+        // 重复投递也是「已收到」：判重在库里（`ingest_id` 含 `snap_id`），不在回执上。
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/api/hosts")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let payload = json_body(response).await;
+    assert_eq!(payload["data"]["hosts"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn healthz_reports_the_write_probe_block_when_enabled() {
+    let probe = crate::probe::new_shared();
+    let router = build_http_router(
+        HttpAppState::new(TopologyMonolith::new_in_memory()).with_probe(probe),
+    );
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/healthz")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload = json_body(response).await;
+    assert_eq!(payload["status"], "ok");
+    // 还没跑过探针：`last_ok` 是 null，而不是假装成功。
+    assert!(payload["probe"].is_object(), "{payload}");
+    assert_eq!(payload["probe"]["last_ok"], Value::Null);
+}
+
+#[tokio::test]
+async fn healthz_has_no_probe_block_when_disabled() {
+    let router = build_http_router(HttpAppState::new(TopologyMonolith::new_in_memory()));
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/healthz")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let payload = json_body(response).await;
+    assert!(payload.get("probe").is_none(), "{payload}");
+}
+
+#[tokio::test]
+async fn host_list_hides_the_probe_host() {
+    let router = build_http_router(HttpAppState::new(TopologyMonolith::new_in_memory()));
+    let content = Value::Array(vec![
+        dsnap_content("build-01"),
+        dsnap_content(crate::probe::PROBE_HOST),
+    ]);
+    let response = router
+        .clone()
+        .oneshot(ingest_request(INGEST_TENANT, content))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/api/hosts")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let payload = json_body(response).await;
+    let names: Vec<&str> = payload["data"]["hosts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|host| host["hostName"].as_str().unwrap_or_default())
+        .collect();
+    // 探针主机是「写入能跑通」的证据，不是资产：不出现在列表里，但数据仍在库里。
+    assert_eq!(names, vec!["build-01"], "{payload}");
+}

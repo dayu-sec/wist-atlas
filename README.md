@@ -138,9 +138,8 @@ DATABASE_URL='postgres://atlas:atlas@127.0.0.1:55432/wist_atlas' \
     --store postgres
 ```
 
-为什么是「读文件」而不是「让网关 POST 过来」：网关的 `http_sink` 只有 `max_retries = 3`，
-之后这一帧就丢了；而 sink 文件是追加写的，**atlas 停机期间帧还在长**，恢复后自动补。
-同时不需要新端口、也不需要为写入口设计鉴权 —— 写 atlas 的只有 atlas 自己。
+为什么默认是「读文件」而不是「让网关 POST 过来」：文件由 wparse 追加写，**atlas 停机期间帧还在长**，恢复后自动补；也不需要为写入口设计鉴权（写 atlas 的只有 atlas 自己）。
+HTTP 通道现在也支持（见下一节），两者可以并存。
 
 几个必须知道的行为：
 
@@ -149,6 +148,53 @@ DATABASE_URL='postgres://atlas:atlas@127.0.0.1:55432/wist_atlas' \
 - 文件轮转 / 被截断 → 自动从 0 重读。重读是安全的：`ingest_id` 含 `snap_id`，重放幂等。
 - 坏行（非 JSON / 没有 `body` / 快照缺 host）跳过并推进；写库失败**不推进**，下一轮重试。
 - `--once` 只跑一轮，方便排查和 cron。
+
+### HTTP 接收（数据面直接投递）
+
+`serve` 模式下另开了一个写入端点，**与 `wist-evidence` 同一个三字段形状**：
+
+```text
+POST /internal/atlas[?env=<env>]
+Content-Type: application/json
+
+{
+  "cust_id": "<atlas 租户 UUID>",
+  "cmd_id": "cmd-20261105-001",
+  "content": { ... }          // DSNAP 记录：单个对象，或 batch_size>1 时的对象数组
+}
+```
+
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| `cust_id` | ✅ | atlas 的租户 UUID（不是外部 tenant ref）。对象键 / 分区维度都用它 |
+| `cmd_id` | ✅ | 链路追踪 id，**不参与判重**（判重靠快照里的 `snap_id`） |
+| `content` | ✅ | 网关的 DSNAP 记录；与读文件路径是**同一个转换函数**（`convert_sink_line`） |
+
+- `content` 里的 `env` 不传就用 sink 行上的值；query 上的 `?env=` 优先级更高。
+- body 上限 16 MB（axum 默认只有 2 MB），单请求最多 64 条记录。
+- 不要求 `Content-Type`：数据面的 http 连接器默认不带它，用 415 拒掉一帧合法快照是最难排查的故障。
+
+回执是给数据面看的 —— 非 2xx 会被重试、最终落 rescue（可见），2xx 意味着「已收到，不必再发」：
+
+| 结果 | 状态码 | 含义 |
+|---|---|---|
+| 全部成功（含幂等重复） | `200` | `{"count","ingested","rejected","hosts","failures"}` |
+| 有永久性失败 | `400` | 不是快照 / 没有 `body` / JSON 坏了；`failures[]` 带 `index` 与原因 |
+| 有暂时性失败 | `503` | 写库失败，让数据面下一轮重试 |
+| body 超限 | `413` | |
+
+> 与 evidence 的一处刻意不同：atlas **不报 `duplicates`**。它的幂等由快照 `snap_id` 决定
+> （`ingest_id` 含它），同一快照重复投递在库里是同一次 upsert，回执上区分不了也不该假装能区分。
+
+数据面侧配参见 [`wist-console-stack/examples/warp-parse/`](https://github.com/dayu-sec/wist-console-stack/tree/main/examples/warp-parse)
+（`atlas_uplink.toml` + `40-atlas_sink.toml`）：OML 输出必须落到这三个字段上。
+
+边界与取舍：
+
+- **端点还没有鉴权**（与网关内部接入端点同一档降级）：只绑环回或放在受信内网，别直接对外。
+- `http` 连接器**能发 HTTPS 但没有 TLS 参数**（无 CA / 客户端证书 / skip-verify），自签证书验不过。
+- 想要「不丢」就得同时留文件 sink：HTTP 走热路径，文件负责回放。只留 HTTP 时，接收端长时间
+  不可用会把 `max_retries` 耗尽、帧进 rescue，需要有人捞。
 
 ## PostgreSQL 开发环境
 
