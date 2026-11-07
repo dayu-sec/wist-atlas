@@ -78,6 +78,25 @@
       .schema > summary { cursor: pointer; padding: 8px 12px; font-family: ui-monospace, Menlo, monospace; }
       .empty { color: var(--muted); padding: 12px; }
       a { color: var(--accent); }
+      .auth {
+        margin-top: 10px;
+        padding: 10px 12px;
+        border: 1px solid var(--line);
+        border-left: 3px solid var(--accent);
+        border-radius: 8px;
+        background: var(--code);
+        font-size: 13px;
+      }
+      .auth code { background: transparent; padding: 0; }
+      .lock {
+        flex: none;
+        color: var(--muted);
+        font-size: 11px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 0 7px;
+        line-height: 17px;
+      }
     </style>
   </head>
   <body>
@@ -87,6 +106,7 @@
       <p class="muted" style="margin-top: 6px">
         机器可读：<a href="openapi.json"><code>openapi.json</code></a>
       </p>
+      <p class="auth" id="auth" hidden></p>
     </header>
     <main>
       <h2>接口</h2>
@@ -144,6 +164,13 @@
         summary.appendChild(el('span', `method ${method}`, method.toUpperCase()))
         summary.appendChild(el('span', 'path', path))
         if (op.summary) summary.appendChild(el('span', 'muted', op.summary))
+        // 鉴权在 spec 里是 document 级的（`security`），operation 上通常不重复。
+        const secured = (op.security ?? spec.security ?? []).length > 0
+        if (secured) {
+          const lock = el('span', 'lock', '需要令牌')
+          lock.title = 'Authorization: Bearer <token>'
+          summary.appendChild(lock)
+        }
         box.appendChild(summary)
 
         const body = el('div', 'op__body')
@@ -178,6 +205,25 @@
         void spec
         box.appendChild(body)
         return box
+      }
+
+      /** 鉴权说明：scheme 在 `components.securitySchemes`，生效范围在文档级 `security`。 */
+      function renderAuth(spec) {
+        const node = document.getElementById('auth')
+        const required = (spec.security ?? []).length > 0
+        const schemes = Object.entries(spec.components?.securitySchemes ?? {})
+        if (!required && schemes.length === 0) return
+
+        node.hidden = false
+        node.replaceChildren()
+        if (required && schemes.some(([, scheme]) => scheme.scheme === 'bearer')) {
+          node.appendChild(
+            el('div', '', '本页接口要鉴权：请求头带 Authorization: Bearer <token>（部署方提供的令牌）。'),
+          )
+        }
+        const list = el('div', 'muted', '不要求令牌：/healthz（探活）、/api/openapi.json 与 /api/docs（接口形状，不含数据）。')
+        list.style.marginTop = '4px'
+        node.appendChild(list)
       }
 
       function renderSchemas(spec) {
@@ -218,6 +264,9 @@
           `OpenAPI ${spec.openapi ?? '—'}`,
           `${Object.keys(spec.paths ?? {}).length} 个路径`,
         ].join(' · ')
+
+        // 鉴权写在这里：spec 的 `security` 是文档级的，不逐条重复在 operation 上。
+        renderAuth(spec)
 
         const host = document.getElementById('ops')
         const paths = Object.entries(spec.paths ?? {}).sort(([a], [b]) => a.localeCompare(b))
