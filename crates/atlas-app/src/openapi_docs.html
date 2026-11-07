@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>wist-atlas API</title>
+    <style>
+      /* 自包含：不引外部字体 / 脚本。计算区常常没有外网，这一页必须离线可用。 */
+      :root {
+        color-scheme: light dark;
+        --bg: #ffffff;
+        --fg: #1d2127;
+        --muted: #6b7280;
+        --line: #e6e8eb;
+        --code: #f4f5f7;
+        --get: #166534;
+        --post: #92400e;
+        --accent: #1d4ed8;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #14171c;
+          --fg: #e7e9ee;
+          --muted: #98a1b0;
+          --line: #2a2f37;
+          --code: #1c2026;
+          --get: #4ade80;
+          --post: #fbbf24;
+          --accent: #93b4ff;
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        padding: 28px 20px 64px;
+        background: var(--bg);
+        color: var(--fg);
+        font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", sans-serif;
+      }
+      main, header { max-width: 980px; margin: 0 auto; }
+      h1 { font-size: 22px; margin: 0 0 4px; }
+      h2 { font-size: 16px; margin: 32px 0 10px; }
+      p { margin: 0; }
+      .muted { color: var(--muted); }
+      .op {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        margin-bottom: 10px;
+        overflow: hidden;
+      }
+      .op > summary {
+        cursor: pointer;
+        padding: 10px 12px;
+        display: flex;
+        gap: 10px;
+        align-items: baseline;
+        list-style: none;
+      }
+      .op > summary::-webkit-details-marker { display: none; }
+      .method {
+        font: 600 11px/18px ui-monospace, SFMono-Regular, Menlo, monospace;
+        letter-spacing: .06em;
+        padding: 0 7px;
+        border-radius: 4px;
+        border: 1px solid currentColor;
+        color: var(--get);
+        flex: none;
+      }
+      .method.post { color: var(--post); }
+      .path { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; }
+      .op__body { padding: 4px 12px 12px; border-top: 1px solid var(--line); }
+      .op__body h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 14px 0 6px; }
+      table { border-collapse: collapse; width: 100%; font-size: 13px; }
+      th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+      th { color: var(--muted); font-weight: 600; white-space: nowrap; }
+      code { background: var(--code); padding: 1px 5px; border-radius: 4px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
+      .schema { border: 1px solid var(--line); border-radius: 8px; margin-bottom: 8px; }
+      .schema > summary { cursor: pointer; padding: 8px 12px; font-family: ui-monospace, Menlo, monospace; }
+      .empty { color: var(--muted); padding: 12px; }
+      a { color: var(--accent); }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1 id="title">wist-atlas API</h1>
+      <p class="muted" id="meta">加载 openapi.json…</p>
+      <p class="muted" style="margin-top: 6px">
+        机器可读：<a href="openapi.json"><code>openapi.json</code></a>
+      </p>
+    </header>
+    <main>
+      <h2>接口</h2>
+      <div id="ops"></div>
+      <h2>数据结构</h2>
+      <div id="schemas"></div>
+    </main>
+    <script>
+      const METHODS = ['get', 'post', 'put', 'patch', 'delete']
+
+      /** `#/components/schemas/X` → `X`；数组 / 组合类型返回可读描述。 */
+      function typeName(schema) {
+        if (!schema) return '—'
+        if (schema.$ref) return schema.$ref.split('/').pop()
+        if (schema.type === 'array') return `array<${typeName(schema.items)}>`
+        if (schema.anyOf) return schema.anyOf.map(typeName).join(' | ')
+        if (schema.oneOf) return schema.oneOf.map(typeName).join(' | ')
+        if (schema.enum) return `enum(${schema.enum.join(' | ')})`
+        if (schema.format) return `${schema.type}(${schema.format})`
+        return schema.type ?? 'object'
+      }
+
+      function el(tag, className, text) {
+        const node = document.createElement(tag)
+        if (className) node.className = className
+        if (text !== undefined) node.textContent = text
+        return node
+      }
+
+      function table(rows, headers) {
+        const t = el('table')
+        const head = el('tr')
+        headers.forEach((h) => head.appendChild(el('th', '', h)))
+        t.appendChild(head)
+        rows.forEach((cells) => {
+          const tr = el('tr')
+          cells.forEach((cell, index) => {
+            const td = el('td')
+            if (cell instanceof Node) td.appendChild(cell)
+            else td.textContent = cell
+            if (index === 0 && headers[0] === '字段') {
+              const code = el('code', '', String(cell))
+              td.replaceChildren(code)
+            }
+            tr.appendChild(td)
+          })
+          t.appendChild(tr)
+        })
+        return t
+      }
+
+      function renderOperation(path, method, op, spec) {
+        const box = el('details', 'op')
+        const summary = el('summary')
+        summary.appendChild(el('span', `method ${method}`, method.toUpperCase()))
+        summary.appendChild(el('span', 'path', path))
+        if (op.summary) summary.appendChild(el('span', 'muted', op.summary))
+        box.appendChild(summary)
+
+        const body = el('div', 'op__body')
+        if (op.description) body.appendChild(el('p', 'muted', op.description))
+
+        const params = [...(op.parameters ?? [])]
+        if (params.length > 0) {
+          body.appendChild(el('h3', '', '参数'))
+          body.appendChild(
+            table(
+              params.map((p) => [p.name, p.in, typeName(p.schema), p.required ? '是' : '否', p.description ?? '']),
+              ['名称', '位置', '类型', '必填', '说明'],
+            ),
+          )
+        }
+
+        const responses = Object.entries(op.responses ?? {})
+        if (responses.length > 0) {
+          body.appendChild(el('h3', '', '响应'))
+          body.appendChild(
+            table(
+              responses.map(([status, res]) => {
+                const schema = res.content?.['application/json']?.schema
+                return [status, res.description ?? '', typeName(schema)]
+              }),
+              ['状态', '说明', '结构'],
+            ),
+          )
+        }
+
+        // 接口用的结构在下面「数据结构」里展开，这里只给名字，避免一屏塞满。
+        void spec
+        box.appendChild(body)
+        return box
+      }
+
+      function renderSchemas(spec) {
+        const host = document.getElementById('schemas')
+        const schemas = spec.components?.schemas ?? {}
+        const names = Object.keys(schemas).sort()
+        if (names.length === 0) host.appendChild(el('p', 'empty', '没有可展示的结构'))
+        names.forEach((name) => {
+          const schema = schemas[name]
+          const box = el('details', 'schema')
+          box.appendChild(el('summary', '', name))
+          const props = Object.entries(schema.properties ?? {})
+          if (props.length === 0) {
+            box.appendChild(el('p', 'empty', '没有字段（自由形状）'))
+          } else {
+            const required = new Set(schema.required ?? [])
+            box.appendChild(
+              table(
+                props.map(([field, prop]) => [
+                  field,
+                  typeName(prop),
+                  required.has(field) ? '是' : '否',
+                  prop.description ?? '',
+                ]),
+                ['字段', '类型', '必填', '说明'],
+              ),
+            )
+          }
+          host.appendChild(box)
+        })
+      }
+
+      async function main() {
+        const spec = await fetch('openapi.json').then((r) => r.json())
+        document.getElementById('title').textContent = spec.info?.title ?? 'API'
+        document.getElementById('meta').textContent = [
+          `版本 ${spec.info?.version ?? '—'}`,
+          `OpenAPI ${spec.openapi ?? '—'}`,
+          `${Object.keys(spec.paths ?? {}).length} 个路径`,
+        ].join(' · ')
+
+        const host = document.getElementById('ops')
+        const paths = Object.entries(spec.paths ?? {}).sort(([a], [b]) => a.localeCompare(b))
+        if (paths.length === 0) host.appendChild(el('p', 'empty', 'spec 里没有路径'))
+        paths.forEach(([path, item]) => {
+          METHODS.filter((m) => item[m]).forEach((method) => {
+            host.appendChild(renderOperation(path, method, item[method], spec))
+          })
+        })
+        renderSchemas(spec)
+      }
+
+      main().catch((err) => {
+        document.getElementById('meta').textContent = `加载失败：${err}`
+      })
+    </script>
+  </body>
+</html>

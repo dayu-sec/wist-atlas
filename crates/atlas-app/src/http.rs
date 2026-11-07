@@ -17,6 +17,10 @@ use crate::graph::{
     build_network_topology_graph_async, build_service_topology_graph_async,
 };
 use crate::ingest_http::{MAX_INGEST_BODY_BYTES, ingest_atlas};
+use utoipa::OpenApi as _;
+use utoipa::ToSchema;
+use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::routes;
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct VisualizationEnvelope {
@@ -24,16 +28,18 @@ pub(crate) struct VisualizationEnvelope {
     pub(crate) data: HostProcessTopologyGraph,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 struct HostTopologyHttpEnvelope {
+    #[schema(value_type = String)]
     status: &'static str,
     data: HostTopologyHttpView,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 struct HostProcessOverviewHttpEnvelope {
+    #[schema(value_type = String)]
     status: &'static str,
     data: HostProcessOverviewHttpView,
 }
@@ -45,27 +51,38 @@ struct HostProcessGroupsPageHttpEnvelope {
     data: HostProcessGroupsPageHttpView,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 struct HostTopologyHttpView {
     host: HostTopologyHostDto,
+    // 域类型直接引用：给它们加 `ToSchema` 会把 schema 关注点漏到 domain 层，
+    // P0 先以 `Object` 占位（字段名仍由 serde 决定），后续再逐个展开。
+    #[schema(value_type = Option<Object>)]
     latest_runtime: Option<atlas_domain::HostRuntimeState>,
+    #[schema(value_type = Vec<Object>)]
     process_groups: Vec<atlas_domain::HostProcessGroupView>,
+    #[schema(value_type = Vec<Object>)]
     processes: Vec<atlas_domain::ProcessRuntimeState>,
+    #[schema(value_type = Vec<Object>)]
     network_segments: Vec<atlas_domain::NetworkSegment>,
+    #[schema(value_type = Vec<Object>)]
     network_assocs: Vec<atlas_domain::HostNetAssoc>,
+    #[schema(value_type = Vec<Object>)]
     services: Vec<atlas_domain::HostServiceView>,
+    #[schema(value_type = Vec<Object>)]
     containers: Vec<atlas_domain::ContainerRuntime>,
+    #[schema(value_type = Vec<Object>)]
     assignments: Vec<atlas_domain::ResponsibilityAssignment>,
     generated_at: chrono::DateTime<chrono::Utc>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 struct HostProcessOverviewHttpView {
     host: HostTopologyHostDto,
     total_processes: usize,
     total_groups: usize,
+    #[schema(value_type = Vec<Object>)]
     top_groups: Vec<atlas_domain::HostProcessGroupView>,
     truncated_group_count: usize,
     generated_at: chrono::DateTime<chrono::Utc>,
@@ -84,7 +101,7 @@ struct HostProcessGroupsPageHttpView {
     generated_at: chrono::DateTime<chrono::Utc>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 struct HostTopologyHostDto {
     id: Uuid,
@@ -118,12 +135,12 @@ impl HttpAppState {
     }
 }
 
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize, utoipa::IntoParams)]
 struct HostProcessOverviewQuery {
     top_n: Option<usize>,
 }
 
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize, utoipa::IntoParams)]
 struct HostListQuery {
     /// 默认不开：退役主机保留行是为了历史，不该出现在「现在有哪几台机」。
     include_stale: Option<bool>,
@@ -131,14 +148,15 @@ struct HostListQuery {
     offset: Option<u32>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 struct HostListHttpEnvelope {
+    #[schema(value_type = String)]
     status: &'static str,
     data: HostListHttpView,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 struct HostListHttpView {
     hosts: Vec<HostSummaryHttpItem>,
@@ -146,7 +164,7 @@ struct HostListHttpView {
     offset: u32,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 struct HostSummaryHttpItem {
     id: Uuid,
@@ -251,6 +269,19 @@ async fn get_first_host_process_topology(State(state): State<HttpAppState>) -> R
     }
 }
 
+/// 主机焦点视图：一台机器的运行时状态 / 进程 / 网段 / 服务 / 容器 / 责任归属。
+#[utoipa::path(
+    get,
+    path = "/api/topology/host/{id}",
+    tag = "topology",
+    summary = "主机焦点视图",
+    params(("id" = String, Path, description = "主机 UUID")),
+    responses(
+        (status = 200, description = "主机焦点视图", body = HostTopologyHttpEnvelope),
+        (status = 400, description = "id 不是合法 UUID"),
+        (status = 404, description = "主机不存在或已物化失败"),
+    )
+)]
 async fn get_host_topology(
     State(state): State<HttpAppState>,
     AxumPath(host_id): AxumPath<String>,
@@ -279,6 +310,21 @@ async fn get_first_host_topology(State(state): State<HttpAppState>) -> Response 
     }
 }
 
+/// 进程概览：只给前 top_n 个进程组与总数，给画布首屏用。
+#[utoipa::path(
+    get,
+    path = "/api/topology/host/{id}/process-overview",
+    tag = "topology",
+    summary = "主机进程概览（截断）",
+    params(
+        ("id" = String, Path, description = "主机 UUID"),
+        HostProcessOverviewQuery,
+    ),
+    responses(
+        (status = 200, description = "进程概览", body = HostProcessOverviewHttpEnvelope),
+        (status = 400, description = "id 不是合法 UUID"),
+    )
+)]
 async fn get_host_process_overview(
     State(state): State<HttpAppState>,
     AxumPath(host_id): AxumPath<String>,
@@ -653,6 +699,17 @@ fn json_error(status: StatusCode, message: String) -> Response {
         .into_response()
 }
 
+/// 主机列表（分页）：「现在有哪几台机」，写探针主机已剔除。
+#[utoipa::path(
+    get,
+    path = "/api/hosts",
+    tag = "topology",
+    summary = "主机列表（分页）",
+    params(HostListQuery),
+    responses(
+        (status = 200, description = "主机列表", body = HostListHttpEnvelope),
+    )
+)]
 async fn get_hosts(
     State(state): State<HttpAppState>,
     Query(query): Query<HostListQuery>,
@@ -721,7 +778,14 @@ where
 }
 
 pub(crate) fn build_http_router(state: HttpAppState) -> Router {
-    Router::new()
+    // 有 `#[utoipa::path]` 标注的接口走 `routes!`：路径只有一份源（标注里那份），
+    // 不会出现「文档写了 /api/hosts、Router 里是 /api/host」这种漂移。
+    let (router, _documented) = OpenApiRouter::new()
+        // 一个 `.routes()` 只对应**一条路径**（utoipa-axum 把同一路径上的多个方法
+        // 合成一个 MethodRouter）；不同路径要分开写。
+        .routes(routes!(get_hosts))
+        .routes(routes!(get_host_topology))
+        .routes(routes!(get_host_process_overview))
         .route("/healthz", get(healthz))
         // 数据面写入入口：`{cust_id, content}`（证据服务那边多一个 cmd_id，是它的幂等键）。
         // body 上限单独放宽（axum 默认 2 MB，放不下 0.9 MB 的快照加上多进程主机）。
@@ -729,14 +793,8 @@ pub(crate) fn build_http_router(state: HttpAppState) -> Router {
             "/internal/atlas",
             post(ingest_atlas).layer(DefaultBodyLimit::max(MAX_INGEST_BODY_BYTES)),
         )
-        .route("/api/hosts", get(get_hosts))
         .route("/api/services", get(get_services))
         .route("/api/topology/host/first", get(get_first_host_topology))
-        .route("/api/topology/host/{id}", get(get_host_topology))
-        .route(
-            "/api/topology/host/{id}/process-overview",
-            get(get_host_process_overview),
-        )
         .route(
             "/api/topology/host/{id}/process-groups",
             get(get_host_process_groups_page),
@@ -751,5 +809,105 @@ pub(crate) fn build_http_router(state: HttpAppState) -> Router {
         )
         .route("/api/topology/network/{id}", get(get_network_topology))
         .route("/api/topology/service/{id}", get(get_service_topology))
+        .split_for_parts();
+
+    let openapi = openapi_spec();
+
+    router
+        // 机器可读的那份：前端 / 网关 / 测试都直接拿它，不要去 grep 文档。
+        .route(
+            "/api/openapi.json",
+            get(move || {
+                let openapi = openapi.clone();
+                async move { Json(openapi) }
+            }),
+        )
+        // 人看的那份：自包含 HTML（不引 CDN，计算区可能没有外网）。
+        .route("/api/docs", get(openapi_docs))
         .with_state(state)
+}
+
+/// `GET /api/docs` —— 一个不依赖外网的 spec 阅读页。
+///
+/// 为什么不引 Scalar / Swagger UI：它们从 CDN 拉脚本，计算区常常没有外网；
+/// 这一页只需要 spec 本身，先把「接口清单可读」这件事做好。
+async fn openapi_docs() -> impl IntoResponse {
+    (
+        [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
+        DOCS_HTML,
+    )
+}
+
+const DOCS_HTML: &str = include_str!("openapi_docs.html");
+
+/// 完整 spec：路径与描述各管一半。
+///
+/// - 路径来自 `routes!`：handler 上有 `#[utoipa::path]` 就会自动进来，忘不了；
+/// - info / tags / 复用 schema 来自 `ApiDoc`。
+fn openapi_spec() -> utoipa::openapi::OpenApi {
+    let (_, documented) = OpenApiRouter::new()
+        .routes(routes!(get_hosts))
+        .routes(routes!(get_host_topology))
+        .routes(routes!(get_host_process_overview))
+        .split_for_parts();
+    let mut openapi = ApiDoc::openapi();
+    openapi.paths.paths.extend(documented.paths.paths);
+    openapi
+}
+
+#[derive(utoipa::OpenApi)]
+#[openapi(
+    info(
+        title = "wist-atlas 只读 API",
+        version = env!("CARGO_PKG_VERSION"),
+        description = "资产与运行拓扑的只读接口（写入口 `/internal/atlas` 不在本文档里）。\n\n这份 spec 由 handler 标注与 DTO 的 `ToSchema` 在**编译期**生成：字段名跟 serde 走，接口路径跟 Router 走。"
+    ),
+    tags(
+        (name = "topology", description = "资产与运行拓扑（只读）")
+    ),
+    paths(get_hosts, get_host_topology, get_host_process_overview),
+    components(schemas(
+        HostListHttpEnvelope,
+        HostListHttpView,
+        HostSummaryHttpItem,
+        HostTopologyHttpEnvelope,
+        HostTopologyHttpView,
+        HostTopologyHostDto,
+        HostProcessOverviewHttpEnvelope,
+        HostProcessOverviewHttpView,
+    ))
+)]
+struct ApiDoc;
+
+#[cfg(test)]
+mod openapi_tests {
+    use super::*;
+
+    /// 钉住「标注了 = 文档里有」：路径由 `routes!` 收集，不是手抄的字符串，
+    /// 所以新增一个带 `#[utoipa::path]` 的 handler 忘了加进 `routes!` 时这里会红。
+    #[test]
+    fn spec_documents_the_annotated_routes() {
+        let spec = openapi_spec();
+        for path in [
+            "/api/hosts",
+            "/api/topology/host/{id}",
+            "/api/topology/host/{id}/process-overview",
+        ] {
+            assert!(spec.paths.paths.contains_key(path), "spec 里没有 {path}");
+        }
+        assert_eq!(spec.info.title, "wist-atlas 只读 API");
+        // 字段名跟 serde 走（`camelCase`），不是手写的 `snake_case`。
+        let host_summary =
+            &spec.components.as_ref().expect("components").schemas["HostSummaryHttpItem"];
+        let json = serde_json::to_value(host_summary).expect("schema to json");
+        let props = json["properties"].as_object().expect("properties");
+        assert!(props.contains_key("hostName"), "{props:?}");
+        assert!(props.contains_key("lastInventoryAt"), "{props:?}");
+    }
+
+    /// 写入口是内部接口，不应该被当成对外文档暴露。
+    #[test]
+    fn write_endpoint_is_not_documented() {
+        assert!(!openapi_spec().paths.paths.contains_key("/internal/atlas"));
+    }
 }

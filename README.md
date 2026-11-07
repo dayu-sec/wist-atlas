@@ -189,7 +189,7 @@ Content-Type: application/json
 > （`ingest_id` 含它），同一快照重复投递在库里是同一次 upsert，回执上区分不了也不该假装能区分。
 
 数据面侧配参见 [`wist-console-stack/examples/warp-parse/`](https://github.com/dayu-sec/wist-console-stack/tree/main/examples/warp-parse)
-（`atlas_uplink.toml` + `40-atlas_sink.toml`）：OML 输出必须落到这三个字段上。
+（`atlas_uplink.toml`，复用现成的 `http_sink`，不新增 connector）：OML 输出必须落到这三个字段上。
 
 边界与取舍：
 
@@ -197,6 +197,39 @@ Content-Type: application/json
 - `http` 连接器**能发 HTTPS 但没有 TLS 参数**（无 CA / 客户端证书 / skip-verify），自签证书验不过。
 - 想要「不丢」就得同时留文件 sink：HTTP 走热路径，文件负责回放。只留 HTTP 时，接收端长时间
   不可用会把 `max_retries` 耗尽、帧进 rescue，需要有人捞。
+
+## 只读接口与 API 文档
+
+`serve` 模式下对外只有读接口（写入口 `POST /internal/atlas` 见上一节，**不进** spec）：
+
+```text
+GET /api/hosts                                主机列表（分页，剔除写探针主机）
+GET /api/services                             服务列表（规模指标）
+GET /api/topology/host/first                  第一台主机的焦点视图
+GET /api/topology/host/{id}                   主机焦点视图
+GET /api/topology/host/{id}/process-overview  进程概览（截断）
+GET /api/topology/host/{id}/process-groups    进程组分页
+GET /api/topology/host/first/processes        第一台主机的进程拓扑图
+GET /api/topology/host/{id}/processes         主机进程拓扑图
+GET /api/topology/network/{id}                网段视图
+GET /api/topology/service/{id}                服务视图
+```
+
+文档**从代码生成**，不另维护一份手写 spec：
+
+| 端点 | 用途 |
+|---|---|
+| `GET /api/openapi.json` | OpenAPI 3.1 spec（机器可读；前端 / 网关 / 测试都拿它） |
+| `GET /api/docs` | 自包含 HTML 阅读页（不引 CDN，计算区可离线用） |
+
+生成口径：路径来自 `utoipa-axum` 的 `routes!`（handler 上有 `#[utoipa::path]` 就会自动收录，
+所以 Router 与文档共用一份路径），字段名来自 serde（`rename_all = "camelCase"` 直接反映到
+schema）。**当前已标注 3 个接口**（`/api/hosts`、`/api/topology/host/{id}`、
+`/api/topology/host/{id}/process-overview`），其余按同一形状补齐 —— 没标注的接口不会出现在
+spec 里（宁可缺，不要编）。
+
+读接口本身不鉴权（与 `POST /internal/atlas` 同档：只绑环回或受信内网）。经 `wist-field` 访问时
+由 BFF 代代理并校验令牌：`https://<数据场入口>/api/atlas/openapi.json`。
 
 ## PostgreSQL 开发环境
 

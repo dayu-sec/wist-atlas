@@ -22,6 +22,10 @@ atlas-sync = { path = "../atlas-sync" }
 atlas-wist-ingest = { path = "../atlas-wist-ingest" }
 tokio.workspace = true
 uuid.workspace = true
+# OpenAPI 3.1：编译期从 handler 标注与 DTO 的 `ToSchema` 生成，
+# 不靠手写 spec（手写那份必然跟着 DTO 漂）。
+utoipa = { version = "6", features = ["macros", "uuid", "chrono"] }
+utoipa-axum = "0.3"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

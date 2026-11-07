@@ -3,6 +3,28 @@
 本文件记录 `wist-atlas` 的所有重要变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [未发布]
+
+### 新增（OpenAPI 3.1：接口文档从代码生成）
+
+`serve` 模式新增两个端点：
+
+- `GET /api/openapi.json` —— 机器可读的 spec；
+- `GET /api/docs` —— 自包含 HTML 阅读页（**不引 CDN**，计算区可能没有外网）。
+
+spec 在**编译期**生成（`utoipa` + `utoipa-axum`）：路径来自 `routes!`（handler 上有
+`#[utoipa::path]` 就会自动收录），字段名来自 serde（`rename_all = "camelCase"` 直接反映到
+schema）—— 不再有手写文档跟着 DTO 漂的问题。
+
+- 本次标注 **3 个接口**作为 P0：`/api/hosts`、`/api/topology/host/{id}`、
+  `/api/topology/host/{id}/process-overview`；其余 8 个读接口仍是手写文档，按同一形状补齐即可
+  （handler 上加标注 + 进 `routes!`，忘不了）。
+- 写入口 `/internal/atlas` **有意不进 spec**（它不是对外接口）。`/api/openapi.json` 与其余读接口
+  一样无鉴权 —— 鉴权在 BFF（`/api/atlas/openapi.json` 走 `wist-field-api` 的令牌校验）。
+- 两条单测钉住「标注了 = 文档里有」与「写入口没被曝光」。
+- 已知欠账：`HostTopologyHttpView` 里引用 domain 类型的字段先以 `Object` 占位，后续再展开成
+  真实 schema（给 domain 加 `ToSchema` 会把文档关注点漏到底层）。
+
 ## [0.3.2] - 2026-11-05
 
 ### 新增（HTTP 接收 DSNAP：数据面直接投递，两字段契约）
