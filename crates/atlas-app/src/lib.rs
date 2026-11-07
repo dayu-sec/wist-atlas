@@ -72,6 +72,9 @@ pub struct VisualizationExportSummary {
 mod http;
 use http::{HttpAppState, build_http_router};
 
+/// 只给 OpenAPI 用的文档 DTO（与 domain 同形状，不参与序列化）。
+mod http_schema;
+
 mod ingest_http;
 
 mod probe;

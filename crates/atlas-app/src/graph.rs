@@ -13,36 +13,41 @@ mod async_build;
 mod network;
 mod service;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub(crate) struct HostProcessTopologyGraph {
     nodes: Vec<HostProcessTopologyNode>,
     edges: Vec<HostProcessTopologyEdge>,
     pub(crate) metadata: HostProcessTopologyMetadata,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 struct HostProcessTopologyNode {
     id: String,
+    #[schema(value_type = String)]
     object_kind: &'static str,
     object_id: String,
+    #[schema(value_type = String)]
     layer: &'static str,
     label: String,
+    #[schema(value_type = Object)]
     properties: serde_json::Map<String, Value>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 struct HostProcessTopologyEdge {
     id: String,
+    #[schema(value_type = String)]
     edge_kind: &'static str,
     source: String,
     target: String,
     label: Option<String>,
+    #[schema(value_type = Object)]
     properties: serde_json::Map<String, Value>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct HostProcessTopologyMetadata {
     query_time: String,

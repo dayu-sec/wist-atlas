@@ -16,14 +16,16 @@ use crate::graph::{
     HostProcessTopologyGraph, build_host_process_topology_graph_async,
     build_network_topology_graph_async, build_service_topology_graph_async,
 };
+use crate::http_schema::*;
 use crate::ingest_http::{MAX_INGEST_BODY_BYTES, ingest_atlas};
 use utoipa::OpenApi as _;
 use utoipa::ToSchema;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub(crate) struct VisualizationEnvelope {
+    #[schema(value_type = String)]
     pub(crate) status: &'static str,
     pub(crate) data: HostProcessTopologyGraph,
 }
@@ -44,9 +46,10 @@ struct HostProcessOverviewHttpEnvelope {
     data: HostProcessOverviewHttpView,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 struct HostProcessGroupsPageHttpEnvelope {
+    #[schema(value_type = String)]
     status: &'static str,
     data: HostProcessGroupsPageHttpView,
 }
@@ -55,23 +58,21 @@ struct HostProcessGroupsPageHttpEnvelope {
 #[serde(rename_all = "camelCase")]
 struct HostTopologyHttpView {
     host: HostTopologyHostDto,
-    // 域类型直接引用：给它们加 `ToSchema` 会把 schema 关注点漏到 domain 层，
-    // P0 先以 `Object` 占位（字段名仍由 serde 决定），后续再逐个展开。
-    #[schema(value_type = Option<Object>)]
+    #[schema(value_type = Option<HostRuntimeStateDoc>)]
     latest_runtime: Option<atlas_domain::HostRuntimeState>,
-    #[schema(value_type = Vec<Object>)]
+    #[schema(value_type = Vec<HostProcessGroupViewDoc>)]
     process_groups: Vec<atlas_domain::HostProcessGroupView>,
-    #[schema(value_type = Vec<Object>)]
+    #[schema(value_type = Vec<ProcessRuntimeStateDoc>)]
     processes: Vec<atlas_domain::ProcessRuntimeState>,
-    #[schema(value_type = Vec<Object>)]
+    #[schema(value_type = Vec<NetworkSegmentDoc>)]
     network_segments: Vec<atlas_domain::NetworkSegment>,
-    #[schema(value_type = Vec<Object>)]
+    #[schema(value_type = Vec<HostNetAssocDoc>)]
     network_assocs: Vec<atlas_domain::HostNetAssoc>,
-    #[schema(value_type = Vec<Object>)]
+    #[schema(value_type = Vec<HostServiceViewDoc>)]
     services: Vec<atlas_domain::HostServiceView>,
-    #[schema(value_type = Vec<Object>)]
+    #[schema(value_type = Vec<ContainerRuntimeDoc>)]
     containers: Vec<atlas_domain::ContainerRuntime>,
-    #[schema(value_type = Vec<Object>)]
+    #[schema(value_type = Vec<ResponsibilityAssignmentDoc>)]
     assignments: Vec<atlas_domain::ResponsibilityAssignment>,
     generated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -82,18 +83,19 @@ struct HostProcessOverviewHttpView {
     host: HostTopologyHostDto,
     total_processes: usize,
     total_groups: usize,
-    #[schema(value_type = Vec<Object>)]
+    #[schema(value_type = Vec<HostProcessGroupViewDoc>)]
     top_groups: Vec<atlas_domain::HostProcessGroupView>,
     truncated_group_count: usize,
     generated_at: chrono::DateTime<chrono::Utc>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 struct HostProcessGroupsPageHttpView {
     host: HostTopologyHostDto,
     total_processes: usize,
     total_groups: usize,
+    #[schema(value_type = Vec<HostProcessGroupViewDoc>)]
     groups: Vec<atlas_domain::HostProcessGroupView>,
     limit: usize,
     offset: usize,
@@ -182,26 +184,29 @@ struct HostSummaryHttpItem {
     stale_at: Option<String>,
 }
 
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 struct HostProcessGroupsQuery {
     limit: Option<usize>,
     offset: Option<usize>,
 }
 
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 struct ServiceListQuery {
     limit: Option<u32>,
     offset: Option<u32>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 struct ServiceListHttpEnvelope {
+    #[schema(value_type = String)]
     status: &'static str,
     data: ServiceListHttpView,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 struct ServiceListHttpView {
     services: Vec<ServiceSummaryHttpItem>,
@@ -210,7 +215,7 @@ struct ServiceListHttpView {
 }
 
 /// 服务列表只给规模指标：端点、实例明细都在服务焦点视图里。
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 struct ServiceSummaryHttpItem {
     id: Uuid,
@@ -235,6 +240,19 @@ async fn healthz(State(state): State<HttpAppState>) -> Json<serde_json::Value> {
     Json(body)
 }
 
+/// 主机进程拓扑图（节点 + 边）。
+#[utoipa::path(
+    get,
+    path = "/api/topology/host/{id}/processes",
+    tag = "topology",
+    summary = "主机进程拓扑图",
+    params(("id" = String, Path, description = "主机 UUID")),
+    responses(
+        (status = 200, description = "拓扑图", body = VisualizationEnvelope),
+        (status = 400, description = "id 不是合法 UUID"),
+        (status = 404, description = "主机不存在"),
+    )
+)]
 async fn get_host_process_topology(
     State(state): State<HttpAppState>,
     AxumPath(host_id): AxumPath<String>,
@@ -257,6 +275,17 @@ async fn get_host_process_topology(
     }
 }
 
+/// 第一台主机的进程拓扑图（节点 + 边）。
+#[utoipa::path(
+    get,
+    path = "/api/topology/host/first/processes",
+    tag = "topology",
+    summary = "第一台主机的进程拓扑图",
+    responses(
+        (status = 200, description = "拓扑图", body = VisualizationEnvelope),
+        (status = 404, description = "还没有任何主机"),
+    )
+)]
 async fn get_first_host_process_topology(State(state): State<HttpAppState>) -> Response {
     match &state.app {
         TopologyMonolith::Memory(store) => {
@@ -304,6 +333,17 @@ async fn get_host_topology(
     }
 }
 
+/// 第一台主机的焦点视图：给画布首屏用，省一次「先列主机再取详情」。
+#[utoipa::path(
+    get,
+    path = "/api/topology/host/first",
+    tag = "topology",
+    summary = "第一台主机的焦点视图",
+    responses(
+        (status = 200, description = "主机焦点视图", body = HostTopologyHttpEnvelope),
+        (status = 404, description = "还没有任何主机"),
+    )
+)]
 async fn get_first_host_topology(State(state): State<HttpAppState>) -> Response {
     match &state.app {
         TopologyMonolith::Memory(store) => first_host_topology_response(store.clone()).await,
@@ -351,6 +391,21 @@ async fn get_host_process_overview(
     }
 }
 
+/// 进程组分页：与 `process-overview` 同一份数据，多了 `limit` / `offset`。
+#[utoipa::path(
+    get,
+    path = "/api/topology/host/{id}/process-groups",
+    tag = "topology",
+    summary = "主机进程组分页",
+    params(
+        ("id" = String, Path, description = "主机 UUID"),
+        HostProcessGroupsQuery,
+    ),
+    responses(
+        (status = 200, description = "进程组分页", body = HostProcessGroupsPageHttpEnvelope),
+        (status = 400, description = "id 不是合法 UUID"),
+    )
+)]
 async fn get_host_process_groups_page(
     State(state): State<HttpAppState>,
     AxumPath(host_id): AxumPath<String>,
@@ -517,6 +572,19 @@ where
     }
 }
 
+/// 网段拓扑图：段 + 主机 + 归属关系。
+#[utoipa::path(
+    get,
+    path = "/api/topology/network/{id}",
+    tag = "topology",
+    summary = "网段拓扑图",
+    params(("id" = String, Path, description = "网段 UUID")),
+    responses(
+        (status = 200, description = "拓扑图", body = VisualizationEnvelope),
+        (status = 400, description = "id 不是合法 UUID"),
+        (status = 404, description = "网段不存在"),
+    )
+)]
 async fn get_network_topology(
     State(state): State<HttpAppState>,
     AxumPath(segment_id): AxumPath<String>,
@@ -563,6 +631,19 @@ where
     }
 }
 
+/// 服务拓扑图：实例 + 主机 + 归属关系。
+#[utoipa::path(
+    get,
+    path = "/api/topology/service/{id}",
+    tag = "topology",
+    summary = "服务拓扑图",
+    params(("id" = String, Path, description = "服务 UUID")),
+    responses(
+        (status = 200, description = "拓扑图", body = VisualizationEnvelope),
+        (status = 400, description = "id 不是合法 UUID"),
+        (status = 404, description = "服务不存在"),
+    )
+)]
 async fn get_service_topology(
     State(state): State<HttpAppState>,
     AxumPath(service_id): AxumPath<String>,
@@ -609,6 +690,15 @@ where
     }
 }
 
+/// 服务列表（分页）：只给规模指标，端点 / 实例明细在服务焦点视图里。
+#[utoipa::path(
+    get,
+    path = "/api/services",
+    tag = "topology",
+    summary = "服务列表（分页）",
+    params(ServiceListQuery),
+    responses((status = 200, description = "服务列表", body = ServiceListHttpEnvelope))
+)]
 async fn get_services(
     State(state): State<HttpAppState>,
     Query(query): Query<ServiceListQuery>,
@@ -780,37 +870,18 @@ where
 }
 
 pub(crate) fn build_http_router(state: HttpAppState) -> Router {
-    // 有 `#[utoipa::path]` 标注的接口走 `routes!`：路径只有一份源（标注里那份），
-    // 不会出现「文档写了 /api/hosts、Router 里是 /api/host」这种漂移。
-    let (router, _documented) = OpenApiRouter::new()
-        // 一个 `.routes()` 只对应**一条路径**（utoipa-axum 把同一路径上的多个方法
-        // 合成一个 MethodRouter）；不同路径要分开写。
-        .routes(routes!(get_hosts))
-        .routes(routes!(get_host_topology))
-        .routes(routes!(get_host_process_overview))
+    // 读接口全部走 `routes!`：路径只有一份源（handler 上的 `#[utoipa::path]`），
+    // Router 与 spec 不会各写一份。一个 `.routes()` 只对应**一条路径**
+    // （utoipa-axum 把同一路径上的多个方法合成一个 MethodRouter），所以逐个写。
+    let (router, _documented) = documented_routes()
         .route("/healthz", get(healthz))
         // 数据面写入入口：`{cust_id, content}`（证据服务那边多一个 cmd_id，是它的幂等键）。
         // body 上限单独放宽（axum 默认 2 MB，放不下 0.9 MB 的快照加上多进程主机）。
+        // 它不是对外接口，**有意**不进 spec。
         .route(
             "/internal/atlas",
             post(ingest_atlas).layer(DefaultBodyLimit::max(MAX_INGEST_BODY_BYTES)),
         )
-        .route("/api/services", get(get_services))
-        .route("/api/topology/host/first", get(get_first_host_topology))
-        .route(
-            "/api/topology/host/{id}/process-groups",
-            get(get_host_process_groups_page),
-        )
-        .route(
-            "/api/topology/host/first/processes",
-            get(get_first_host_process_topology),
-        )
-        .route(
-            "/api/topology/host/{id}/processes",
-            get(get_host_process_topology),
-        )
-        .route("/api/topology/network/{id}", get(get_network_topology))
-        .route("/api/topology/service/{id}", get(get_service_topology))
         .split_for_parts();
 
     let openapi = openapi_spec();
@@ -842,18 +913,34 @@ async fn openapi_docs() -> impl IntoResponse {
 
 const DOCS_HTML: &str = include_str!("openapi_docs.html");
 
-/// 完整 spec：路径与描述各管一半。
+/// 所有**对外**读接口（带 `#[utoipa::path]` 标注）。
 ///
-/// - 路径来自 `routes!`：handler 上有 `#[utoipa::path]` 就会自动进来，忘不了；
-/// - info / tags / 复用 schema 来自 `ApiDoc`。
-fn openapi_spec() -> utoipa::openapi::OpenApi {
-    let (_, documented) = OpenApiRouter::new()
+/// 只在一个地方列：Router 和 spec 都从这里来。新增接口时只加一行，两边同时生效。
+fn documented_routes() -> OpenApiRouter<HttpAppState> {
+    OpenApiRouter::new()
         .routes(routes!(get_hosts))
+        .routes(routes!(get_services))
+        .routes(routes!(get_first_host_topology))
         .routes(routes!(get_host_topology))
         .routes(routes!(get_host_process_overview))
-        .split_for_parts();
+        .routes(routes!(get_host_process_groups_page))
+        .routes(routes!(get_first_host_process_topology))
+        .routes(routes!(get_host_process_topology))
+        .routes(routes!(get_network_topology))
+        .routes(routes!(get_service_topology))
+}
+
+/// 完整 spec：路径来自 `routes!`（标注了就在），描述与复用 schema 来自 `ApiDoc`。
+fn openapi_spec() -> utoipa::openapi::OpenApi {
+    let (_, documented) = documented_routes().split_for_parts();
     let mut openapi = ApiDoc::openapi();
     openapi.paths.paths.extend(documented.paths.paths);
+    if let Some(components) = documented.components {
+        match openapi.components.as_mut() {
+            Some(current) => current.schemas.extend(components.schemas),
+            None => openapi.components = Some(components),
+        }
+    }
     openapi
 }
 
@@ -867,7 +954,6 @@ fn openapi_spec() -> utoipa::openapi::OpenApi {
     tags(
         (name = "topology", description = "资产与运行拓扑（只读）")
     ),
-    paths(get_hosts, get_host_topology, get_host_process_overview),
     components(schemas(
         HostListHttpEnvelope,
         HostListHttpView,
@@ -877,6 +963,39 @@ fn openapi_spec() -> utoipa::openapi::OpenApi {
         HostTopologyHostDto,
         HostProcessOverviewHttpEnvelope,
         HostProcessOverviewHttpView,
+        HostProcessGroupsPageHttpEnvelope,
+        HostProcessGroupsPageHttpView,
+        ServiceListHttpEnvelope,
+        ServiceListHttpView,
+        ServiceSummaryHttpItem,
+        VisualizationEnvelope,
+        crate::graph::HostProcessTopologyGraph,
+        crate::graph::HostProcessTopologyMetadata,
+        ContainerRuntimeDoc,
+        HostNetAssocDoc,
+        HostProcessGroupViewDoc,
+        HostRuntimeStateDoc,
+        HostServiceViewDoc,
+        NetworkSegmentDoc,
+        ProcessRuntimeStateDoc,
+        ResponsibilityAssignmentDoc,
+        AgentHealthDoc,
+        AddressFamilyDoc,
+        BindingScopeDoc,
+        ConfidenceDoc,
+        HostServiceInstanceViewDoc,
+        InstanceEndpointDoc,
+        ObjectKindDoc,
+        ProcessStateCountDoc,
+        ResponsibilityRoleDoc,
+        RuntimeBindingDoc,
+        RuntimeObjectTypeDoc,
+        RuntimeTypeDoc,
+        ServiceBoundaryDoc,
+        ServiceEntityDoc,
+        ServiceInstanceDoc,
+        ServiceTypeDoc,
+        ValidityWindowDoc,
     ))
 )]
 struct ApiDoc;
@@ -884,25 +1003,41 @@ struct ApiDoc;
 #[cfg(test)]
 mod openapi_tests {
     use super::*;
+    use atlas_storage::{CatalogStore, Page};
+    use axum::body::Body;
+    use axum::http::Request;
+    use serde_json::Value;
+    use tower::util::ServiceExt;
 
-    /// 钉住「标注了 = 文档里有」：路径由 `routes!` 收集，不是手抄的字符串，
-    /// 所以新增一个带 `#[utoipa::path]` 的 handler 忘了加进 `routes!` 时这里会红。
+    /// 对外读接口清单：少一个就是忘进 `documented_routes()`。
+    const DOCUMENTED_PATHS: &[&str] = &[
+        "/api/hosts",
+        "/api/services",
+        "/api/topology/host/first",
+        "/api/topology/host/{id}",
+        "/api/topology/host/{id}/process-overview",
+        "/api/topology/host/{id}/process-groups",
+        "/api/topology/host/first/processes",
+        "/api/topology/host/{id}/processes",
+        "/api/topology/network/{id}",
+        "/api/topology/service/{id}",
+    ];
+
+    /// 路径由 `routes!` 收集，不是手抄的字符串：新增一个带 `#[utoipa::path]` 的 handler
+    /// 忘了进 `documented_routes()` 时这里会红。
     #[test]
-    fn spec_documents_the_annotated_routes() {
+    fn spec_documents_every_read_route() {
         let spec = openapi_spec();
-        for path in [
-            "/api/hosts",
-            "/api/topology/host/{id}",
-            "/api/topology/host/{id}/process-overview",
-        ] {
-            assert!(spec.paths.paths.contains_key(path), "spec 里没有 {path}");
+        for path in DOCUMENTED_PATHS {
+            assert!(spec.paths.paths.contains_key(*path), "spec 里没有 {path}");
         }
         assert_eq!(spec.info.title, "wist-atlas 只读 API");
         // 字段名跟 serde 走（`camelCase`），不是手写的 `snake_case`。
-        let host_summary =
-            &spec.components.as_ref().expect("components").schemas["HostSummaryHttpItem"];
-        let json = serde_json::to_value(host_summary).expect("schema to json");
-        let props = json["properties"].as_object().expect("properties");
+        let schemas = serde_json::to_value(&spec.components.as_ref().expect("components").schemas)
+            .expect("schemas to json");
+        let props = schemas["HostSummaryHttpItem"]["properties"]
+            .as_object()
+            .expect("properties");
         assert!(props.contains_key("hostName"), "{props:?}");
         assert!(props.contains_key("lastInventoryAt"), "{props:?}");
     }
@@ -910,6 +1045,298 @@ mod openapi_tests {
     /// 写入口是内部接口，不应该被当成对外文档暴露。
     #[test]
     fn write_endpoint_is_not_documented() {
-        assert!(!openapi_spec().paths.paths.contains_key("/internal/atlas"));
+        let spec = openapi_spec();
+        assert!(!spec.paths.paths.contains_key("/internal/atlas"));
+        assert!(!spec.paths.paths.contains_key("/healthz"));
+    }
+
+    /// spec 里每个 `$ref` 都要能解析 —— 漏注册一个 schema 就会留下悬空引用。
+    #[test]
+    fn every_ref_resolves() {
+        let spec = openapi_spec();
+        let value = serde_json::to_value(&spec).expect("spec to json");
+        let schemas = value["components"]["schemas"].clone();
+        let mut missing = Vec::new();
+        collect_refs(&value, &schemas, &mut missing);
+        assert!(missing.is_empty(), "悬空 $ref：{missing:?}");
+    }
+
+    fn collect_refs(value: &Value, schemas: &Value, missing: &mut Vec<String>) {
+        match value {
+            Value::Object(map) => {
+                if let Some(reference) = map.get("$ref").and_then(Value::as_str) {
+                    let name = reference.rsplit('/').next().unwrap_or_default();
+                    if schemas.get(name).is_none() {
+                        missing.push(reference.to_string());
+                    }
+                }
+                for child in map.values() {
+                    collect_refs(child, schemas, missing);
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    collect_refs(item, schemas, missing);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// 真实响应 vs spec：多一个字段、少一个必填字段、类型不对，都算文档说错了。
+    ///
+    /// 这是「文档 DTO」的防腐层：`http_schema.rs` 里那些镜像结构体没有编译期的
+    /// 绑定，只能靠这一层把漂移钉住。
+    #[tokio::test]
+    async fn responses_match_the_spec() {
+        let app = TopologyMonolith::new_in_memory();
+        for fixture in [
+            "atlas_edge_service_binding_sample.jsonl",
+            "atlas_edge_host_process_sample.jsonl",
+            "atlas_edge_network_hosts_sample.jsonl",
+            "atlas_edge_container_sample.jsonl",
+            "atlas_telemetry_host_sample.jsonl",
+            "atlas_telemetry_process_sample.jsonl",
+        ] {
+            let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../fixtures")
+                .join(fixture);
+            app.replay_jsonl(path).expect("fixture replays");
+        }
+
+        let (host_ids, tenants) = {
+            let store = app.store().expect("memory store");
+            let hosts = CatalogStore::list_all_hosts(store, Page::default()).expect("hosts");
+            let tenants: Vec<_> = {
+                let mut seen = Vec::new();
+                for host in &hosts {
+                    if !seen.contains(&host.tenant_id) {
+                        seen.push(host.tenant_id);
+                    }
+                }
+                seen
+            };
+            let ids: Vec<_> = hosts.iter().map(|host| host.host_id).collect();
+            assert!(!ids.is_empty(), "fixtures 里应该有主机");
+            (ids, tenants)
+        };
+        // 几个 fixture 不一定同一个租户：逐个找，只要有就跑。
+        let (segment_id, service_id) = {
+            let store = app.store().expect("memory store");
+            let segment = tenants
+                .iter()
+                .find_map(|tenant| {
+                    CatalogStore::list_network_segments(store, *tenant, Page::default())
+                        .ok()
+                        .and_then(|segments| segments.first().map(|s| s.network_segment_id))
+                })
+                .expect("a segment in the fixtures");
+            let service = tenants
+                .iter()
+                .find_map(|tenant| {
+                    CatalogStore::list_services(store, *tenant, Page::default())
+                        .ok()
+                        .and_then(|services| services.first().map(|s| s.service_id))
+                })
+                .expect("a service in the fixtures");
+            (segment, service)
+        };
+
+        let router = build_http_router(HttpAppState::new(app));
+        let spec = openapi_spec();
+        let spec_json = serde_json::to_value(&spec).expect("spec to json");
+        let schemas = spec_json["components"]["schemas"].clone();
+
+        let mut requests: Vec<(String, &str)> = vec![
+            ("/api/hosts".to_string(), "/api/hosts"),
+            ("/api/services".to_string(), "/api/services"),
+            (
+                "/api/topology/host/first".to_string(),
+                "/api/topology/host/first",
+            ),
+            (
+                "/api/topology/host/first/processes".to_string(),
+                "/api/topology/host/first/processes",
+            ),
+            (
+                format!("/api/topology/network/{segment_id}"),
+                "/api/topology/network/{id}",
+            ),
+            (
+                format!("/api/topology/service/{service_id}"),
+                "/api/topology/service/{id}",
+            ),
+        ];
+        // 每台主机都跑一遍：不同 fixture 覆盖不同的嵌套（运行时 / 容器 / 服务绑定）。
+        for host_id in &host_ids {
+            requests.push((
+                format!("/api/topology/host/{host_id}"),
+                "/api/topology/host/{id}",
+            ));
+            requests.push((
+                format!("/api/topology/host/{host_id}/process-overview?top_n=5"),
+                "/api/topology/host/{id}/process-overview",
+            ));
+            requests.push((
+                format!("/api/topology/host/{host_id}/process-groups?limit=5"),
+                "/api/topology/host/{id}/process-groups",
+            ));
+            requests.push((
+                format!("/api/topology/host/{host_id}/processes"),
+                "/api/topology/host/{id}/processes",
+            ));
+        }
+
+        let mut saw_runtime = false;
+        let mut saw_processes = false;
+        for (uri, template) in requests {
+            let response = router
+                .clone()
+                .oneshot(Request::builder().uri(&uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{uri}");
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let payload: Value = serde_json::from_slice(&body).expect("json body");
+            let schema = &spec_json["paths"][template]["get"]["responses"]["200"]["content"]["application/json"]
+                ["schema"];
+            let mut errors = Vec::new();
+            validate(&payload, schema, &schemas, template, &mut errors);
+            assert!(errors.is_empty(), "{template} 与响应不一致：{errors:#?}");
+
+            // 深度视图不能是空壳 —— 否则这个测试看着绿、实际没验到镜像类型。
+            if template == "/api/topology/host/{id}" {
+                let data = &payload["data"];
+                saw_runtime |= !data["latestRuntime"].is_null();
+                saw_processes |= data["processes"]
+                    .as_array()
+                    .is_some_and(|processes| !processes.is_empty());
+            }
+        }
+
+        assert!(
+            saw_runtime,
+            "没有任何一台主机带 latestRuntime，嵌套 schema 没被验到"
+        );
+        assert!(
+            saw_processes,
+            "没有任何一台主机带进程，嵌套 schema 没被验到"
+        );
+    }
+
+    /// 极简校验器：只看「响应的字段 spec 里有没有、类型对不对」。
+    /// 不实现完整 JSON Schema —— 这里要的是漂移告警，不是通用验证器。
+    fn validate(
+        value: &Value,
+        schema: &Value,
+        schemas: &Value,
+        at: &str,
+        errors: &mut Vec<String>,
+    ) {
+        if let Some(reference) = schema.get("$ref").and_then(Value::as_str) {
+            let name = reference.rsplit('/').next().unwrap_or_default();
+            match schemas.get(name) {
+                Some(target) => validate(value, target, schemas, at, errors),
+                None => errors.push(format!("{at}: $ref {reference} 解析不到")),
+            }
+            return;
+        }
+        if let Some(options) = schema
+            .get("oneOf")
+            .or_else(|| schema.get("anyOf"))
+            .and_then(Value::as_array)
+        {
+            let mut branch_errors = Vec::new();
+            for option in options {
+                let mut candidate = Vec::new();
+                validate(value, option, schemas, at, &mut candidate);
+                if candidate.is_empty() {
+                    return;
+                }
+                branch_errors.push(candidate);
+            }
+            errors.push(format!("{at}: 不匹配 anyOf/oneOf（{branch_errors:?}）"));
+            return;
+        }
+        let types: Vec<&str> = match schema.get("type") {
+            Some(Value::String(kind)) => vec![kind.as_str()],
+            Some(Value::Array(items)) => items.iter().filter_map(Value::as_str).collect(),
+            _ => Vec::new(),
+        };
+        if value.is_null() {
+            if !types.is_empty() && !types.contains(&"null") {
+                errors.push(format!("{at}: 值为 null，但 spec 没标可空"));
+            }
+            return;
+        }
+        if types.is_empty() {
+            return;
+        }
+        if types.contains(&"object") {
+            let Some(map) = value.as_object() else {
+                errors.push(format!("{at}: 不是对象"));
+                return;
+            };
+            let properties = schema.get("properties").and_then(Value::as_object);
+            for (key, child) in map {
+                match properties.and_then(|props| props.get(key)) {
+                    Some(child_schema) => {
+                        validate(child, child_schema, schemas, &format!("{at}.{key}"), errors)
+                    }
+                    None => {
+                        // `properties` 为空 = 自由形状（如 `Object` 占位），不比对。
+                        if properties.is_some() {
+                            errors.push(format!("{at}.{key}: 响应里有、spec 里没有"));
+                        }
+                    }
+                }
+            }
+            for required in schema
+                .get("required")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+            {
+                if !map.contains_key(required) {
+                    errors.push(format!("{at}.{required}: spec 标了必填、响应里没有"));
+                }
+            }
+            return;
+        }
+        if types.contains(&"array") {
+            let Some(items) = value.as_array() else {
+                errors.push(format!("{at}: 不是数组"));
+                return;
+            };
+            if let Some(item_schema) = schema.get("items") {
+                for (index, item) in items.iter().enumerate() {
+                    validate(
+                        item,
+                        item_schema,
+                        schemas,
+                        &format!("{at}[{index}]"),
+                        errors,
+                    );
+                }
+            }
+            return;
+        }
+        let matched = types.iter().any(|kind| match *kind {
+            "string" => value.is_string(),
+            "boolean" => value.is_boolean(),
+            "integer" => {
+                value.as_i64().is_some()
+                    || value.as_u64().is_some()
+                    || value.as_f64().is_some_and(|number| number.fract() == 0.0)
+            }
+            "number" => value.is_number(),
+            _ => true,
+        });
+        if !matched {
+            errors.push(format!("{at}: {value} 不是 {types:?}"));
+        }
     }
 }

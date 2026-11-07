@@ -16,14 +16,15 @@ spec 在**编译期**生成（`utoipa` + `utoipa-axum`）：路径来自 `routes
 `#[utoipa::path]` 就会自动收录），字段名来自 serde（`rename_all = "camelCase"` 直接反映到
 schema）—— 不再有手写文档跟着 DTO 漂的问题。
 
-- 本次标注 **3 个接口**作为 P0：`/api/hosts`、`/api/topology/host/{id}`、
-  `/api/topology/host/{id}/process-overview`；其余 8 个读接口仍是手写文档，按同一形状补齐即可
-  （handler 上加标注 + 进 `routes!`，忘不了）。
+- **全部 10 个读接口**都已标注（`hosts` / `services` / 主机焦点与第一台、进程概览/分组/拓扑、
+  网段拓扑、服务拓扑）；新接口忘了进 `documented_routes()` 会有单测变红。
 - 写入口 `/internal/atlas` **有意不进 spec**（它不是对外接口）。`/api/openapi.json` 与其余读接口
   一样无鉴权 —— 鉴权在 BFF（`/api/atlas/openapi.json` 走 `wist-field-api` 的令牌校验）。
-- 两条单测钉住「标注了 = 文档里有」与「写入口没被曝光」。
-- 已知欠账：`HostTopologyHttpView` 里引用 domain 类型的字段先以 `Object` 占位，后续再展开成
-  真实 schema（给 domain 加 `ToSchema` 会把文档关注点漏到底层）。
+- 深层嵌套（`HostRuntimeState` / `ProcessRuntimeState` / `NetworkSegment` / 服务实例链 /
+  容器 / 责任归属）在 `http_schema.rs` 用一组**只给 schema 用的镜像 DTO** 展开，不给
+  `atlas-domain` 加 `ToSchema`（文档关注点不进领域层）。
+- 三道单测守卫：标注了 = spec 里有、每个 `$ref` 能解析、**真实响应 vs spec**（多一个字段 /
+  少一个必填字段 / 类型不对都红 —— 镜像 DTO 的防腐层）。
 
 ## [0.3.2] - 2026-11-05
 

@@ -224,9 +224,11 @@ GET /api/topology/service/{id}                服务视图
 
 生成口径：路径来自 `utoipa-axum` 的 `routes!`（handler 上有 `#[utoipa::path]` 就会自动收录，
 所以 Router 与文档共用一份路径），字段名来自 serde（`rename_all = "camelCase"` 直接反映到
-schema）。**当前已标注 3 个接口**（`/api/hosts`、`/api/topology/host/{id}`、
-`/api/topology/host/{id}/process-overview`），其余按同一形状补齐 —— 没标注的接口不会出现在
-spec 里（宁可缺，不要编）。
+schema）。**10 个读接口全部已标注**；深层嵌套的领域类型用 `http_schema.rs` 里一组只给 schema
+用的镜像 DTO 展开（不给 `atlas-domain` 加 `ToSchema`）。
+
+文档不会自己跑偏，三道单测守着：标注了 = spec 里有、每个 `$ref` 能解析、**真实响应 vs spec**
+（多一个字段 / 少一个必填字段 / 类型不对都变红）。
 
 读接口本身不鉴权（与 `POST /internal/atlas` 同档：只绑环回或受信内网）。经 `wist-field` 访问时
 由 BFF 代代理并校验令牌：`https://<数据场入口>/api/atlas/openapi.json`。
