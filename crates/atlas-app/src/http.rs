@@ -136,11 +136,13 @@ impl HttpAppState {
 }
 
 #[derive(Debug, Clone, serde::Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 struct HostProcessOverviewQuery {
     top_n: Option<usize>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 struct HostListQuery {
     /// 默认不开：退役主机保留行是为了历史，不该出现在「现在有哪几台机」。
     include_stale: Option<bool>,
