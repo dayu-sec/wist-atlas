@@ -306,6 +306,20 @@ impl TopologyMonolith {
         };
 
         let mut state = HttpAppState::new(self.clone());
+        // 读接口要令牌：`serve` 是唯一的生产入口，拿不到就直接失败，不默默降级成“谁都能读”。
+        // 与 `wist-field-api` 的“没有不校验这一档”同一条纪律。
+        let token = std::env::var("WIST_ATLAS_TOKEN")
+            .ok()
+            .map(|raw| raw.trim().to_string())
+            .filter(|token| !token.is_empty())
+            .ok_or_else(|| {
+                AppReason::InvalidArgs.to_err().with_detail(
+                    "WIST_ATLAS_TOKEN is required: read endpoints (/api/*) need `Authorization: Bearer <token>`. \
+                     /healthz and the write endpoint /internal/atlas stay open."
+                        .to_string(),
+                )
+            })?;
+        state = state.with_token(token);
         if let Some(probe) = probe {
             state = state.with_probe(probe);
         }

@@ -5,6 +5,24 @@
 
 ## [未发布]
 
+### 变更（读接口要令牌）
+
+`serve` 模式的读接口（`/api/*`）现在要 `Authorization: Bearer <token>`，令牌来自环境变量
+`WIST_ATLAS_TOKEN`：
+
+```sh
+WIST_ATLAS_TOKEN=<随机串> wist-atlas postgres-live serve --listen 0.0.0.0:8080
+```
+
+- **必填，fail-closed**：拿不到令牌直接启动失败（与 `wist-field-api` 的“没有不校验这一档”
+  同一条纪律）。不会默默降级成“谁都能读”。
+- **不要求令牌的四个**：`/healthz`（容器与 BFF 探活）、`/internal/atlas`（数据面写入；已在栈里只绑
+  环回，它的鉴权是数据面的事）、`/api/openapi.json` 与 `/api/docs`（接口形状，不含数据；
+  浏览器也没法给导航请求加 `Authorization` 头）。
+- 校验用常数时间比较；401 带 `WWW-Authenticate: Bearer`，响应体与其他错误同一信封。
+- spec 里声明了 `bearer` 安全方案（`components.securitySchemes` + 全局 `security`）。
+- 两条单测：“每个读接口都挡”（直接打 Router）、“spec 声明了 bear”、“探活/文档/写入入口不挡”。
+
 ### 新增（OpenAPI 3.1：接口文档从代码生成）
 
 `serve` 模式新增两个端点：

@@ -230,8 +230,12 @@ schema）。**10 个读接口全部已标注**；深层嵌套的领域类型用 
 文档不会自己跑偏，三道单测守着：标注了 = spec 里有、每个 `$ref` 能解析、**真实响应 vs spec**
 （多一个字段 / 少一个必填字段 / 类型不对都变红）。
 
-读接口本身不鉴权（与 `POST /internal/atlas` 同档：只绑环回或受信内网）。经 `wist-field` 访问时
-由 BFF 代代理并校验令牌：`https://<数据场入口>/api/atlas/openapi.json`。
+读接口要令牌：`Authorization: Bearer ${WIST_ATLAS_TOKEN}`（`serve` 启动时从环境变量读，
+**拿不到就拒绝启动**）。不要求令牌的只有四个：`/healthz`（探活）、`/internal/atlas`（数据面
+写入）、`/api/openapi.json` 与 `/api/docs`（接口形状，不含数据；浏览器也没法给导航请求加头）。
+
+经 `wist-field` 访问时由 BFF 代理并校验终端用户的令牌，BFF 再带着 atlas 令牌去读：
+`https://<数据场入口>/api/atlas/openapi.json`。
 
 ## PostgreSQL 开发环境
 

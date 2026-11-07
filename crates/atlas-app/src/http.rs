@@ -119,16 +119,29 @@ pub(crate) struct HttpAppState {
     app: TopologyMonolith,
     /// `Some` = 写探针已启用（由 serve 启动时开）——`/healthz` 多一个 `probe` 块。
     probe: Option<crate::probe::SharedProbe>,
+    /// `Some` = 读接口要 `Authorization: Bearer <token>`（**serve 模式必有**）。
+    token: Option<std::sync::Arc<str>>,
 }
 
 impl HttpAppState {
     pub(crate) fn new(app: TopologyMonolith) -> Self {
-        Self { app, probe: None }
+        Self {
+            app,
+            probe: None,
+            token: None,
+        }
     }
 
     /// 打开写探针状态位：`/healthz` 会把最近一次探针结果一并报出去。
     pub(crate) fn with_probe(mut self, probe: crate::probe::SharedProbe) -> Self {
         self.probe = Some(probe);
+        self
+    }
+
+    /// 给读接口上锁。只有 `serve` 路径调它（环境变量 `WIST_ATLAS_TOKEN`）；
+    /// 单元测试用 `new()` 不起鉴权 —— 生产入口缺失 token 会直接启动失败。
+    pub(crate) fn with_token(mut self, token: impl Into<std::sync::Arc<str>>) -> Self {
+        self.token = Some(token.into());
         self
     }
 
@@ -870,24 +883,42 @@ where
 }
 
 pub(crate) fn build_http_router(state: HttpAppState) -> Router {
+    let token = state.token.clone();
+    let openapi = openapi_spec();
+
     // 读接口全部走 `routes!`：路径只有一份源（handler 上的 `#[utoipa::path]`），
     // Router 与 spec 不会各写一份。一个 `.routes()` 只对应**一条路径**
     // （utoipa-axum 把同一路径上的多个方法合成一个 MethodRouter），所以逐个写。
-    let (router, _documented) = documented_routes()
+    let (protected, _documented) = documented_routes().split_for_parts();
+    // 没有 token 的 router 只在单元测试里出现；`serve` 入口拿不到 `WIST_ATLAS_TOKEN` 会直接失败。
+    let protected = match token {
+        Some(expected) => protected.layer(axum::middleware::from_fn(
+            move |request: axum::extract::Request, next: axum::middleware::Next| {
+                let expected = expected.clone();
+                async move {
+                    if authorized(request.headers(), &expected) {
+                        next.run(request).await
+                    } else {
+                        unauthorized()
+                    }
+                }
+            },
+        )),
+        None => protected,
+    };
+
+    // 刻意**不**要求令牌的几条：
+    //   /healthz            容器与 BFF 的探活；带上令牌就没法用 busybox wget 了；
+    //   /internal/atlas     数据面写入入口（已在栈里只绑环回；它的鉴权是数据面的事）；
+    //   /api/openapi.json   接口形状，不含数据；浏览器拿它校验页面；
+    //   /api/docs           自包含阅读页（浏览器打开时没法塞 Authorization 头）。
+    let public = Router::new()
         .route("/healthz", get(healthz))
-        // 数据面写入入口：`{cust_id, content}`（证据服务那边多一个 cmd_id，是它的幂等键）。
         // body 上限单独放宽（axum 默认 2 MB，放不下 0.9 MB 的快照加上多进程主机）。
-        // 它不是对外接口，**有意**不进 spec。
         .route(
             "/internal/atlas",
             post(ingest_atlas).layer(DefaultBodyLimit::max(MAX_INGEST_BODY_BYTES)),
         )
-        .split_for_parts();
-
-    let openapi = openapi_spec();
-
-    router
-        // 机器可读的那份：前端 / 网关 / 测试都直接拿它，不要去 grep 文档。
         .route(
             "/api/openapi.json",
             get(move || {
@@ -895,9 +926,44 @@ pub(crate) fn build_http_router(state: HttpAppState) -> Router {
                 async move { Json(openapi) }
             }),
         )
-        // 人看的那份：自包含 HTML（不引 CDN，计算区可能没有外网）。
-        .route("/api/docs", get(openapi_docs))
-        .with_state(state)
+        .route("/api/docs", get(openapi_docs));
+
+    public.merge(protected).with_state(state)
+}
+
+/// `Authorization: Bearer <token>` 校验。
+///
+/// 常数时间比较：token 是部署方给的随机串，但“比较耗时随前缀相同字节数增长”这种
+/// 便宜事没理由留着。
+fn authorized(headers: &axum::http::HeaderMap, expected: &str) -> bool {
+    headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .map(str::trim)
+        .is_some_and(|found| constant_time_eq(found.as_bytes(), expected.as_bytes()))
+}
+
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    left.iter()
+        .zip(right)
+        .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+        == 0
+}
+
+fn unauthorized() -> Response {
+    let mut response = json_error(
+        StatusCode::UNAUTHORIZED,
+        "missing or invalid bearer token".to_string(),
+    );
+    response.headers_mut().insert(
+        axum::http::header::WWW_AUTHENTICATE,
+        axum::http::HeaderValue::from_static("Bearer"),
+    );
+    response
 }
 
 /// `GET /api/docs` —— 一个不依赖外网的 spec 阅读页。
@@ -954,7 +1020,11 @@ fn openapi_spec() -> utoipa::openapi::OpenApi {
     tags(
         (name = "topology", description = "资产与运行拓扑（只读）")
     ),
-    components(schemas(
+    // 读接口要令牌（`WIST_ATLAS_TOKEN`）。spec / 阅读页本身不要令牌，它们不在 paths 里。
+    security(("bearer" = [])),
+    modifiers(&SecurityAddon),
+    components(
+        schemas(
         HostListHttpEnvelope,
         HostListHttpView,
         HostSummaryHttpItem,
@@ -999,6 +1069,29 @@ fn openapi_spec() -> utoipa::openapi::OpenApi {
     ))
 )]
 struct ApiDoc;
+
+/// 声明 `Authorization: Bearer <token>` 这个安全方案。
+///
+/// utoipa 的 derive 只认 `components(schemas/responses)`，安全方案要经由 modifier 往
+/// `components.securitySchemes` 里塞。
+struct SecurityAddon;
+
+impl utoipa::Modify for SecurityAddon {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
+
+        let components = openapi.components.get_or_insert_default();
+        components.add_security_scheme(
+            "bearer",
+            SecurityScheme::Http(
+                HttpBuilder::new()
+                    .scheme(HttpAuthScheme::Bearer)
+                    .bearer_format("opaque")
+                    .build(),
+            ),
+        );
+    }
+}
 
 #[cfg(test)]
 mod openapi_tests {
@@ -1048,6 +1141,61 @@ mod openapi_tests {
         let spec = openapi_spec();
         assert!(!spec.paths.paths.contains_key("/internal/atlas"));
         assert!(!spec.paths.paths.contains_key("/healthz"));
+    }
+
+    /// 读接口要令牌；探活 / 文档 / 写入入口不要。
+    ///
+    /// 这条测试直接打 Router：“哪个路径受保护”不靠人看代码数——多层/漏层都会红。
+    #[tokio::test]
+    async fn read_endpoints_require_a_bearer_token() {
+        let app = TopologyMonolith::new_in_memory();
+        let router = build_http_router(HttpAppState::new(app).with_token("t-test-123"));
+
+        let status = |uri: &'static str, bearer: Option<&'static str>| {
+            let router = router.clone();
+            async move {
+                let mut request = Request::builder().uri(uri);
+                if let Some(token) = bearer {
+                    request = request.header("authorization", format!("Bearer {token}"));
+                }
+                router
+                    .oneshot(request.body(Body::empty()).unwrap())
+                    .await
+                    .unwrap()
+                    .status()
+            }
+        };
+
+        assert_eq!(status("/api/hosts", None).await, StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            status("/api/hosts", Some("wrong")).await,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            status("/api/hosts", Some("t-test-123")).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            status("/api/topology/host/first", None).await,
+            StatusCode::UNAUTHORIZED,
+            "每个读接口都要挡，不能只挡列表"
+        );
+
+        // 不需要令牌的四个：容器探活、接口形状（spec / 阅读页）、数据面写入入口。
+        for uri in ["/healthz", "/api/docs", "/api/openapi.json"] {
+            assert_ne!(status(uri, None).await, StatusCode::UNAUTHORIZED, "{uri}");
+        }
+    }
+
+    /// spec 里要能看到这个安全方案，否则页面/生成物不知道要带令牌。
+    #[test]
+    fn spec_declares_the_bearer_scheme() {
+        let spec = serde_json::to_value(openapi_spec()).expect("spec to json");
+        assert_eq!(
+            spec["components"]["securitySchemes"]["bearer"]["scheme"],
+            "bearer"
+        );
+        assert_eq!(spec["security"][0]["bearer"], serde_json::json!([]));
     }
 
     /// spec 里每个 `$ref` 都要能解析 —— 漏注册一个 schema 就会留下悬空引用。
