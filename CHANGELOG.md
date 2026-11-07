@@ -22,6 +22,8 @@ WIST_ATLAS_TOKEN=<随机串> wist-atlas postgres-live serve --listen 0.0.0.0:808
 - 校验用常数时间比较；401 带 `WWW-Authenticate: Bearer`，响应体与其他错误同一信封。
 - `/api/docs` 阅读页顶部说明鉴权、每个接口标「需要令牌」——OpenAPI 里的令牌是
   `securityScheme`，不是请求参数，所以参数表里本来就不会有一行 token。
+- **每个接口带 curl 示例**（基址取页面 origin，路径参数写成 `<id>`，令牌用
+  `$WIST_ATLAS_TOKEN`），带「复制」按钮；页面顶部另有一份快速调用示例。
 - spec 里声明了 `bearer` 安全方案（`components.securitySchemes` + 全局 `security`）。
 - 两条单测：“每个读接口都挡”（直接打 Router）、“spec 声明了 bear”、“探活/文档/写入入口不挡”。
 

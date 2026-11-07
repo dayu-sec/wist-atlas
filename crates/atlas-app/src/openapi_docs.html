@@ -97,6 +97,35 @@
         padding: 0 7px;
         line-height: 17px;
       }
+      .curl {
+        display: flex;
+        align-items: flex-start;
+        gap: 8px;
+        margin: 4px 0 8px;
+      }
+      .curl pre {
+        flex: 1;
+        min-width: 0;
+        margin: 0;
+        padding: 9px 11px;
+        overflow-x: auto;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--code);
+        font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      .curl button {
+        flex: none;
+        padding: 5px 9px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: transparent;
+        color: var(--muted);
+        font: inherit;
+        font-size: 11.5px;
+        cursor: pointer;
+      }
+      .curl button:hover { color: var(--fg); border-color: var(--accent); }
     </style>
   </head>
   <body>
@@ -134,6 +163,39 @@
         if (className) node.className = className
         if (text !== undefined) node.textContent = text
         return node
+      }
+
+      /** 一段可复制的命令。`text` 是可直接粘进 shell 的原文。 */
+      function codeBlock(text) {
+        const wrap = el('div', 'curl')
+        const pre = document.createElement('pre')
+        pre.textContent = text
+        const button = el('button', '', '复制')
+        button.type = 'button'
+        button.addEventListener('click', () => {
+          const done = () => { button.textContent = '已复制' }
+          if (navigator.clipboard?.writeText) {
+            navigator.clipboard.writeText(text).then(done, done)
+          } else {
+            done()
+          }
+          setTimeout(() => { button.textContent = '复制' }, 1500)
+        })
+        wrap.appendChild(pre)
+        wrap.appendChild(button)
+        return wrap
+      }
+
+      /**
+       * 一个接口的 curl 示例。
+       *
+       * 基址用当前页的 origin（这一页就是 atlas 自己给的），路径参数保留 `{id}` 的语义
+       * 但写成 `<id>`，避免看起来像“可以直接跑”却 400。查询参数不编值：上面表格里有。
+       */
+      function curlFor(method, path) {
+        const target = path.replace(/\{([^}]+)\}/g, (_, name) => `<${name}>`)
+        const origin = window.location.origin
+        return `curl -s -X ${method.toUpperCase()} '${origin}${target}' \\\n  -H "Authorization: Bearer $WIST_ATLAS_TOKEN"`
       }
 
       function table(rows, headers) {
@@ -175,6 +237,15 @@
 
         const body = el('div', 'op__body')
         if (op.description) body.appendChild(el('p', 'muted', op.description))
+
+        body.appendChild(el('h3', '', '调用示例'))
+        body.appendChild(codeBlock(curlFor(method, path)))
+        const query = (op.parameters ?? []).filter((p) => p.in === 'query')
+        if (query.length > 0) {
+          body.appendChild(
+            el('div', 'muted', `查询参数：${query.map((p) => p.name).join(' / ')}（类型与说明见下表）`),
+          )
+        }
 
         const params = [...(op.parameters ?? [])]
         if (params.length > 0) {
@@ -221,6 +292,13 @@
             el('div', '', '本页接口要鉴权：请求头带 Authorization: Bearer <token>（部署方提供的令牌）。'),
           )
         }
+        const example = [
+          '# 令牌就是启动 atlas 时给的 WIST_ATLAS_TOKEN',
+          'export WIST_ATLAS_TOKEN=<token>',
+          '',
+          `curl -s -H "Authorization: Bearer $WIST_ATLAS_TOKEN" '${window.location.origin}/api/hosts?limit=5'`,
+        ].join('\n')
+        node.appendChild(codeBlock(example))
         const list = el('div', 'muted', '不要求令牌：/healthz（探活）、/api/openapi.json 与 /api/docs（接口形状，不含数据）。')
         list.style.marginTop = '4px'
         node.appendChild(list)
