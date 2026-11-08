@@ -501,3 +501,139 @@ pub(super) fn row_to_strings(row: tokio_postgres::Row) -> StorageResult<Vec<Stri
         })
         .collect()
 }
+
+// ── 软件指纹与实例（0006） ──────────────────────────────────
+
+pub(super) fn decode_software_artifact(
+    row: &[String],
+) -> StorageResult<atlas_domain::SoftwareArtifact> {
+    Ok(atlas_domain::SoftwareArtifact {
+        artifact_id: row[0].clone(),
+        version_id: empty_to_none(&row[1]),
+        artifact_kind: parse_software_enum::<atlas_domain::ArtifactKind>(&row[2])?,
+        sha256: row[3].clone(),
+        size_bytes: parse_optional_i64(&row[4])?,
+        build_id: empty_to_none(&row[5]),
+        package_manager: empty_to_none(&row[6]),
+        package_name: empty_to_none(&row[7]),
+        purl: empty_to_none(&row[8]),
+        interpreter_artifact_id: empty_to_none(&row[9]),
+        coordinate: parse_optional_json(&row[10])?,
+        first_seen_at: parse_optional_datetime(&row[11])?,
+        last_seen_at: parse_optional_datetime(&row[12])?,
+    })
+}
+
+pub(super) fn decode_software_instance(
+    row: &[String],
+) -> StorageResult<atlas_domain::SoftwareInstance> {
+    Ok(atlas_domain::SoftwareInstance {
+        instance_id: parse_uuid(&row[0])?,
+        tenant_id: TenantId(parse_uuid(&row[1])?),
+        host_id: parse_uuid(&row[2])?,
+        anchor_kind: parse_software_enum::<atlas_domain::AnchorKind>(&row[3])?,
+        anchor_value: row[4].clone(),
+        current_artifact_id: empty_to_none(&row[5]),
+        identity_missing_reason: empty_to_none(&row[6]),
+        claimed_package_name: empty_to_none(&row[7]),
+        claimed_product_id: empty_to_none(&row[8]),
+        claimed_version: empty_to_none(&row[9]),
+        claimed_source: parse_optional_software_enum::<atlas_domain::ClaimedSource>(&row[10])?,
+        role: parse_software_enum_list::<atlas_domain::SoftwareRole>(&row[11])?,
+        reason: parse_software_enum_list::<atlas_domain::SoftwareReason>(&row[12])?,
+        status: parse_software_enum::<atlas_domain::FingerprintStatus>(&row[13])?,
+        first_seen_at: parse_datetime(&row[14])?,
+        last_seen_at: parse_datetime(&row[15])?,
+        stale_at: parse_optional_datetime(&row[16])?,
+    })
+}
+
+pub(super) fn decode_software_fingerprint(
+    row: &[String],
+) -> StorageResult<atlas_domain::SoftwareFingerprint> {
+    Ok(atlas_domain::SoftwareFingerprint {
+        tenant_id: TenantId(parse_uuid(&row[0])?),
+        host_id: parse_uuid(&row[1])?,
+        artifact_id: row[2].clone(),
+        size_bytes: parse_optional_i64(&row[3])?.unwrap_or(0),
+        build_id: empty_to_none(&row[4]),
+        first_seen_at: parse_datetime(&row[5])?,
+        last_seen_at: parse_datetime(&row[6])?,
+    })
+}
+
+pub(super) fn decode_software_observation(
+    row: &[String],
+) -> StorageResult<atlas_domain::SoftwareInstanceObservation> {
+    Ok(atlas_domain::SoftwareInstanceObservation {
+        instance_id: parse_uuid(&row[0])?,
+        artifact_id: row[1].clone(),
+        observed_at: parse_datetime(&row[2])?,
+        version_running: empty_to_none(&row[3]),
+        version_installed: empty_to_none(&row[4]),
+    })
+}
+
+pub(super) fn decode_software_artifact_path(
+    row: &[String],
+) -> StorageResult<atlas_domain::SoftwareArtifactPath> {
+    Ok(atlas_domain::SoftwareArtifactPath {
+        instance_id: parse_uuid(&row[0])?,
+        path: row[1].clone(),
+        role: row[2].clone(),
+        size_bytes: parse_optional_i64(&row[3])?.unwrap_or(0),
+        mtime: parse_datetime(&row[4])?,
+        inode: parse_optional_i64(&row[5])?.unwrap_or(0),
+    })
+}
+
+pub(super) fn parse_optional_datetime(value: &str) -> StorageResult<Option<DateTime<Utc>>> {
+    match empty_to_none(value) {
+        Some(value) => parse_datetime(&value).map(Some),
+        None => Ok(None),
+    }
+}
+
+/// 闭集的库内形态是 snake_case（`systemd_unit` / `claimed_mismatch`），
+/// 而不是 `Debug` 的 `SystemdUnit` —— 前者是契约文档写的形状，后者是实现细节。
+pub(super) fn parse_software_enum<T>(value: &str) -> StorageResult<T>
+where
+    T: std::str::FromStr<Err = ()>,
+{
+    value
+        .parse::<T>()
+        .map_err(|_| crate::decode_failed(format!("unsupported enum value: {value}")))
+}
+
+pub(super) fn parse_optional_software_enum<T>(value: &str) -> StorageResult<Option<T>>
+where
+    T: std::str::FromStr<Err = ()>,
+{
+    match empty_to_none(value) {
+        Some(value) => parse_software_enum::<T>(&value).map(Some),
+        None => Ok(None),
+    }
+}
+
+/// JSON 数组 → 闭集列表。空串与 `[]` 都当空列表。
+pub(super) fn parse_software_enum_list<T>(value: &str) -> StorageResult<Vec<T>>
+where
+    T: std::str::FromStr<Err = ()>,
+{
+    let raw: Vec<String> = parse_optional_json(value)?.unwrap_or_default();
+    raw.iter()
+        .map(|item| parse_software_enum::<T>(item))
+        .collect()
+}
+
+pub(super) fn parse_optional_json<T>(value: &str) -> StorageResult<Option<T>>
+where
+    T: serde::de::DeserializeOwned,
+{
+    match empty_to_none(value) {
+        Some(value) => serde_json::from_str::<T>(&value)
+            .map(Some)
+            .map_err(|err| crate::decode_failed(format!("parse json column: {err}"))),
+        None => Ok(None),
+    }
+}

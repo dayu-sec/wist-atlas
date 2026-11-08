@@ -80,6 +80,8 @@ dependencies = [
  "atlas-domain",
  "chrono",
  "orion-error",
+ "serde",
+ "serde_json",
  "tokio",
  "tokio-postgres",
  "uuid",

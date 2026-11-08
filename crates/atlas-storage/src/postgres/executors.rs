@@ -46,6 +46,11 @@ struct MemoryPostgresState {
     subjects: std::collections::BTreeMap<String, Vec<String>>,
     responsibility_assignments: std::collections::BTreeMap<String, Vec<String>>,
     ingest_jobs: std::collections::BTreeMap<String, Vec<String>>,
+    software_artifacts: std::collections::BTreeMap<String, Vec<String>>,
+    software_instances: std::collections::BTreeMap<String, Vec<String>>,
+    software_fingerprints: std::collections::BTreeMap<String, Vec<String>>,
+    software_instance_observations: std::collections::BTreeMap<String, Vec<String>>,
+    software_artifact_paths: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 impl PostgresExecutor for RecordingExecutor {
@@ -186,6 +191,42 @@ impl PostgresExecutor for MemoryPostgresExecutor {
             }
             value if value == sql::UPSERT_INGEST_JOB => {
                 state.ingest_jobs.insert(params[0].clone(), params.to_vec());
+            }
+            value if value == sql::UPSERT_SOFTWARE_ARTIFACT => {
+                state
+                    .software_artifacts
+                    .insert(params[0].clone(), params.to_vec());
+            }
+            value if value == sql::UPSERT_SOFTWARE_INSTANCE => {
+                // 位置寻址：(host_id, anchor_kind, anchor_value)。
+                state.software_instances.insert(
+                    format!("{}:{}:{}", params[2], params[3], params[4]),
+                    params.to_vec(),
+                );
+            }
+            value if value == sql::UPSERT_SOFTWARE_FINGERPRINT => {
+                state.software_fingerprints.insert(
+                    format!("{}:{}:{}", params[0], params[1], params[2]),
+                    params.to_vec(),
+                );
+            }
+            value if value == sql::UPSERT_SOFTWARE_INSTANCE_OBSERVATION => {
+                state.software_instance_observations.insert(
+                    format!("{}:{}:{}", params[0], params[1], params[2]),
+                    params.to_vec(),
+                );
+            }
+            value if value == sql::UPSERT_SOFTWARE_ARTIFACT_PATH => {
+                state
+                    .software_artifact_paths
+                    .insert(format!("{}:{}", params[0], params[1]), params.to_vec());
+            }
+            value if value == sql::MARK_SOFTWARE_INSTANCE_STALE => {
+                for row in state.software_instances.values_mut() {
+                    if row[0] == params[0] {
+                        row[16] = params[1].clone();
+                    }
+                }
             }
             _ => {}
         }
@@ -371,6 +412,55 @@ impl PostgresExecutor for MemoryPostgresExecutor {
                     .cloned()
                     .collect()
             }
+            value if value == sql::GET_SOFTWARE_ARTIFACT => state
+                .software_artifacts
+                .get(&params[0])
+                .into_iter()
+                .cloned()
+                .collect(),
+            value if value == sql::GET_SOFTWARE_INSTANCE => state
+                .software_instances
+                .values()
+                .filter(|row| row[0] == params[0])
+                .cloned()
+                .collect(),
+            value if value == sql::GET_SOFTWARE_INSTANCE_BY_ANCHOR => state
+                .software_instances
+                .values()
+                .filter(|row| row[2] == params[0] && row[3] == params[1] && row[4] == params[2])
+                .cloned()
+                .collect(),
+            value if value == sql::LIST_SOFTWARE_INSTANCES_FOR_HOST => state
+                .software_instances
+                .values()
+                // 现役视图：stale_at（第 17 列）为空。
+                .filter(|row| row[2] == params[0] && row[16].is_empty())
+                .cloned()
+                .collect(),
+            value if value == sql::LIST_LIVE_SOFTWARE_INSTANCE_ANCHORS => state
+                .software_instances
+                .values()
+                .filter(|row| row[2] == params[0] && row[16].is_empty())
+                .map(|row| vec![row[0].clone(), row[3].clone(), row[4].clone()])
+                .collect(),
+            value if value == sql::LIST_SOFTWARE_FINGERPRINTS_FOR_HOST => state
+                .software_fingerprints
+                .values()
+                .filter(|row| row[1] == params[0])
+                .cloned()
+                .collect(),
+            value if value == sql::LIST_SOFTWARE_INSTANCE_OBSERVATIONS => state
+                .software_instance_observations
+                .values()
+                .filter(|row| row[0] == params[0])
+                .cloned()
+                .collect(),
+            value if value == sql::LIST_SOFTWARE_ARTIFACT_PATHS => state
+                .software_artifact_paths
+                .values()
+                .filter(|row| row[0] == params[0])
+                .cloned()
+                .collect(),
             _ => Vec::new(),
         };
 

@@ -1,15 +1,17 @@
 use atlas_domain::{
-    ContainerRuntime, HostInventory, HostNetAssoc, HostRuntimeState, InstanceEndpoint,
+    AnchorKey, ContainerRuntime, HostInventory, HostNetAssoc, HostRuntimeState, InstanceEndpoint,
     NetworkDomain, NetworkSegment, ObjectKind, ProcessRuntimeState, ResponsibilityAssignment,
-    RuntimeBinding, RuntimeObjectType, ServiceEntity, ServiceInstance, Subject, TenantId,
+    RuntimeBinding, RuntimeObjectType, ServiceEntity, ServiceInstance, SoftwareArtifact,
+    SoftwareArtifactPath, SoftwareFingerprint, SoftwareInstance, SoftwareInstanceObservation,
+    Subject, TenantId,
 };
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::{
-    AsyncCatalogStore, AsyncGovernanceStore, AsyncRuntimeStore, CatalogStore, GovernanceStore,
-    IngestStore, Page, RuntimeStore, StorageResult, memory::AsyncIngestStore,
-    memory::IngestJobEntry, migrations::MIGRATIONS, not_configured,
+    AsyncCatalogStore, AsyncGovernanceStore, AsyncRuntimeStore, AsyncSoftwareStore, CatalogStore,
+    GovernanceStore, IngestStore, Page, RuntimeStore, SoftwareStore, StorageResult,
+    memory::AsyncIngestStore, memory::IngestJobEntry, migrations::MIGRATIONS, not_configured,
 };
 
 mod sql;
@@ -355,6 +357,75 @@ impl AsyncIngestStore for PostgresTopologyStore<MemoryPostgresExecutor> {
 
     async fn get_ingest_job(&self, ingest_id: &str) -> StorageResult<Option<IngestJobEntry>> {
         IngestStore::get_ingest_job(self, ingest_id)
+    }
+}
+
+impl AsyncSoftwareStore for PostgresTopologyStore<MemoryPostgresExecutor> {
+    async fn upsert_artifact(&self, artifact: &SoftwareArtifact) -> StorageResult<()> {
+        SoftwareStore::upsert_artifact(self, artifact)
+    }
+    async fn get_artifact(&self, artifact_id: &str) -> StorageResult<Option<SoftwareArtifact>> {
+        SoftwareStore::get_artifact(self, artifact_id)
+    }
+    async fn upsert_instance(&self, instance: &SoftwareInstance) -> StorageResult<()> {
+        SoftwareStore::upsert_instance(self, instance)
+    }
+    async fn get_instance(&self, instance_id: Uuid) -> StorageResult<Option<SoftwareInstance>> {
+        SoftwareStore::get_instance(self, instance_id)
+    }
+    async fn get_instance_by_anchor(
+        &self,
+        host_id: Uuid,
+        anchor: &AnchorKey,
+    ) -> StorageResult<Option<SoftwareInstance>> {
+        SoftwareStore::get_instance_by_anchor(self, host_id, anchor)
+    }
+    async fn list_instances_for_host(
+        &self,
+        host_id: Uuid,
+        page: Page,
+    ) -> StorageResult<Vec<SoftwareInstance>> {
+        SoftwareStore::list_instances_for_host(self, host_id, page)
+    }
+    async fn mark_instances_stale(
+        &self,
+        host_id: Uuid,
+        seen: &[AnchorKey],
+        at: DateTime<Utc>,
+    ) -> StorageResult<u64> {
+        SoftwareStore::mark_instances_stale(self, host_id, seen, at)
+    }
+    async fn upsert_fingerprint(&self, fingerprint: &SoftwareFingerprint) -> StorageResult<()> {
+        SoftwareStore::upsert_fingerprint(self, fingerprint)
+    }
+    async fn list_fingerprints_for_host(
+        &self,
+        host_id: Uuid,
+        page: Page,
+    ) -> StorageResult<Vec<SoftwareFingerprint>> {
+        SoftwareStore::list_fingerprints_for_host(self, host_id, page)
+    }
+    async fn record_observation(
+        &self,
+        observation: &SoftwareInstanceObservation,
+    ) -> StorageResult<()> {
+        SoftwareStore::record_observation(self, observation)
+    }
+    async fn list_observations_for_instance(
+        &self,
+        instance_id: Uuid,
+        page: Page,
+    ) -> StorageResult<Vec<SoftwareInstanceObservation>> {
+        SoftwareStore::list_observations_for_instance(self, instance_id, page)
+    }
+    async fn upsert_artifact_path(&self, path: &SoftwareArtifactPath) -> StorageResult<()> {
+        SoftwareStore::upsert_artifact_path(self, path)
+    }
+    async fn list_artifact_paths_for_instance(
+        &self,
+        instance_id: Uuid,
+    ) -> StorageResult<Vec<SoftwareArtifactPath>> {
+        SoftwareStore::list_artifact_paths_for_instance(self, instance_id)
     }
 }
 

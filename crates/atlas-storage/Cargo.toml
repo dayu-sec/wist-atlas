@@ -12,3 +12,5 @@ atlas-domain = { path = "../atlas-domain" }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "net"] }
 tokio-postgres = { version = "0.7.17", features = ["with-chrono-0_4", "with-uuid-1"] }
 uuid.workspace = true
+serde.workspace = true
+serde_json.workspace = true

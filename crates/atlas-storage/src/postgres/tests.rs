@@ -632,3 +632,184 @@ fn memory_postgres_executor_round_trips_minimal_p0_records() {
             .is_some()
     );
 }
+
+mod software {
+    use atlas_domain::{
+        AnchorKind, ClaimedSource, FingerprintStatus, SoftwareArtifact, SoftwareFingerprint,
+        SoftwareInstance, SoftwareInstanceObservation, SoftwareReason, SoftwareRole,
+    };
+    use chrono::{Duration, Utc};
+
+    use crate::{Page, SoftwareStore};
+
+    use super::*;
+
+    fn sample_instance(
+        host_id: Uuid,
+        tenant_id: TenantId,
+        now: chrono::DateTime<Utc>,
+    ) -> SoftwareInstance {
+        SoftwareInstance {
+            instance_id: Uuid::new_v4(),
+            tenant_id,
+            host_id,
+            anchor_kind: AnchorKind::SystemdUnit,
+            anchor_value: "nginx.service".to_string(),
+            current_artifact_id: Some("sha256:aaaa".to_string()),
+            identity_missing_reason: None,
+            claimed_package_name: Some("nginx".to_string()),
+            claimed_product_id: None,
+            claimed_version: Some("1.27.5-r1".to_string()),
+            claimed_source: Some(ClaimedSource::PathPackage),
+            role: vec![SoftwareRole::Middleware, SoftwareRole::ExposedService],
+            reason: vec![SoftwareReason::Listener],
+            status: FingerprintStatus::Observed,
+            first_seen_at: now,
+            last_seen_at: now,
+            stale_at: None,
+        }
+    }
+
+    /// 一条真回归：**UPSERT 的参数顺序必须与 SELECT 的列顺序一致**。
+    ///
+    /// 内存替身按参数向量存行、按列下标解码，所以顺序一错这里立刻炸；
+    /// 而真 PG 会默默把值写到错的列上。
+    #[test]
+    fn software_rows_round_trip_through_the_sql_shape() {
+        let store = PostgresTopologyStore::new(MemoryPostgresExecutor::default());
+        let tenant_id = TenantId(Uuid::new_v4());
+        let host_id = Uuid::new_v4();
+        let now = Utc::now();
+
+        let instance = sample_instance(host_id, tenant_id, now);
+        SoftwareStore::upsert_instance(&store, &instance).unwrap();
+
+        let loaded = SoftwareStore::get_instance(&store, instance.instance_id)
+            .unwrap()
+            .expect("按 id 取回");
+        assert_eq!(loaded.anchor_kind, AnchorKind::SystemdUnit);
+        assert_eq!(loaded.anchor_value, "nginx.service");
+        assert_eq!(loaded.claimed_package_name.as_deref(), Some("nginx"));
+        assert_eq!(loaded.claimed_version.as_deref(), Some("1.27.5-r1"));
+        assert_eq!(loaded.claimed_source, Some(ClaimedSource::PathPackage));
+        assert_eq!(loaded.status, FingerprintStatus::Observed);
+        // 闭集列表往返：这两个列存的是 JSON 数组。
+        assert_eq!(
+            loaded.role,
+            vec![SoftwareRole::Middleware, SoftwareRole::ExposedService]
+        );
+        assert_eq!(loaded.reason, vec![SoftwareReason::Listener]);
+        assert!(loaded.stale_at.is_none());
+    }
+
+    #[test]
+    fn retiring_through_sql_only_touches_this_host() {
+        let store = PostgresTopologyStore::new(MemoryPostgresExecutor::default());
+        let tenant_id = TenantId(Uuid::new_v4());
+        let now = Utc::now();
+        let host_a = Uuid::new_v4();
+        let host_b = Uuid::new_v4();
+
+        SoftwareStore::upsert_instance(&store, &sample_instance(host_a, tenant_id, now)).unwrap();
+        SoftwareStore::upsert_instance(&store, &sample_instance(host_b, tenant_id, now)).unwrap();
+
+        // 本轮 host_a 什么都没看到。
+        let retired = SoftwareStore::mark_instances_stale(&store, host_a, &[], now).unwrap();
+        assert_eq!(retired, 1);
+
+        assert_eq!(
+            SoftwareStore::list_instances_for_host(&store, host_a, Page::default())
+                .unwrap()
+                .len(),
+            0
+        );
+        assert_eq!(
+            SoftwareStore::list_instances_for_host(&store, host_b, Page::default())
+                .unwrap()
+                .len(),
+            1,
+            "别的机器的实例不能被一起清掉"
+        );
+    }
+
+    #[test]
+    fn artifact_coordinate_round_trips_as_json() {
+        let store = PostgresTopologyStore::new(MemoryPostgresExecutor::default());
+        let artifact = SoftwareArtifact {
+            artifact_id: SoftwareArtifact::content_id("d3f1c9e2"),
+            sha256: "d3f1c9e2".to_string(),
+            artifact_kind: atlas_domain::ArtifactKind::Executable,
+            version_id: Some("postgresql@16.15".to_string()),
+            size_bytes: Some(7340032),
+            build_id: None,
+            package_manager: Some("dpkg".to_string()),
+            package_name: Some("postgresql-16".to_string()),
+            purl: None,
+            interpreter_artifact_id: None,
+            coordinate: Some(atlas_domain::ArtifactCoordinate {
+                distro_id: Some("debian".to_string()),
+                distro_version: Some("12".to_string()),
+                component: Some("main".to_string()),
+                arch: Some("amd64".to_string()),
+                libc: Some("glibc".to_string()),
+            }),
+            first_seen_at: Some(Utc::now()),
+            last_seen_at: None,
+        };
+        SoftwareStore::upsert_artifact(&store, &artifact).unwrap();
+        let loaded = SoftwareStore::get_artifact(&store, "sha256:d3f1c9e2")
+            .unwrap()
+            .expect("按内容寻址取回");
+        let coordinate = loaded.coordinate.expect("coordinate 应往返");
+        assert_eq!(coordinate.distro_id.as_deref(), Some("debian"));
+        assert_eq!(coordinate.arch.as_deref(), Some("amd64"));
+        // 只有 first_seen 有值、last_seen 为空也要能解码。
+        assert!(loaded.first_seen_at.is_some());
+        assert!(loaded.last_seen_at.is_none());
+    }
+
+    #[test]
+    fn observation_and_fingerprint_round_trip() {
+        let store = PostgresTopologyStore::new(MemoryPostgresExecutor::default());
+        let tenant_id = TenantId(Uuid::new_v4());
+        let host_id = Uuid::new_v4();
+        let instance_id = Uuid::new_v4();
+        let now = Utc::now();
+
+        SoftwareStore::record_observation(
+            &store,
+            &SoftwareInstanceObservation {
+                instance_id,
+                artifact_id: "sha256:aaaa".to_string(),
+                observed_at: now,
+                // 升级没重启：跑 1.23、装 1.24。
+                version_running: Some("1.23".to_string()),
+                version_installed: Some("1.24".to_string()),
+            },
+        )
+        .unwrap();
+        let observations =
+            SoftwareStore::list_observations_for_instance(&store, instance_id, Page::default())
+                .unwrap();
+        assert_eq!(observations.len(), 1);
+        assert_eq!(observations[0].version_running.as_deref(), Some("1.23"));
+
+        SoftwareStore::upsert_fingerprint(
+            &store,
+            &SoftwareFingerprint {
+                tenant_id,
+                host_id,
+                artifact_id: "sha256:aaaa".to_string(),
+                size_bytes: 1024,
+                build_id: None,
+                first_seen_at: now - Duration::days(1),
+                last_seen_at: now,
+            },
+        )
+        .unwrap();
+        let fingerprints =
+            SoftwareStore::list_fingerprints_for_host(&store, host_id, Page::default()).unwrap();
+        assert_eq!(fingerprints.len(), 1);
+        assert_eq!(fingerprints[0].size_bytes, 1024);
+    }
+}

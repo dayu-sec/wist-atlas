@@ -539,3 +539,177 @@ WHERE object_type = $1 AND object_id = NULLIF($2, '')::uuid
 ORDER BY created_at ASC, binding_id ASC
 LIMIT NULLIF($3, '')::int4 OFFSET NULLIF($4, '')::int4
 "#;
+
+// ── 软件指纹与实例（0006） ──────────────────────────────────
+
+pub const UPSERT_SOFTWARE_ARTIFACT: &str = r#"
+INSERT INTO software_artifact (
+    artifact_id, version_id, artifact_kind, sha256, size_bytes, build_id,
+    package_manager, package_name, purl, interpreter_artifact_id, coordinate,
+    first_seen_at, last_seen_at
+) VALUES (
+    $1, NULLIF($2, ''), COALESCE(NULLIF($3, ''), 'executable'), $4,
+    NULLIF($5, '')::bigint, NULLIF($6, ''), NULLIF($7, ''), NULLIF($8, ''),
+    NULLIF($9, ''), NULLIF($10, ''), NULLIF($11, '')::jsonb,
+    NULLIF($12, '')::timestamptz, NULLIF($13, '')::timestamptz
+)
+ON CONFLICT (artifact_id) DO UPDATE SET
+    version_id = COALESCE(EXCLUDED.version_id, software_artifact.version_id),
+    artifact_kind = EXCLUDED.artifact_kind,
+    sha256 = EXCLUDED.sha256,
+    size_bytes = COALESCE(EXCLUDED.size_bytes, software_artifact.size_bytes),
+    build_id = COALESCE(EXCLUDED.build_id, software_artifact.build_id),
+    package_manager = COALESCE(EXCLUDED.package_manager, software_artifact.package_manager),
+    package_name = COALESCE(EXCLUDED.package_name, software_artifact.package_name),
+    purl = COALESCE(EXCLUDED.purl, software_artifact.purl),
+    interpreter_artifact_id =
+        COALESCE(EXCLUDED.interpreter_artifact_id, software_artifact.interpreter_artifact_id),
+    coordinate = COALESCE(EXCLUDED.coordinate, software_artifact.coordinate),
+    -- 首次见到保留最早；最后见到取更晚的（乱序重投不会把时间倒退）。
+    first_seen_at = LEAST(software_artifact.first_seen_at, EXCLUDED.first_seen_at),
+    last_seen_at = GREATEST(software_artifact.last_seen_at, EXCLUDED.last_seen_at)
+"#;
+
+pub const GET_SOFTWARE_ARTIFACT: &str = r#"
+SELECT artifact_id, version_id, artifact_kind, sha256, size_bytes, build_id,
+       package_manager, package_name, purl, interpreter_artifact_id,
+       coordinate::text, first_seen_at, last_seen_at
+FROM software_artifact
+WHERE artifact_id = $1
+"#;
+
+pub const UPSERT_SOFTWARE_INSTANCE: &str = r#"
+INSERT INTO software_instance (
+    instance_id, tenant_id, host_id, anchor_kind, anchor_value,
+    current_artifact_id, identity_missing_reason,
+    claimed_package_name, claimed_product_id, claimed_version, claimed_source,
+    role, reason, status, first_seen_at, last_seen_at, stale_at
+) VALUES (
+    NULLIF($1, '')::uuid, NULLIF($2, '')::uuid, NULLIF($3, '')::uuid, $4, $5,
+    NULLIF($6, ''), NULLIF($7, ''),
+    NULLIF($8, ''), NULLIF($9, ''), NULLIF($10, ''), NULLIF($11, ''),
+    COALESCE(NULLIF($12, ''), '[]'), COALESCE(NULLIF($13, ''), '[]'),
+    $14, NULLIF($15, '')::timestamptz, NULLIF($16, '')::timestamptz,
+    NULLIF($17, '')::timestamptz
+)
+ON CONFLICT (host_id, anchor_kind, anchor_value) DO UPDATE SET
+    tenant_id = EXCLUDED.tenant_id,
+    current_artifact_id = EXCLUDED.current_artifact_id,
+    identity_missing_reason = EXCLUDED.identity_missing_reason,
+    claimed_package_name = EXCLUDED.claimed_package_name,
+    claimed_product_id = EXCLUDED.claimed_product_id,
+    claimed_version = EXCLUDED.claimed_version,
+    claimed_source = EXCLUDED.claimed_source,
+    role = EXCLUDED.role,
+    reason = EXCLUDED.reason,
+    status = EXCLUDED.status,
+    last_seen_at = EXCLUDED.last_seen_at,
+    -- 看到了就复活；计数归零与进程的 stale 同一语义。
+    stale_at = EXCLUDED.stale_at
+"#;
+
+pub const GET_SOFTWARE_INSTANCE: &str = r#"
+SELECT instance_id, tenant_id, host_id, anchor_kind, anchor_value,
+       current_artifact_id, identity_missing_reason,
+       claimed_package_name, claimed_product_id, claimed_version, claimed_source,
+       role, reason, status, first_seen_at, last_seen_at, stale_at
+FROM software_instance
+WHERE instance_id = NULLIF($1, '')::uuid
+"#;
+
+pub const GET_SOFTWARE_INSTANCE_BY_ANCHOR: &str = r#"
+SELECT instance_id, tenant_id, host_id, anchor_kind, anchor_value,
+       current_artifact_id, identity_missing_reason,
+       claimed_package_name, claimed_product_id, claimed_version, claimed_source,
+       role, reason, status, first_seen_at, last_seen_at, stale_at
+FROM software_instance
+WHERE host_id = NULLIF($1, '')::uuid AND anchor_kind = $2 AND anchor_value = $3
+"#;
+
+pub const LIST_SOFTWARE_INSTANCES_FOR_HOST: &str = r#"
+SELECT instance_id, tenant_id, host_id, anchor_kind, anchor_value,
+       current_artifact_id, identity_missing_reason,
+       claimed_package_name, claimed_product_id, claimed_version, claimed_source,
+       role, reason, status, first_seen_at, last_seen_at, stale_at
+FROM software_instance
+WHERE host_id = NULLIF($1, '')::uuid AND stale_at IS NULL
+ORDER BY anchor_kind ASC, anchor_value ASC
+LIMIT NULLIF($2, '')::int4 OFFSET NULLIF($3, '')::int4
+"#;
+
+pub const LIST_LIVE_SOFTWARE_INSTANCE_ANCHORS: &str = r#"
+SELECT instance_id, anchor_kind, anchor_value
+FROM software_instance
+WHERE host_id = NULLIF($1, '')::uuid AND stale_at IS NULL
+"#;
+
+pub const MARK_SOFTWARE_INSTANCE_STALE: &str = r#"
+UPDATE software_instance
+SET stale_at = NULLIF($2, '')::timestamptz
+WHERE instance_id = NULLIF($1, '')::uuid
+"#;
+
+pub const UPSERT_SOFTWARE_FINGERPRINT: &str = r#"
+INSERT INTO software_fingerprint (
+    tenant_id, host_id, artifact_id, size_bytes, build_id, first_seen_at, last_seen_at
+) VALUES (
+    NULLIF($1, '')::uuid, NULLIF($2, '')::uuid, $3,
+    COALESCE(NULLIF($4, '')::bigint, 0), NULLIF($5, ''),
+    NULLIF($6, '')::timestamptz, NULLIF($7, '')::timestamptz
+)
+ON CONFLICT (tenant_id, host_id, artifact_id) DO UPDATE SET
+    size_bytes = EXCLUDED.size_bytes,
+    build_id = COALESCE(EXCLUDED.build_id, software_fingerprint.build_id),
+    first_seen_at = LEAST(software_fingerprint.first_seen_at, EXCLUDED.first_seen_at),
+    last_seen_at = GREATEST(software_fingerprint.last_seen_at, EXCLUDED.last_seen_at)
+"#;
+
+pub const LIST_SOFTWARE_FINGERPRINTS_FOR_HOST: &str = r#"
+SELECT tenant_id, host_id, artifact_id, size_bytes, build_id, first_seen_at, last_seen_at
+FROM software_fingerprint
+WHERE host_id = NULLIF($1, '')::uuid
+ORDER BY artifact_id ASC
+LIMIT NULLIF($2, '')::int4 OFFSET NULLIF($3, '')::int4
+"#;
+
+pub const UPSERT_SOFTWARE_INSTANCE_OBSERVATION: &str = r#"
+INSERT INTO software_instance_observation (
+    instance_id, artifact_id, observed_at, version_running, version_installed
+) VALUES (
+    NULLIF($1, '')::uuid, $2, NULLIF($3, '')::timestamptz,
+    NULLIF($4, ''), NULLIF($5, '')
+)
+ON CONFLICT (instance_id, artifact_id, observed_at) DO UPDATE SET
+    version_running = EXCLUDED.version_running,
+    version_installed = EXCLUDED.version_installed
+"#;
+
+pub const LIST_SOFTWARE_INSTANCE_OBSERVATIONS: &str = r#"
+SELECT instance_id, artifact_id, observed_at, version_running, version_installed
+FROM software_instance_observation
+WHERE instance_id = NULLIF($1, '')::uuid
+ORDER BY observed_at DESC
+LIMIT NULLIF($2, '')::int4 OFFSET NULLIF($3, '')::int4
+"#;
+
+pub const UPSERT_SOFTWARE_ARTIFACT_PATH: &str = r#"
+INSERT INTO software_artifact_path (
+    instance_id, path, role, size_bytes, mtime, inode
+) VALUES (
+    NULLIF($1, '')::uuid, $2, $3,
+    COALESCE(NULLIF($4, '')::bigint, 0), NULLIF($5, '')::timestamptz,
+    COALESCE(NULLIF($6, '')::bigint, 0)
+)
+ON CONFLICT (instance_id, path) DO UPDATE SET
+    role = EXCLUDED.role,
+    size_bytes = EXCLUDED.size_bytes,
+    mtime = EXCLUDED.mtime,
+    inode = EXCLUDED.inode
+"#;
+
+pub const LIST_SOFTWARE_ARTIFACT_PATHS: &str = r#"
+SELECT instance_id, path, role, size_bytes, mtime, inode
+FROM software_artifact_path
+WHERE instance_id = NULLIF($1, '')::uuid
+ORDER BY role ASC, path ASC
+"#;

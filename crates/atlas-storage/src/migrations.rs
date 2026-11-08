@@ -9,12 +9,15 @@ pub const PRESENCE_STALE_VERSION: &str = "0002_presence_stale";
 pub const HOST_ARCH_PRESENCE_VERSION: &str = "0003_host_arch_presence";
 pub const INSTANCE_ENDPOINT_VERSION: &str = "0004_instance_endpoint";
 pub const CONTAINER_RUNTIME_VERSION: &str = "0005_container_runtime";
+pub const SOFTWARE_FINGERPRINT_VERSION: &str = "0006_software_fingerprint";
 
 pub const INITIAL_SCHEMA_SQL: &str = include_str!("../migrations/0001_initial_schema.sql");
 pub const PRESENCE_STALE_SQL: &str = include_str!("../migrations/0002_presence_stale.sql");
 pub const HOST_ARCH_PRESENCE_SQL: &str = include_str!("../migrations/0003_host_arch_presence.sql");
 pub const INSTANCE_ENDPOINT_SQL: &str = include_str!("../migrations/0004_instance_endpoint.sql");
 pub const CONTAINER_RUNTIME_SQL: &str = include_str!("../migrations/0005_container_runtime.sql");
+pub const SOFTWARE_FINGERPRINT_SQL: &str =
+    include_str!("../migrations/0006_software_fingerprint.sql");
 
 pub const MIGRATIONS: &[Migration] = &[
     Migration {
@@ -36,6 +39,10 @@ pub const MIGRATIONS: &[Migration] = &[
     Migration {
         version: CONTAINER_RUNTIME_VERSION,
         sql: CONTAINER_RUNTIME_SQL,
+    },
+    Migration {
+        version: SOFTWARE_FINGERPRINT_VERSION,
+        sql: SOFTWARE_FINGERPRINT_SQL,
     },
 ];
 
@@ -139,5 +146,42 @@ mod tests {
         // 升级前的存量主机没有计数：默认 0 = 存活，不能因为缺失列就把老资产全标退役。
         let sql = super::HOST_ARCH_PRESENCE_SQL;
         assert!(sql.contains("miss_count BIGINT NOT NULL DEFAULT 0"));
+    }
+
+    #[test]
+    fn software_migration_lands_the_customer_domain_and_the_artifact_dictionary() {
+        let sql = super::SOFTWARE_FINGERPRINT_SQL;
+        for table in [
+            "software_artifact",
+            "software_instance",
+            "software_fingerprint",
+            "software_instance_observation",
+            "software_artifact_path",
+        ] {
+            assert!(
+                sql.contains(&format!("CREATE TABLE IF NOT EXISTS {table}")),
+                "software migration should create {table}"
+            );
+        }
+    }
+
+    #[test]
+    fn software_migration_keeps_identity_rules_in_the_schema() {
+        let sql = super::SOFTWARE_FINGERPRINT_SQL;
+        // 一个部署位只能有一行：否则同一份软件每轮采样都可能给不同身份。
+        assert!(sql.contains("UNIQUE (host_id, anchor_kind, anchor_value)"));
+        // 允许「没有 ID」，不允许「假装有 ID」。
+        assert!(sql.contains("software_instance_identity_or_reason"));
+        assert!(
+            sql.contains("current_artifact_id IS NOT NULL OR identity_missing_reason IS NOT NULL")
+        );
+    }
+
+    #[test]
+    fn software_migration_does_not_resurrect_the_package_view() {
+        // `software_installation` 已并入 `software_instance`（2026-11-08）。
+        // 它一旦回流，就会出现两套客户域模型、两条 join、两份会漂的事实。
+        let sql = super::SOFTWARE_FINGERPRINT_SQL;
+        assert!(!sql.contains("CREATE TABLE IF NOT EXISTS software_installation"));
     }
 }

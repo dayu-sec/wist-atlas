@@ -3,7 +3,8 @@ use std::sync::{Arc, Mutex};
 use atlas_domain::{
     ContainerRuntime, HostInventory, HostNetAssoc, HostRuntimeState, InstanceEndpoint,
     NetworkDomain, NetworkSegment, ProcessRuntimeState, ResponsibilityAssignment, RuntimeBinding,
-    ServiceEntity, ServiceInstance, Subject, TenantId,
+    ServiceEntity, ServiceInstance, SoftwareArtifact, SoftwareArtifactPath, SoftwareFingerprint,
+    SoftwareInstance, SoftwareInstanceObservation, Subject, TenantId,
 };
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
@@ -51,6 +52,11 @@ struct MemoryState {
     subjects: Vec<Subject>,
     responsibility_assignments: Vec<ResponsibilityAssignment>,
     ingest_jobs: Vec<IngestJobEntry>,
+    software_artifacts: Vec<SoftwareArtifact>,
+    software_instances: Vec<SoftwareInstance>,
+    software_fingerprints: Vec<SoftwareFingerprint>,
+    software_instance_observations: Vec<SoftwareInstanceObservation>,
+    software_artifact_paths: Vec<SoftwareArtifactPath>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -71,6 +77,7 @@ mod catalog;
 mod governance;
 mod ingest;
 mod runtime;
+mod software;
 
 #[cfg(test)]
 mod tests;

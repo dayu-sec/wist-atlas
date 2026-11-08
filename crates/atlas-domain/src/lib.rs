@@ -5,6 +5,7 @@ pub mod governance;
 pub mod ingest;
 pub mod read_model;
 pub mod runtime;
+pub mod software;
 pub mod sync;
 
 pub use catalog::*;
@@ -14,4 +15,5 @@ pub use governance::*;
 pub use ingest::*;
 pub use read_model::*;
 pub use runtime::*;
+pub use software::*;
 pub use sync::*;

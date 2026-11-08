@@ -1,9 +1,11 @@
 use atlas_domain::{
-    BusinessDomain, ClusterInventory, ContainerRuntime, ExternalIdentityLink, ExternalSyncCursor,
-    HostInventory, HostNetAssoc, HostRuntimeState, InstanceEndpoint, NamespaceInventory,
-    NetworkDomain, NetworkSegment, ObjectKind, PodInventory, PodPlacement, ProcessRuntimeState,
-    ResponsibilityAssignment, RuntimeBinding, ServiceEntity, ServiceInstance, Subject, Subsystem,
-    SystemBoundary, TenantId, WorkloadEntity, WorkloadPodMembership,
+    AnchorKey, BusinessDomain, ClusterInventory, ContainerRuntime, ExternalIdentityLink,
+    ExternalSyncCursor, HostInventory, HostNetAssoc, HostRuntimeState, InstanceEndpoint,
+    NamespaceInventory, NetworkDomain, NetworkSegment, ObjectKind, PodInventory, PodPlacement,
+    ProcessRuntimeState, ResponsibilityAssignment, RuntimeBinding, ServiceEntity, ServiceInstance,
+    SoftwareArtifact, SoftwareArtifactPath, SoftwareFingerprint, SoftwareInstance,
+    SoftwareInstanceObservation, Subject, Subsystem, SystemBoundary, TenantId, WorkloadEntity,
+    WorkloadPodMembership,
 };
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
@@ -348,4 +350,103 @@ pub trait AsyncSyncStore: Sync {
         &self,
         cursor_id: Uuid,
     ) -> StorageResult<Option<ExternalSyncCursor>>;
+}
+
+/// 软件指纹与实例（客户域）。
+///
+/// 写入语义是**归并**不是整表替换：一个部署位（`host × anchor`）跨轮次是同一行，
+/// 只有本轮快照里没出现才标 `stale_at`。整表替换会把「第一轮就见过、本轮没采到」
+/// 与「这台机从来没装过」混为一谈。
+pub trait SoftwareStore {
+    fn upsert_artifact(&self, artifact: &SoftwareArtifact) -> StorageResult<()>;
+    fn get_artifact(&self, artifact_id: &str) -> StorageResult<Option<SoftwareArtifact>>;
+
+    /// 按 `(host_id, anchor_kind, anchor_value)` 归并：已存在则更新，不存在则插入。
+    fn upsert_instance(&self, instance: &SoftwareInstance) -> StorageResult<()>;
+    fn get_instance(&self, instance_id: Uuid) -> StorageResult<Option<SoftwareInstance>>;
+    fn get_instance_by_anchor(
+        &self,
+        host_id: Uuid,
+        anchor: &AnchorKey,
+    ) -> StorageResult<Option<SoftwareInstance>>;
+    /// 这台主机上**现役**的实例（`stale_at IS NULL`）。退役行留在表里供回溯。
+    fn list_instances_for_host(
+        &self,
+        host_id: Uuid,
+        page: Page,
+    ) -> StorageResult<Vec<SoftwareInstance>>;
+
+    /// 本轮快照里没出现的现役实例标为退役。返回被标的数量。
+    ///
+    /// 只在同一台主机内比对：跨主机按 anchor 清会把别的机器的实例一起清掉。
+    fn mark_instances_stale(
+        &self,
+        host_id: Uuid,
+        seen: &[AnchorKey],
+        at: DateTime<Utc>,
+    ) -> StorageResult<u64>;
+
+    fn upsert_fingerprint(&self, fingerprint: &SoftwareFingerprint) -> StorageResult<()>;
+    fn list_fingerprints_for_host(
+        &self,
+        host_id: Uuid,
+        page: Page,
+    ) -> StorageResult<Vec<SoftwareFingerprint>>;
+
+    fn record_observation(&self, observation: &SoftwareInstanceObservation) -> StorageResult<()>;
+    fn list_observations_for_instance(
+        &self,
+        instance_id: Uuid,
+        page: Page,
+    ) -> StorageResult<Vec<SoftwareInstanceObservation>>;
+
+    fn upsert_artifact_path(&self, path: &SoftwareArtifactPath) -> StorageResult<()>;
+    fn list_artifact_paths_for_instance(
+        &self,
+        instance_id: Uuid,
+    ) -> StorageResult<Vec<SoftwareArtifactPath>>;
+}
+
+#[allow(async_fn_in_trait)]
+pub trait AsyncSoftwareStore: Sync {
+    async fn upsert_artifact(&self, artifact: &SoftwareArtifact) -> StorageResult<()>;
+    async fn get_artifact(&self, artifact_id: &str) -> StorageResult<Option<SoftwareArtifact>>;
+    async fn upsert_instance(&self, instance: &SoftwareInstance) -> StorageResult<()>;
+    async fn get_instance(&self, instance_id: Uuid) -> StorageResult<Option<SoftwareInstance>>;
+    async fn get_instance_by_anchor(
+        &self,
+        host_id: Uuid,
+        anchor: &AnchorKey,
+    ) -> StorageResult<Option<SoftwareInstance>>;
+    async fn list_instances_for_host(
+        &self,
+        host_id: Uuid,
+        page: Page,
+    ) -> StorageResult<Vec<SoftwareInstance>>;
+    async fn mark_instances_stale(
+        &self,
+        host_id: Uuid,
+        seen: &[AnchorKey],
+        at: DateTime<Utc>,
+    ) -> StorageResult<u64>;
+    async fn upsert_fingerprint(&self, fingerprint: &SoftwareFingerprint) -> StorageResult<()>;
+    async fn list_fingerprints_for_host(
+        &self,
+        host_id: Uuid,
+        page: Page,
+    ) -> StorageResult<Vec<SoftwareFingerprint>>;
+    async fn record_observation(
+        &self,
+        observation: &SoftwareInstanceObservation,
+    ) -> StorageResult<()>;
+    async fn list_observations_for_instance(
+        &self,
+        instance_id: Uuid,
+        page: Page,
+    ) -> StorageResult<Vec<SoftwareInstanceObservation>>;
+    async fn upsert_artifact_path(&self, path: &SoftwareArtifactPath) -> StorageResult<()>;
+    async fn list_artifact_paths_for_instance(
+        &self,
+        instance_id: Uuid,
+    ) -> StorageResult<Vec<SoftwareArtifactPath>>;
 }
