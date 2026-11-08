@@ -444,7 +444,7 @@ gantt
 | `cluster-namespace-workload-topology-model.md` | 集群编排 ER 图 | [§5 对象模型](../model/cluster-namespace-workload-topology-model.md) |
 | `runtime-binding-model.md` | 运行绑定关系图 | [§5 对象与关系模型](../model/runtime-binding-model.md) |
 | `endpoint-and-dependency-observation-model.md` | 端点与依赖观测图 | [§5 对象模型](../model/endpoint-and-dependency-observation-model.md) |
-| `software-normalization-and-vuln-enrichment.md` | 软件与漏洞 ER 图 | [§5 对象模型](../model/software-normalization-and-vuln-enrichment.md) |
+| `software-normalization-and-vuln-enrichment.md` | 软件与漏洞对象模型（**已迁移到 wist-design，本仓仅留指针**） | [见文首指针](../model/software-normalization-and-vuln-enrichment.md) |
 | `host-process-software-vulnerability-graph.md` | 主机-进程-软件-漏洞链路图 | [§5 禁止事项](../model/host-process-software-vulnerability-graph.md) |
 | `host-responsibility-and-maintainer-model.md` | 责任治理 ER 图 | [§5 角色定义](../model/host-responsibility-and-maintainer-model.md) |
 | `public-vulnerability-source-ingestion.md` | 漏洞摄入流程图 | [§5 两条主路线](../model/public-vulnerability-source-ingestion.md) |
