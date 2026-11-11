@@ -158,14 +158,14 @@ POST /internal/atlas[?env=<env>]
 Content-Type: application/json
 
 {
-  "cust_id": "<atlas 租户 UUID>",
+  "cust_id": "<客户号>",
   "content": { ... }          // DSNAP 记录：单个对象，或 batch_size>1 时的对象数组
 }
 ```
 
 | 字段 | 必填 | 说明 |
 |---|---|---|
-| `cust_id` | ✅ | atlas 的租户 UUID（不是外部 tenant ref）。索引分区维度就用它 |
+| `cust_id` | ✅ | **客户标识**。多客户部署（配了客户清单）时是**客户号**（与证据侧同一个 ID 空间），按清单解析成内部租户 UUID；兼容期也接受「精确等于已登记租户 UUID」的值；单库部署时必须本身就是租户 UUID。索引分区维度就用它 |
 | `content` | ✅ | 网关的 DSNAP 记录；与读文件路径是**同一个转换函数**（`convert_sink_line`） |
 
 > 为什么比证据服务少一个 `cmd_id`：证据写的是「一次命令的产物」，`cmd_id` 是它的幂等键；
@@ -181,6 +181,7 @@ Content-Type: application/json
 | 结果 | 状态码 | 含义 |
 |---|---|---|
 | 全部成功（含幂等重复） | `200` | `{"count","ingested","rejected","hosts","failures"}` |
+| `cust_id` 未登记（多客户部署） | `400` | `code=tenant_unregistered`：清单里没有这个客户。**不落默认库**，让它在数据面 rescue 里显形 |
 | 有永久性失败 | `400` | 不是快照 / 没有 `body` / JSON 坏了；`failures[]` 带 `index` 与原因 |
 | 有暂时性失败 | `503` | 写库失败，让数据面下一轮重试 |
 | body 超限 | `413` | |
@@ -201,6 +202,11 @@ Content-Type: application/json
 ## 只读接口与 API 文档
 
 `serve` 模式下对外只有读接口（写入口 `POST /internal/atlas` 见上一节，**不进** spec）：
+
+> **多客户部署**（配了 `WIST_ATLAS_CELLS_FILE`）时，全部读接口额外接受
+> `?tenant=<cust_id>`：一个进程按客户连多个库，不带租户且客户数 > 1 → `400 tenant_required`，
+> 带了清单外的客户 → `403 tenant_not_allowed`（不回显客户清单）。
+> 单库部署（没配清单）忽略这个参数，行为与以往一致。
 
 ```text
 GET /api/hosts                                主机列表（分页，剔除写探针主机）
@@ -236,6 +242,41 @@ schema）。**10 个读接口全部已标注**；深层嵌套的领域类型用 
 
 经 `wist-field` 访问时由 BFF 代理并校验终端用户的令牌，BFF 再带着 atlas 令牌去读：
 `https://<数据场入口>/api/atlas/openapi.json`。
+
+## 多客户部署（一个进程、每客户一个库）
+
+默认形态是**单库**（`DATABASE_URL` 那一份，里面可有多个租户）。多客户站点改成：
+一个 atlas 进程 + 每客户一个库，用环境变量 `WIST_ATLAS_CELLS_FILE` 指向客户清单：
+
+```json
+{
+  "default_tenant": "c-001",
+  "cells": [
+    {
+      "cust_id": "c-a",
+      "tenant_id": "8f14e45f-ceea-4670-9f0a-1c0b2a3d4e5f",
+      "host": "pg-c-a-atlas",
+      "database": "wist_atlas",
+      "user": "atlas"
+    }
+  ]
+}
+```
+
+- **清单不含口令**：连接串由 `host` / `user` / `database` + 环境变量
+  `WIST_ATLAS_PG_PASSWORD` 拼出来（也可以用 `database_url` 直接覆盖）。
+- **`tenant_id` 是登记时固化的 UUID**，atlas 只读不改、**不在运行时派生**：
+  派生会把租户身份绑在客户号上（客户号一改，租户就变、历史数据成孤儿），
+  而且跨站点会撞号。生成器是谁不重要，反正只跑一次。
+- **启动时幂等播种**：每个库写入一行 `tenant(tenant_id, tenant_ref)`，让 `psql` 能反查
+  “这个 UUID 是哪个客户”，也让库在掉清单时仍能自证归属。写入口**不写**这张表。
+- **未登记的 `cust_id` 一律 400**（`tenant_unregistered`）：不静默派生、不落默认库。
+- **兼容期**：`cust_id` 能解析成 UUID 且**精确等于**某个已登记租户的 `tenant_id` 时照用 ——
+  给“先加 cells、后切数据面”的分两次上线留窗口；全部站点切完后删掉这段（`find_by_tenant`）。
+- `/healthz` 多一个 `cells` 块（只报 `cust_id` / `tenant_id`，**不输出连接串**）。
+- 清单为空 / 没配环境变量 = 单库老行为，零迁移。
+
+隔离口径与栈侧约定见 `wist-field-stack` 仓的 `docs/multi-customer.md` §5.7。
 
 ## PostgreSQL 开发环境
 

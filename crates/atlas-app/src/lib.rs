@@ -72,6 +72,8 @@ pub struct VisualizationExportSummary {
 mod http;
 use http::{HttpAppState, build_http_router};
 
+mod cells;
+
 /// 只给 OpenAPI 用的文档 DTO（与 domain 同形状，不参与序列化）。
 mod http_schema;
 
@@ -320,6 +322,16 @@ impl TopologyMonolith {
                 )
             })?;
         state = state.with_token(token);
+
+        // 多客户：按客户清单连库（没配 = 单库老行为）。
+        // 放在 token 之后、`build_http_router` 之前：路由一旦建好，状态就冻结了。
+        if let Some(router) = cells::CellRouter::from_env().await? {
+            state = state.with_cells(router);
+        }
+        if let Some(default) = cells::default_tenant() {
+            state = state.with_default_tenant(default);
+        }
+
         if let Some(probe) = probe {
             state = state.with_probe(probe);
         }

@@ -1,4 +1,5 @@
 use atlas_api::TopologyQueryService;
+use atlas_domain::TenantId;
 use atlas_storage::{AsyncCatalogStore, AsyncGovernanceStore, AsyncRuntimeStore, Page};
 use axum::{
     Json, Router,
@@ -8,6 +9,7 @@ use axum::{
     routing::{get, post},
 };
 use serde::Serialize;
+use serde_json::json;
 use uuid::Uuid;
 
 use crate::TopologyMonolith;
@@ -121,6 +123,27 @@ pub(crate) struct HttpAppState {
     probe: Option<crate::probe::SharedProbe>,
     /// `Some` = 读接口要 `Authorization: Bearer <token>`（**serve 模式必有**）。
     token: Option<std::sync::Arc<str>>,
+    /// `Some` = 多客户部署：按 `?tenant=` 选库（见 `cells` 模块）。
+    /// 用 `Arc`：`HttpAppState` 每请求都会被 clone 一次，没必要跟着克隆客户表。
+    cells: Option<std::sync::Arc<crate::cells::CellRouter>>,
+    /// 单库部署的默认客户（`WIST_ATLAS_DEFAULT_TENANT`）；只在日志/告警里用。
+    default_tenant: Option<String>,
+}
+
+/// 一次请求解析出的目标：用哪个库、以及在该库里的租户。
+///
+/// `tenant` 为 `None` = 单库部署（没有 cells）：老库里的行没有可信的租户边界，
+/// 只读不隔离（这是**已知且被 BFF 闸门挡住**的状态，见 multi-customer.md §5.7）。
+pub(crate) struct Resolved {
+    pub app: TopologyMonolith,
+    pub tenant: Option<atlas_domain::TenantId>,
+}
+
+/// 写入口解析出的目标。与读侧的 `Resolved` 分开：写侧**必须有**租户
+/// （没有租户就不知道这行属于谁），读侧在单库部署下可以没有。
+pub(crate) struct ResolvedWrite {
+    pub app: TopologyMonolith,
+    pub tenant: atlas_domain::TenantId,
 }
 
 impl HttpAppState {
@@ -129,6 +152,8 @@ impl HttpAppState {
             app,
             probe: None,
             token: None,
+            cells: None,
+            default_tenant: None,
         }
     }
 
@@ -145,15 +170,141 @@ impl HttpAppState {
         self
     }
 
-    pub(crate) fn app(&self) -> &TopologyMonolith {
-        &self.app
+    /// 多客户：客户清单已连好库。
+    pub(crate) fn with_cells(mut self, cells: crate::cells::CellRouter) -> Self {
+        self.cells = Some(std::sync::Arc::new(cells));
+        self
     }
+
+    /// 单库部署的默认客户（仅用于诊断日志）。
+    pub(crate) fn with_default_tenant(mut self, tenant: impl Into<String>) -> Self {
+        self.default_tenant = Some(tenant.into());
+        self
+    }
+
+    /// 选出这次请求该用哪个库 + 哪个租户。
+    ///
+    /// 多客户部署的规则与 BFF 的 `resolve_tenant` 同口径（只多一条「单 cell 自动选中」）；
+    /// 单库部署没有租户维度，`?tenant=` 一律忽略（老行为，闸门在 BFF）。
+    pub(crate) fn resolve(
+        &self,
+        requested: Option<&str>,
+    ) -> Result<Resolved, crate::cells::ResolveError> {
+        if let Some(router) = self.cells.as_ref() {
+            let cell = router.resolve(requested)?;
+            return Ok(Resolved {
+                app: cell.app.clone(),
+                tenant: Some(cell.tenant),
+            });
+        }
+        Ok(Resolved {
+            app: self.app.clone(),
+            tenant: None,
+        })
+    }
+
+    /// `/healthz` 用：已登记的客户（不输出连接串）。
+    pub(crate) fn cells_summary(&self) -> Vec<(String, Uuid)> {
+        self.cells
+            .as_ref()
+            .map(|router| router.describe())
+            .unwrap_or_default()
+    }
+
+    /// 写入口：`cust_id` 是**客户号**。
+    ///
+    /// 多客户部署：按清单解析，未登记 → `Err(说明)`（调用方回 400 `tenant_unregistered`）；
+    /// 单库部署：沿用历史约定（`cust_id` 必须本身是 UUID）。
+    ///
+    /// 多客户部署下**空值单独拦**：单 cell 站点的 `resolve()` 会“自动选中唯一客户”，
+    /// 不在入口拦住的话，数据面漏传 `cust_id` 会被静默记到那一个客户头上。
+    /// 单库部署保持旧口径（空串走 UUID 校验）—— “你得填一个 UUID”比“你填了空”
+    /// 更能告诉现场该填什么。
+    pub(crate) fn resolve_write(&self, cust_id: &str) -> Result<ResolvedWrite, String> {
+        let cust_id = cust_id.trim();
+        if let Some(router) = self.cells.as_ref() {
+            if cust_id.is_empty() {
+                return Err(
+                    "cust_id is empty; on a multi-customer atlas it must be the customer id \
+                     this snapshot belongs to"
+                        .to_string(),
+                );
+            }
+            return router
+                .resolve(Some(cust_id))
+                .map(|cell| ResolvedWrite {
+                    app: cell.app.clone(),
+                    tenant: cell.tenant,
+                })
+                .or_else(|err| {
+                    // **兼容期**：老数据面的 `cust_id` 是租户 UUID。只接受“精确等于某个
+                    // 已登记租户”的情况（不派生、不模糊）；客户切到发客户号后可删。
+                    Uuid::parse_str(cust_id)
+                        .ok()
+                        .and_then(|uuid| router.find_by_tenant(uuid))
+                        .map(|cell| ResolvedWrite {
+                            app: cell.app.clone(),
+                            tenant: cell.tenant,
+                        })
+                        .ok_or(err)
+                })
+                .map_err(|_| {
+                    format!(
+                        "cust_id `{cust_id}` is not registered on this atlas; \
+                         register it with the stack's `add-customer.sh` and restart atlas"
+                    )
+                });
+        }
+        Uuid::parse_str(cust_id)
+            .map(|id| ResolvedWrite {
+                app: self.app.clone(),
+                tenant: atlas_domain::TenantId(id),
+            })
+            .map_err(|_| {
+                format!(
+                    "cust_id `{cust_id}` is not a UUID; on a single-database atlas it is \
+                     the internal tenant id, not an external customer number"
+                )
+            })
+    }
+
+    pub(crate) fn default_tenant(&self) -> Option<&str> {
+        self.default_tenant.as_deref()
+    }
+}
+
+/// 租户错误的响应：**与 BFF 同一套错误码**，前端只需要认一套。
+fn tenant_error(error: crate::cells::ResolveError) -> Response {
+    match error {
+        crate::cells::ResolveError::Required => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "status": "error", "code": "tenant_required",
+                "message": "this atlas serves multiple customers; pass ?tenant=<cust_id>" })),
+        )
+            .into_response(),
+        // 越界不回显客户清单（会泄露“有哪些客户”）。
+        crate::cells::ResolveError::Unknown => (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "status": "error", "code": "tenant_not_allowed",
+                "message": "the requested tenant is not in this atlas' customer list" })),
+        )
+            .into_response(),
+    }
+}
+
+/// 只有 `?tenant=` 的查询参数（给路径参数型读接口用）。
+#[derive(Debug, Clone, serde::Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+struct TenantQuery {
+    /// 多客户部署必填：客户号（与写入 body 的 `cust_id` 一致）。
+    tenant: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 struct HostProcessOverviewQuery {
     top_n: Option<usize>,
+    tenant: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, utoipa::IntoParams)]
@@ -163,6 +314,7 @@ struct HostListQuery {
     include_stale: Option<bool>,
     limit: Option<u32>,
     offset: Option<u32>,
+    tenant: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, ToSchema)]
@@ -202,6 +354,7 @@ struct HostSummaryHttpItem {
 struct HostProcessGroupsQuery {
     limit: Option<usize>,
     offset: Option<usize>,
+    tenant: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, utoipa::IntoParams)]
@@ -209,6 +362,7 @@ struct HostProcessGroupsQuery {
 struct ServiceListQuery {
     limit: Option<u32>,
     offset: Option<u32>,
+    tenant: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, ToSchema)]
@@ -242,6 +396,19 @@ struct ServiceSummaryHttpItem {
 
 async fn healthz(State(state): State<HttpAppState>) -> Json<serde_json::Value> {
     let mut body = serde_json::json!({ "status": "ok" });
+    // 多客户：报「已登记哪些客户」。**不输出连接串**（口令在 URL 里）。
+    let cells = state.cells_summary();
+    if !cells.is_empty() {
+        body["cells"] = serde_json::json!(
+            cells
+                .into_iter()
+                .map(|(cust_id, tenant_id)| serde_json::json!({
+                    "cust_id": cust_id,
+                    "tenant_id": tenant_id.to_string(),
+                }))
+                .collect::<Vec<_>>()
+        );
+    }
     // 开了写探针就把最近一次结果带出去：上游能区分「进程活着」与「真写得进去」。
     // 字段形状与 `wist-evidence` 的 `probe` 块保持一致，星象台的接口可用性页只认这一份。
     if let Some(probe) = state.probe.as_ref()
@@ -249,6 +416,10 @@ async fn healthz(State(state): State<HttpAppState>) -> Json<serde_json::Value> {
         && let Ok(value) = serde_json::to_value(&*status)
     {
         body["probe"] = value;
+    }
+    // 单库部署的默认客户（部署给定）：多客户站点不显示。
+    if let Some(default) = state.default_tenant() {
+        body["default_tenant"] = serde_json::json!(default);
     }
     Json(body)
 }
@@ -259,7 +430,7 @@ async fn healthz(State(state): State<HttpAppState>) -> Json<serde_json::Value> {
     path = "/api/topology/host/{id}/processes",
     tag = "topology",
     summary = "主机进程拓扑图",
-    params(("id" = String, Path, description = "主机 UUID")),
+    params(("id" = String, Path, description = "主机 UUID"), TenantQuery),
     responses(
         (status = 200, description = "拓扑图", body = VisualizationEnvelope),
         (status = 400, description = "id 不是合法 UUID"),
@@ -269,21 +440,26 @@ async fn healthz(State(state): State<HttpAppState>) -> Json<serde_json::Value> {
 async fn get_host_process_topology(
     State(state): State<HttpAppState>,
     AxumPath(host_id): AxumPath<String>,
+    Query(query): Query<TenantQuery>,
 ) -> Response {
     let host_id = match parse_uuid_arg(&host_id) {
         Ok(host_id) => host_id,
         Err(err) => return json_error(StatusCode::BAD_REQUEST, err.to_string()),
     };
+    let resolved = match state.resolve(query.tenant.as_deref()) {
+        Ok(resolved) => resolved,
+        Err(err) => return tenant_error(err),
+    };
 
-    match &state.app {
+    match &resolved.app {
         TopologyMonolith::Memory(store) => {
-            host_process_topology_response(store.clone(), Some(host_id)).await
+            host_process_topology_response(store.clone(), Some(host_id), resolved.tenant).await
         }
         TopologyMonolith::PostgresMock(store) => {
-            host_process_topology_response(store.clone(), Some(host_id)).await
+            host_process_topology_response(store.clone(), Some(host_id), resolved.tenant).await
         }
         TopologyMonolith::PostgresLive(store) => {
-            host_process_topology_response(store.clone(), Some(host_id)).await
+            host_process_topology_response(store.clone(), Some(host_id), resolved.tenant).await
         }
     }
 }
@@ -294,21 +470,29 @@ async fn get_host_process_topology(
     path = "/api/topology/host/first/processes",
     tag = "topology",
     summary = "第一台主机的进程拓扑图",
+    params(TenantQuery),
     responses(
         (status = 200, description = "拓扑图", body = VisualizationEnvelope),
         (status = 404, description = "还没有任何主机"),
     )
 )]
-async fn get_first_host_process_topology(State(state): State<HttpAppState>) -> Response {
-    match &state.app {
+async fn get_first_host_process_topology(
+    State(state): State<HttpAppState>,
+    Query(query): Query<TenantQuery>,
+) -> Response {
+    let resolved = match state.resolve(query.tenant.as_deref()) {
+        Ok(resolved) => resolved,
+        Err(err) => return tenant_error(err),
+    };
+    match &resolved.app {
         TopologyMonolith::Memory(store) => {
-            host_process_topology_response(store.clone(), None).await
+            host_process_topology_response(store.clone(), None, resolved.tenant).await
         }
         TopologyMonolith::PostgresMock(store) => {
-            host_process_topology_response(store.clone(), None).await
+            host_process_topology_response(store.clone(), None, resolved.tenant).await
         }
         TopologyMonolith::PostgresLive(store) => {
-            host_process_topology_response(store.clone(), None).await
+            host_process_topology_response(store.clone(), None, resolved.tenant).await
         }
     }
 }
@@ -319,7 +503,7 @@ async fn get_first_host_process_topology(State(state): State<HttpAppState>) -> R
     path = "/api/topology/host/{id}",
     tag = "topology",
     summary = "主机焦点视图",
-    params(("id" = String, Path, description = "主机 UUID")),
+    params(("id" = String, Path, description = "主机 UUID"), TenantQuery),
     responses(
         (status = 200, description = "主机焦点视图", body = HostTopologyHttpEnvelope),
         (status = 400, description = "id 不是合法 UUID"),
@@ -329,19 +513,26 @@ async fn get_first_host_process_topology(State(state): State<HttpAppState>) -> R
 async fn get_host_topology(
     State(state): State<HttpAppState>,
     AxumPath(host_id): AxumPath<String>,
+    Query(query): Query<TenantQuery>,
 ) -> Response {
     let host_id = match parse_uuid_arg(&host_id) {
         Ok(host_id) => host_id,
         Err(err) => return json_error(StatusCode::BAD_REQUEST, err.to_string()),
     };
+    let resolved = match state.resolve(query.tenant.as_deref()) {
+        Ok(resolved) => resolved,
+        Err(err) => return tenant_error(err),
+    };
 
-    match &state.app {
-        TopologyMonolith::Memory(store) => host_topology_response(store.clone(), host_id).await,
+    match &resolved.app {
+        TopologyMonolith::Memory(store) => {
+            host_topology_response(store.clone(), host_id, resolved.tenant).await
+        }
         TopologyMonolith::PostgresMock(store) => {
-            host_topology_response(store.clone(), host_id).await
+            host_topology_response(store.clone(), host_id, resolved.tenant).await
         }
         TopologyMonolith::PostgresLive(store) => {
-            host_topology_response(store.clone(), host_id).await
+            host_topology_response(store.clone(), host_id, resolved.tenant).await
         }
     }
 }
@@ -352,16 +543,30 @@ async fn get_host_topology(
     path = "/api/topology/host/first",
     tag = "topology",
     summary = "第一台主机的焦点视图",
+    params(TenantQuery),
     responses(
         (status = 200, description = "主机焦点视图", body = HostTopologyHttpEnvelope),
         (status = 404, description = "还没有任何主机"),
     )
 )]
-async fn get_first_host_topology(State(state): State<HttpAppState>) -> Response {
-    match &state.app {
-        TopologyMonolith::Memory(store) => first_host_topology_response(store.clone()).await,
-        TopologyMonolith::PostgresMock(store) => first_host_topology_response(store.clone()).await,
-        TopologyMonolith::PostgresLive(store) => first_host_topology_response(store.clone()).await,
+async fn get_first_host_topology(
+    State(state): State<HttpAppState>,
+    Query(query): Query<TenantQuery>,
+) -> Response {
+    let resolved = match state.resolve(query.tenant.as_deref()) {
+        Ok(resolved) => resolved,
+        Err(err) => return tenant_error(err),
+    };
+    match &resolved.app {
+        TopologyMonolith::Memory(store) => {
+            first_host_topology_response(store.clone(), resolved.tenant).await
+        }
+        TopologyMonolith::PostgresMock(store) => {
+            first_host_topology_response(store.clone(), resolved.tenant).await
+        }
+        TopologyMonolith::PostgresLive(store) => {
+            first_host_topology_response(store.clone(), resolved.tenant).await
+        }
     }
 }
 
@@ -390,16 +595,20 @@ async fn get_host_process_overview(
         Err(err) => return json_error(StatusCode::BAD_REQUEST, err.to_string()),
     };
     let top_n = query.top_n.unwrap_or(12).clamp(1, 200);
+    let resolved = match state.resolve(query.tenant.as_deref()) {
+        Ok(resolved) => resolved,
+        Err(err) => return tenant_error(err),
+    };
 
-    match &state.app {
+    match &resolved.app {
         TopologyMonolith::Memory(store) => {
-            host_process_overview_response(store.clone(), host_id, top_n).await
+            host_process_overview_response(store.clone(), host_id, top_n, resolved.tenant).await
         }
         TopologyMonolith::PostgresMock(store) => {
-            host_process_overview_response(store.clone(), host_id, top_n).await
+            host_process_overview_response(store.clone(), host_id, top_n, resolved.tenant).await
         }
         TopologyMonolith::PostgresLive(store) => {
-            host_process_overview_response(store.clone(), host_id, top_n).await
+            host_process_overview_response(store.clone(), host_id, top_n, resolved.tenant).await
         }
     }
 }
@@ -430,24 +639,52 @@ async fn get_host_process_groups_page(
     };
     let limit = query.limit.unwrap_or(50).clamp(1, 500);
     let offset = query.offset.unwrap_or(0);
+    let resolved = match state.resolve(query.tenant.as_deref()) {
+        Ok(resolved) => resolved,
+        Err(err) => return tenant_error(err),
+    };
 
-    match &state.app {
+    match &resolved.app {
         TopologyMonolith::Memory(store) => {
-            host_process_groups_page_response(store.clone(), host_id, offset, limit).await
+            host_process_groups_page_response(
+                store.clone(),
+                host_id,
+                offset,
+                limit,
+                resolved.tenant,
+            )
+            .await
         }
         TopologyMonolith::PostgresMock(store) => {
-            host_process_groups_page_response(store.clone(), host_id, offset, limit).await
+            host_process_groups_page_response(
+                store.clone(),
+                host_id,
+                offset,
+                limit,
+                resolved.tenant,
+            )
+            .await
         }
         TopologyMonolith::PostgresLive(store) => {
-            host_process_groups_page_response(store.clone(), host_id, offset, limit).await
+            host_process_groups_page_response(
+                store.clone(),
+                host_id,
+                offset,
+                limit,
+                resolved.tenant,
+            )
+            .await
         }
     }
 }
 
-async fn host_topology_response<S>(store: S, host_id: Uuid) -> Response
+async fn host_topology_response<S>(store: S, host_id: Uuid, tenant: Option<TenantId>) -> Response
 where
     S: Clone + AsyncCatalogStore + AsyncRuntimeStore + AsyncGovernanceStore,
 {
+    if let Some(response) = ensure_host_in_tenant(&store, host_id, tenant).await {
+        return response;
+    }
     let query = TopologyQueryService::new(store);
     match query.host_topology_view_async(host_id).await {
         Ok(Some(view)) => {
@@ -480,7 +717,7 @@ where
     }
 }
 
-async fn first_host_topology_response<S>(store: S) -> Response
+async fn first_host_topology_response<S>(store: S, tenant: Option<TenantId>) -> Response
 where
     S: Clone + AsyncCatalogStore + AsyncRuntimeStore + AsyncGovernanceStore,
 {
@@ -492,13 +729,21 @@ where
     let Some(host) = hosts.into_iter().find(|host| host.stale_at.is_none()) else {
         return json_error(StatusCode::NOT_FOUND, "no host found".to_string());
     };
-    host_topology_response(store, host.host_id).await
+    host_topology_response(store, host.host_id, tenant).await
 }
 
-async fn host_process_overview_response<S>(store: S, host_id: Uuid, top_n: usize) -> Response
+async fn host_process_overview_response<S>(
+    store: S,
+    host_id: Uuid,
+    top_n: usize,
+    tenant: Option<TenantId>,
+) -> Response
 where
     S: Clone + AsyncCatalogStore + AsyncRuntimeStore + AsyncGovernanceStore,
 {
+    if let Some(response) = ensure_host_in_tenant(&store, host_id, tenant).await {
+        return response;
+    }
     let query = TopologyQueryService::new(store);
     match query.host_process_overview_view_async(host_id, top_n).await {
         Ok(Some(view)) => {
@@ -532,10 +777,14 @@ async fn host_process_groups_page_response<S>(
     host_id: Uuid,
     offset: usize,
     limit: usize,
+    tenant: Option<TenantId>,
 ) -> Response
 where
     S: Clone + AsyncCatalogStore + AsyncRuntimeStore + AsyncGovernanceStore,
 {
+    if let Some(response) = ensure_host_in_tenant(&store, host_id, tenant).await {
+        return response;
+    }
     let query = TopologyQueryService::new(store);
     match query
         .host_process_groups_page_view_async(host_id, offset, limit)
@@ -569,10 +818,19 @@ where
     }
 }
 
-async fn host_process_topology_response<S>(store: S, focus_host_id: Option<Uuid>) -> Response
+async fn host_process_topology_response<S>(
+    store: S,
+    focus_host_id: Option<Uuid>,
+    tenant: Option<TenantId>,
+) -> Response
 where
     S: Clone + AsyncCatalogStore + AsyncRuntimeStore + AsyncGovernanceStore,
 {
+    if let Some(host_id) = focus_host_id
+        && let Some(response) = ensure_host_in_tenant(&store, host_id, tenant).await
+    {
+        return response;
+    }
     match build_host_process_topology_graph_async(store, focus_host_id).await {
         Ok(graph) => {
             let payload = VisualizationEnvelope {
@@ -591,7 +849,7 @@ where
     path = "/api/topology/network/{id}",
     tag = "topology",
     summary = "网段拓扑图",
-    params(("id" = String, Path, description = "网段 UUID")),
+    params(("id" = String, Path, description = "网段 UUID"), TenantQuery),
     responses(
         (status = 200, description = "拓扑图", body = VisualizationEnvelope),
         (status = 400, description = "id 不是合法 UUID"),
@@ -601,21 +859,26 @@ where
 async fn get_network_topology(
     State(state): State<HttpAppState>,
     AxumPath(segment_id): AxumPath<String>,
+    Query(query): Query<TenantQuery>,
 ) -> Response {
     let segment_id = match parse_uuid_arg(&segment_id) {
         Ok(segment_id) => segment_id,
         Err(err) => return json_error(StatusCode::BAD_REQUEST, err.to_string()),
     };
+    let resolved = match state.resolve(query.tenant.as_deref()) {
+        Ok(resolved) => resolved,
+        Err(err) => return tenant_error(err),
+    };
 
-    match &state.app {
+    match &resolved.app {
         TopologyMonolith::Memory(store) => {
-            network_topology_response(store.clone(), segment_id).await
+            network_topology_response(store.clone(), segment_id, resolved.tenant).await
         }
         TopologyMonolith::PostgresMock(store) => {
-            network_topology_response(store.clone(), segment_id).await
+            network_topology_response(store.clone(), segment_id, resolved.tenant).await
         }
         TopologyMonolith::PostgresLive(store) => {
-            network_topology_response(store.clone(), segment_id).await
+            network_topology_response(store.clone(), segment_id, resolved.tenant).await
         }
     }
 }
@@ -624,10 +887,17 @@ async fn get_network_topology(
 ///
 /// 与主机焦点图方向相反（那边是「这台机接在哪些网段」），但共用同一套图形状，
 /// 前端不需要新的节点类型。
-async fn network_topology_response<S>(store: S, segment_id: Uuid) -> Response
+async fn network_topology_response<S>(
+    store: S,
+    segment_id: Uuid,
+    tenant: Option<TenantId>,
+) -> Response
 where
     S: Clone + AsyncCatalogStore + AsyncRuntimeStore + AsyncGovernanceStore,
 {
+    if let Some(response) = ensure_segment_in_tenant(&store, segment_id, tenant).await {
+        return response;
+    }
     match build_network_topology_graph_async(store, segment_id).await {
         Ok(Some(graph)) => {
             let payload = VisualizationEnvelope {
@@ -650,7 +920,7 @@ where
     path = "/api/topology/service/{id}",
     tag = "topology",
     summary = "服务拓扑图",
-    params(("id" = String, Path, description = "服务 UUID")),
+    params(("id" = String, Path, description = "服务 UUID"), TenantQuery),
     responses(
         (status = 200, description = "拓扑图", body = VisualizationEnvelope),
         (status = 400, description = "id 不是合法 UUID"),
@@ -660,21 +930,26 @@ where
 async fn get_service_topology(
     State(state): State<HttpAppState>,
     AxumPath(service_id): AxumPath<String>,
+    Query(query): Query<TenantQuery>,
 ) -> Response {
     let service_id = match parse_uuid_arg(&service_id) {
         Ok(service_id) => service_id,
         Err(err) => return json_error(StatusCode::BAD_REQUEST, err.to_string()),
     };
+    let resolved = match state.resolve(query.tenant.as_deref()) {
+        Ok(resolved) => resolved,
+        Err(err) => return tenant_error(err),
+    };
 
-    match &state.app {
+    match &resolved.app {
         TopologyMonolith::Memory(store) => {
-            service_topology_response(store.clone(), service_id).await
+            service_topology_response(store.clone(), service_id, resolved.tenant).await
         }
         TopologyMonolith::PostgresMock(store) => {
-            service_topology_response(store.clone(), service_id).await
+            service_topology_response(store.clone(), service_id, resolved.tenant).await
         }
         TopologyMonolith::PostgresLive(store) => {
-            service_topology_response(store.clone(), service_id).await
+            service_topology_response(store.clone(), service_id, resolved.tenant).await
         }
     }
 }
@@ -683,10 +958,17 @@ async fn get_service_topology(
 ///
 /// 与主机焦点图方向相反（那边是「这台机上有哪些服务」），但共用同一套节点 id
 /// 约定与边类型，前端不需要新的渲染分支。
-async fn service_topology_response<S>(store: S, service_id: Uuid) -> Response
+async fn service_topology_response<S>(
+    store: S,
+    service_id: Uuid,
+    tenant: Option<TenantId>,
+) -> Response
 where
     S: Clone + AsyncCatalogStore + AsyncRuntimeStore + AsyncGovernanceStore,
 {
+    if let Some(response) = ensure_service_in_tenant(&store, service_id, tenant).await {
+        return response;
+    }
     match build_service_topology_graph_async(store, service_id).await {
         Ok(Some(graph)) => {
             let payload = VisualizationEnvelope {
@@ -719,43 +1001,57 @@ async fn get_services(
     // 服务数量是「不同监听程序」的量级（百级），默认一次给足；分页参数保留给大集群。
     let limit = query.limit.unwrap_or(200).clamp(1, 500);
     let offset = query.offset.unwrap_or(0);
+    let resolved = match state.resolve(query.tenant.as_deref()) {
+        Ok(resolved) => resolved,
+        Err(err) => return tenant_error(err),
+    };
 
-    match &state.app {
+    match &resolved.app {
         TopologyMonolith::Memory(store) => {
-            service_list_response(store.clone(), limit, offset).await
+            service_list_response(store.clone(), limit, offset, resolved.tenant).await
         }
         TopologyMonolith::PostgresMock(store) => {
-            service_list_response(store.clone(), limit, offset).await
+            service_list_response(store.clone(), limit, offset, resolved.tenant).await
         }
         TopologyMonolith::PostgresLive(store) => {
-            service_list_response(store.clone(), limit, offset).await
+            service_list_response(store.clone(), limit, offset, resolved.tenant).await
         }
     }
 }
 
-async fn service_list_response<S>(store: S, limit: u32, offset: u32) -> Response
+async fn service_list_response<S>(
+    store: S,
+    limit: u32,
+    offset: u32,
+    tenant: Option<TenantId>,
+) -> Response
 where
     S: Clone + AsyncCatalogStore + AsyncRuntimeStore + AsyncGovernanceStore,
 {
     let query = TopologyQueryService::new(store);
-    let tenant_id = match query.default_tenant_id_async().await {
-        Ok(Some(tenant_id)) => tenant_id,
+    // 多客户部署：租户就是本次选中的那个（每个库只有一个租户，过滤是防御性的）；
+    // 单库部署：沿用「库里第一个 host 的租户」—— 那是目前唯一能给出默认值的来源。
+    let tenant_id = match tenant {
+        Some(tenant_id) => Some(tenant_id),
+        None => match query.default_tenant_id_async().await {
+            Ok(tenant_id) => tenant_id,
+            Err(err) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+        },
+    };
+    let Some(tenant_id) = tenant_id else {
         // 空库不是错误：前端拿空列表就够了。
-        Ok(None) => {
-            return (
-                StatusCode::OK,
-                Json(ServiceListHttpEnvelope {
-                    status: "ok",
-                    data: ServiceListHttpView {
-                        services: Vec::new(),
-                        limit,
-                        offset,
-                    },
-                }),
-            )
-                .into_response();
-        }
-        Err(err) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+        return (
+            StatusCode::OK,
+            Json(ServiceListHttpEnvelope {
+                status: "ok",
+                data: ServiceListHttpView {
+                    services: Vec::new(),
+                    limit,
+                    offset,
+                },
+            }),
+        )
+            .into_response();
     };
 
     match query
@@ -822,8 +1118,12 @@ async fn get_hosts(
     let include_stale = query.include_stale.unwrap_or(false);
     let limit = query.limit.unwrap_or(50).clamp(1, 500);
     let offset = query.offset.unwrap_or(0);
+    let resolved = match state.resolve(query.tenant.as_deref()) {
+        Ok(resolved) => resolved,
+        Err(err) => return tenant_error(err),
+    };
 
-    match &state.app {
+    match &resolved.app {
         TopologyMonolith::Memory(store) => {
             host_list_response(store.clone(), include_stale, limit, offset).await
         }
@@ -833,6 +1133,78 @@ async fn get_hosts(
         TopologyMonolith::PostgresLive(store) => {
             host_list_response(store.clone(), include_stale, limit, offset).await
         }
+    }
+}
+
+/// 租户守卫：`tenant` 为 `None`（单库部署）时直接放行。
+///
+/// 为什么是 404 而不是 403：403 等于告诉调用方「这个 id 存在，但属于别人」，
+/// 那就成了一个枚举 oracle。跨客户取**单体对象**，一律当「不存在」。
+///
+/// 返回 `Some(response)` = 直接回回去；`None` = 放行。
+async fn ensure_host_in_tenant<S>(
+    store: &S,
+    host_id: Uuid,
+    tenant: Option<TenantId>,
+) -> Option<Response>
+where
+    S: AsyncCatalogStore,
+{
+    let tenant = tenant?;
+    match AsyncCatalogStore::get_host(store, host_id).await {
+        Ok(Some(host)) if host.tenant_id == tenant => None,
+        Ok(_) => Some(json_error(
+            StatusCode::NOT_FOUND,
+            format!("host {host_id} not found"),
+        )),
+        Err(err) => Some(json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            err.to_string(),
+        )),
+    }
+}
+
+async fn ensure_segment_in_tenant<S>(
+    store: &S,
+    segment_id: Uuid,
+    tenant: Option<TenantId>,
+) -> Option<Response>
+where
+    S: AsyncCatalogStore,
+{
+    let tenant = tenant?;
+    match AsyncCatalogStore::get_network_segment(store, segment_id).await {
+        Ok(Some(segment)) if segment.tenant_id == tenant => None,
+        Ok(_) => Some(json_error(
+            StatusCode::NOT_FOUND,
+            format!("network segment {segment_id} not found"),
+        )),
+        Err(err) => Some(json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            err.to_string(),
+        )),
+    }
+}
+
+async fn ensure_service_in_tenant<S>(
+    store: &S,
+    service_id: Uuid,
+    tenant: Option<TenantId>,
+) -> Option<Response>
+where
+    S: AsyncCatalogStore,
+{
+    let tenant = tenant?;
+    match AsyncCatalogStore::get_service(store, service_id).await {
+        Ok(Some(service)) if service.tenant_id == tenant => None,
+        Ok(_) => Some(json_error(
+            StatusCode::NOT_FOUND,
+            format!("service {service_id} not found"),
+        )),
+        Err(err) => Some(json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            err.to_string(),
+        )),
     }
 }
 

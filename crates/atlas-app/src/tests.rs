@@ -1329,9 +1329,8 @@ async fn http_ingest_is_idempotent_for_the_same_snapshot() {
 #[tokio::test]
 async fn healthz_reports_the_write_probe_block_when_enabled() {
     let probe = crate::probe::new_shared();
-    let router = build_http_router(
-        HttpAppState::new(TopologyMonolith::new_in_memory()).with_probe(probe),
-    );
+    let router =
+        build_http_router(HttpAppState::new(TopologyMonolith::new_in_memory()).with_probe(probe));
 
     let response = router
         .oneshot(
@@ -1399,4 +1398,330 @@ async fn host_list_hides_the_probe_host() {
         .collect();
     // 探针主机是「写入能跑通」的证据，不是资产：不出现在列表里，但数据仍在库里。
     assert_eq!(names, vec!["build-01"], "{payload}");
+}
+
+// ── 多客户（M1.7）：cells 选库、租户校验、写入口白名单 ──────────────────
+
+/// 一个内存 cell：一个客户库，里面一台主机。
+fn memory_cell(
+    cust_id: &str,
+    tenant: Uuid,
+    host_name: &str,
+) -> (String, TopologyMonolith, atlas_domain::TenantId, Uuid) {
+    let app = TopologyMonolith::new_in_memory();
+    let host_id = Uuid::new_v4();
+    let now = chrono::Utc::now();
+    app.store()
+        .unwrap()
+        .upsert_host(&atlas_domain::HostInventory {
+            host_id,
+            tenant_id: atlas_domain::TenantId(tenant),
+            environment_id: None,
+            host_name: host_name.to_string(),
+            machine_id: None,
+            os_name: None,
+            os_version: None,
+            arch: None,
+            created_at: now,
+            last_inventory_at: now,
+            stale_at: None,
+            miss_count: 0,
+            ingest_scope: None,
+        })
+        .unwrap();
+    (
+        cust_id.to_string(),
+        app,
+        atlas_domain::TenantId(tenant),
+        host_id,
+    )
+}
+
+fn cells_router(
+    items: Vec<(String, TopologyMonolith, atlas_domain::TenantId, Uuid)>,
+) -> crate::cells::CellRouter {
+    let order: Vec<String> = items.iter().map(|(cust, ..)| cust.clone()).collect();
+    let cells = items
+        .into_iter()
+        .map(|(cust, app, tenant, _)| (cust, crate::cells::RoutedCell { app, tenant }))
+        .collect();
+    crate::cells::CellRouter::from_parts(None, order, cells)
+}
+
+fn cells_state(
+    items: Vec<(String, TopologyMonolith, atlas_domain::TenantId, Uuid)>,
+) -> HttpAppState {
+    HttpAppState::new(TopologyMonolith::new_in_memory()).with_cells(cells_router(items))
+}
+
+async fn get_json(router: &axum::Router, uri: &str) -> (StatusCode, Value) {
+    let response = router
+        .clone()
+        .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    (status, json_body(response).await)
+}
+
+#[tokio::test]
+async fn multi_customer_reads_only_see_the_requested_cell() {
+    let router = build_http_router(cells_state(vec![
+        memory_cell("c-a", Uuid::new_v4(), "host-a"),
+        memory_cell("c-b", Uuid::new_v4(), "host-b"),
+    ]));
+
+    let (status, body) = get_json(&router, "/api/hosts?tenant=c-a").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let hosts = body["data"]["hosts"].as_array().unwrap();
+    assert_eq!(hosts.len(), 1, "{body}");
+    assert_eq!(hosts[0]["hostName"], "host-a");
+
+    let (status, body) = get_json(&router, "/api/hosts?tenant=c-b").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let hosts = body["data"]["hosts"].as_array().unwrap();
+    assert_eq!(hosts.len(), 1, "{body}");
+    assert_eq!(hosts[0]["hostName"], "host-b");
+}
+
+#[tokio::test]
+async fn multi_customer_site_requires_an_explicit_tenant() {
+    let router = build_http_router(cells_state(vec![
+        memory_cell("c-a", Uuid::new_v4(), "host-a"),
+        memory_cell("c-b", Uuid::new_v4(), "host-b"),
+    ]));
+
+    let (status, body) = get_json(&router, "/api/hosts").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["code"], "tenant_required", "{body}");
+}
+
+#[tokio::test]
+async fn an_unknown_tenant_is_rejected_without_leaking_the_customer_list() {
+    let router = build_http_router(cells_state(vec![
+        memory_cell("c-a", Uuid::new_v4(), "host-a"),
+        memory_cell("c-b", Uuid::new_v4(), "host-b"),
+    ]));
+
+    let (status, body) = get_json(&router, "/api/hosts?tenant=secret-customer").await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["code"], "tenant_not_allowed", "{body}");
+    let text = body.to_string();
+    assert!(!text.contains("c-a") && !text.contains("c-b"), "{text}");
+}
+
+#[tokio::test]
+async fn a_single_cell_site_is_selected_automatically() {
+    let router = build_http_router(cells_state(vec![memory_cell(
+        "c-only",
+        Uuid::new_v4(),
+        "host-only",
+    )]));
+
+    let (status, body) = get_json(&router, "/api/hosts").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["hosts"][0]["hostName"], "host-only");
+}
+
+#[tokio::test]
+async fn another_customers_object_id_is_not_found_not_forbidden() {
+    let router = build_http_router(cells_state(vec![
+        memory_cell("c-a", Uuid::new_v4(), "host-a"),
+        memory_cell("c-b", Uuid::new_v4(), "host-b"),
+    ]));
+    // 取 c-b 的那台机，但声明自己是 c-a：应当 404（403 会变成枚举 oracle）。
+    let (_, body_a) = get_json(&router, "/api/hosts?tenant=c-a").await;
+    let host_a = body_a["data"]["hosts"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (_, body_b) = get_json(&router, "/api/hosts?tenant=c-b").await;
+    let host_b = body_b["data"]["hosts"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let (status, body) =
+        get_json(&router, &format!("/api/topology/host/{host_b}?tenant=c-a")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert!(!body.to_string().contains("host-b"), "{body}");
+
+    let (status, _) = get_json(&router, &format!("/api/topology/host/{host_b}?tenant=c-b")).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = get_json(&router, &format!("/api/topology/host/{host_a}?tenant=c-a")).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn writes_go_to_the_cell_of_the_cust_id_and_unregistered_ones_are_rejected() {
+    let router = build_http_router(cells_state(vec![
+        memory_cell("c-a", Uuid::new_v4(), "old-a"),
+        memory_cell("c-b", Uuid::new_v4(), "old-b"),
+    ]));
+
+    // 未登记 → 400 tenant_unregistered（永久性错误，进 rescue 可见）。
+    let response = router
+        .clone()
+        .oneshot(ingest_request("c-zzz", dsnap_content("nobody")))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = json_body(response).await;
+    assert_eq!(body["code"], "tenant_unregistered", "{body}");
+
+    // 已登记 → 写进那个客户的库，不串到别人家。
+    let response = router
+        .clone()
+        .oneshot(ingest_request("c-a", dsnap_content("fresh-a")))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+    assert_eq!(body["ingested"], 1, "{body}");
+
+    let (_, body) = get_json(&router, "/api/hosts?tenant=c-a").await;
+    let names: Vec<&str> = body["data"]["hosts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|host| host["hostName"].as_str().unwrap_or_default())
+        .collect();
+    assert!(names.contains(&"fresh-a"), "{body}");
+
+    let (_, body) = get_json(&router, "/api/hosts?tenant=c-b").await;
+    let names: Vec<&str> = body["data"]["hosts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|host| host["hostName"].as_str().unwrap_or_default())
+        .collect();
+    assert_eq!(names, vec!["old-b"], "{body}");
+}
+
+#[tokio::test]
+async fn healthz_lists_the_registered_cells_without_connection_strings() {
+    let tenant_a = Uuid::new_v4();
+    let state = cells_state(vec![
+        memory_cell("c-a", tenant_a, "host-a"),
+        memory_cell("c-b", Uuid::new_v4(), "host-b"),
+    ]);
+    let router = build_http_router(state);
+
+    let (status, body) = get_json(&router, "/healthz").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let cells = body["cells"].as_array().unwrap();
+    assert_eq!(cells.len(), 2, "{body}");
+    assert_eq!(cells[0]["cust_id"], "c-a");
+    assert_eq!(cells[0]["tenant_id"], tenant_a.to_string());
+    assert!(!body.to_string().contains("postgres://"), "{body}");
+}
+
+#[tokio::test]
+async fn a_legacy_single_database_still_accepts_a_uuid_cust_id() {
+    // 没配 cells = 单库老行为：`cust_id` 必须本身是 UUID（历史约定）。
+    let router = build_http_router(HttpAppState::new(TopologyMonolith::new_in_memory()));
+
+    let response = router
+        .clone()
+        .oneshot(ingest_request(INGEST_TENANT, dsnap_content("legacy-host")))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = router
+        .oneshot(ingest_request("c-a", dsnap_content("legacy-host")))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = json_body(response).await;
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("UUID"),
+        "{body}"
+    );
+}
+
+#[tokio::test]
+async fn legacy_single_database_ignores_the_tenant_parameter() {
+    // 单库部署没有租户维度：`?tenant=` 一律忽略（隔离闸门在 BFF，见 multi-customer.md §5.7）。
+    let router = build_http_router(HttpAppState::new(TopologyMonolith::new_in_memory()));
+    let (status, body) = get_json(&router, "/api/hosts?tenant=whatever").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+#[tokio::test]
+async fn a_multi_customer_site_rejects_an_empty_cust_id_instead_of_guessing() {
+    // 单 cell 站点会「自动选中唯一客户」；写入口若不拦空值，
+    // 数据面漏传 cust_id 就会被静默记到那一个客户头上。
+    let router = build_http_router(cells_state(vec![memory_cell(
+        "c-only",
+        Uuid::new_v4(),
+        "host-only",
+    )]));
+
+    let response = router
+        .clone()
+        .oneshot(ingest_request("", dsnap_content("nobody")))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = json_body(response).await;
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("empty"),
+        "{body}"
+    );
+
+    let (_, body) = get_json(&router, "/api/hosts").await;
+    let names: Vec<&str> = body["data"]["hosts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|host| host["hostName"].as_str().unwrap_or_default())
+        .collect();
+    assert_eq!(names, vec!["host-only"], "{body}");
+}
+
+#[tokio::test]
+async fn a_registered_tenant_uuid_is_still_accepted_during_the_cutover() {
+    // 兼容期：老数据面的 `cust_id` 是租户 UUID。只接受**已登记**的那个 UUID，
+    // 这样「先加 cells、后切 OML」的分两次上线不会把数据打成 400。
+    let tenant_a = Uuid::new_v4();
+    let router = build_http_router(cells_state(vec![
+        memory_cell("c-a", tenant_a, "old-a"),
+        memory_cell("c-b", Uuid::new_v4(), "old-b"),
+    ]));
+
+    let response = router
+        .clone()
+        .oneshot(ingest_request(
+            &tenant_a.to_string(),
+            dsnap_content("cutover-a"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let (_, body) = get_json(&router, "/api/hosts?tenant=c-a").await;
+    let names: Vec<&str> = body["data"]["hosts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|host| host["hostName"].as_str().unwrap_or_default())
+        .collect();
+    assert!(names.contains(&"cutover-a"), "{body}");
+
+    // 没登记的 UUID 仍然拒：兼容期不是“什么 UUID 都收”。
+    let response = router
+        .oneshot(ingest_request(
+            &Uuid::new_v4().to_string(),
+            dsnap_content("stranger"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }

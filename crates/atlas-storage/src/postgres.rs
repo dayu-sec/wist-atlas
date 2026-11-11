@@ -63,6 +63,31 @@ impl PostgresTopologyStore<LivePostgresExecutor> {
         Ok(())
     }
 
+    /// 幂等写入租户注册表（启动时按客户清单播种）。
+    ///
+    /// 为什么在**启动时**写、而不是 ingest 时写：ingest 路径只读不写是一条纪律 ——
+    /// 能往库里写哪个租户，不该由一次外部请求决定；客户清单本身才是权威。
+    /// 重复启动 / 同一客户重复登记不会报错（
+    /// `ON CONFLICT` 同时修复 `tenant_ref` 改名的情况）。
+    ///
+    /// `NULLIF($1, '')::uuid` 而不是 `$1::uuid`：本仓的参数一律以**文本**绑定
+    /// （`PostgresExecutor` 只收 `&[String]`，见 `postgres/sql.rs` 全部同形），
+    /// 直接写 `$1::uuid` 会让 tokio-postgres 把参数推断成 `uuid` 类型，
+    /// 启动时在 `to_sql` 就报 "Cannot convert String to uuid"。
+    pub async fn upsert_tenant_async(
+        &self,
+        tenant_id: Uuid,
+        tenant_ref: &str,
+    ) -> StorageResult<()> {
+        const SQL: &str = "\
+INSERT INTO tenant (tenant_id, tenant_ref) VALUES (NULLIF($1, '')::uuid, $2) \
+ON CONFLICT (tenant_id) DO UPDATE SET tenant_ref = EXCLUDED.tenant_ref, updated_at = now()";
+        self.executor
+            .exec_async(SQL, &[tenant_id.to_string(), tenant_ref.to_string()])
+            .await?;
+        Ok(())
+    }
+
     pub async fn reset_public_schema_async(&self) -> StorageResult<()> {
         self.executor
             .exec_batch_async(sql::RESET_PUBLIC_SCHEMA)

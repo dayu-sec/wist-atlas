@@ -42,7 +42,6 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use uuid::Uuid;
 
 use crate::TopologyMonolith;
 use crate::http::HttpAppState;
@@ -74,7 +73,13 @@ pub(crate) struct EdgeIngestQuery {
 /// `deny_unknown_fields` 不要开：数据面可能带上别的信封字段，多一个键不该让一帧合法快照进 rescue。
 #[derive(Debug, Deserialize)]
 struct AtlasWrite {
-    /// 客户 = atlas 租户（UUID）。**它同时是分区维度**，不接受外部租户别名。
+    /// 客户标识。
+    ///
+    /// - **多客户部署**（配了客户清单）：这里是**客户号**（与证据侧、网关绑定的
+    ///   `tenant_id` 同一 ID 空间），atlas 按清单解析成内部 UUID；未登记 → 400。
+    /// - **单库部署**（老行为）：必须本身就是内部租户 UUID。
+    ///
+    /// 两种形态下它同时是分区维度。
     cust_id: String,
     /// 网关的 DSNAP 记录：单个对象，或 `batch_size > 1` 时的对象数组。
     content: Value,
@@ -131,21 +136,17 @@ pub(crate) async fn ingest_atlas(
         }
     };
 
-    // 空串也走 UUID 校验那条路（报「不是 UUID」比报「不能为空」更能说明该填什么）。
+    // `cust_id` 是**客户号**：多客户部署按客户清单解析，未登记一律 400
+    // （不静默派生、不落默认库 —— 否则就是「客户 B 的数据写进了默认库」）。
     let tenant_ref = write.cust_id.trim().to_string();
-    let tenant_id = match Uuid::parse_str(&tenant_ref) {
-        Ok(id) => TenantId(id),
-        Err(_) => {
-            return ingest_error(
-                StatusCode::BAD_REQUEST,
-                format!(
-                    "cust_id `{tenant_ref}` is not a UUID; it is the atlas tenant id, \
-                     not the external tenant ref"
-                ),
-            );
+    let target = match state.resolve_write(&tenant_ref) {
+        Ok(target) => target,
+        Err(detail) => {
+            // 永久性错误：重试无用，要在数据面 rescue 里显形；
+            // 文案里不回显已登记的客户清单。
+            return ingest_error_code(StatusCode::BAD_REQUEST, Some("tenant_unregistered"), detail);
         }
     };
-
 
     // 数组是 `batch_size > 1` 的形态；单对象是默认形态。两种都收。
     let records = match write.content {
@@ -174,14 +175,7 @@ pub(crate) async fn ingest_atlas(
         .filter(|value| !value.trim().is_empty())
         .map(|value| value.trim().to_string());
 
-    ingest_records(
-        state.app(),
-        tenant_id,
-        tenant_ref,
-        env,
-        records,
-    )
-    .await
+    ingest_records(&target.app, target.tenant, tenant_ref, env, records).await
 }
 
 /// 一行 sink 记录的失败分级：`permanent` 重试无用（进 rescue 让人看），
@@ -290,11 +284,20 @@ async fn ingest_records(
 }
 
 fn ingest_error(status: StatusCode, message: impl Into<String>) -> Response {
+    ingest_error_code(status, None, message)
+}
+
+/// 带业务错误码的失败：数据面靠码区分「永久 / 暂时」，运维靠码查文档。
+fn ingest_error_code(
+    status: StatusCode,
+    code: Option<&str>,
+    message: impl Into<String>,
+) -> Response {
     (
         status,
         Json(json!({
             "status": "error",
-            "code": status.as_u16().to_string(),
+            "code": code.map(str::to_string).unwrap_or_else(|| status.as_u16().to_string()),
             "message": message.into(),
         })),
     )

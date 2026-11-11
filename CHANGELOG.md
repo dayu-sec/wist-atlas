@@ -3,6 +3,33 @@
 本文件记录 `wist-atlas` 的所有重要变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.4.0] · 2026-11-11
+
+### 新增（多客户：一个进程、每客户一个库）
+
+配合 `wist-field` 的多客户 data-field：一个 atlas 进程按客户连多个库，数据物理隔离。
+
+- **客户清单**：环境变量 `WIST_ATLAS_CELLS_FILE` 指向的 JSON 列出
+  `cust_id → {tenant_id, host, database, user}`；口令走 `WIST_ATLAS_PG_PASSWORD`，清单本身**不含密钥**。
+- **写入口接受客户号**：`POST /internal/atlas` 的 `cust_id` 在多客户部署下是**客户号**，
+  按清单解析成内部租户 UUID；未登记 → **400 `tenant_unregistered`**（不静默派生、不落默认库）。
+  **兼容期**：`cust_id` 能解析成 UUID 且**精确等于**某个已登记租户的 `tenant_id` 时照用
+  （让“先加 cells、后切数据面”的分两次上线不会把数据打成 400；切完可删）。
+  单库部署仍要求 `cust_id` 本身就是 UUID（老行为）。
+- **读接口带租户**：10 个 `/api/*` 读接口接受 `?tenant=<cust_id>`；不带且客户数 > 1 →
+  `400 tenant_required`，清单外 → `403 tenant_not_allowed`（不回显客户清单）；只有一个客户时自动选中。
+  按 id 取的单体接口会比对租户，跨客户一律 **404**（403 会变成枚举 oracle）。
+- **迁移 `0007_tenant_registry`**：新增 `tenant(tenant_id uuid pk, tenant_ref text unique)`。
+  启动时按清单**幂等播种**，让 `psql` 能反查 “这个 UUID 是哪个客户”，也让库在掉清单时仍能自证归属。
+- `/healthz` 多一个 `cells` 块（只报 `cust_id` / `tenant_id`，不输出连接串）。
+- `WIST_ATLAS_DEFAULT_TENANT`：单库部署的默认客户（仅用于诊断日志）。
+
+### 明确不做
+
+- **不在运行时派生租户 UUID**（`uuid5(cust_id)` 那类）：跨站点会撞号，且把租户身份绑在客户号上。
+  生成器在“登记那一刻”跑一次，结果固化进清单与库。
+- 不把 `tenant_id` 列改成 `text`：22 张表 / 10 个约束 / 700+ 处引用，收益只是可读性。
+
 ## [未发布]
 
 ### 变更（读接口要令牌）

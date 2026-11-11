@@ -10,6 +10,7 @@ pub const HOST_ARCH_PRESENCE_VERSION: &str = "0003_host_arch_presence";
 pub const INSTANCE_ENDPOINT_VERSION: &str = "0004_instance_endpoint";
 pub const CONTAINER_RUNTIME_VERSION: &str = "0005_container_runtime";
 pub const SOFTWARE_FINGERPRINT_VERSION: &str = "0006_software_fingerprint";
+pub const TENANT_REGISTRY_VERSION: &str = "0007_tenant_registry";
 
 pub const INITIAL_SCHEMA_SQL: &str = include_str!("../migrations/0001_initial_schema.sql");
 pub const PRESENCE_STALE_SQL: &str = include_str!("../migrations/0002_presence_stale.sql");
@@ -18,6 +19,7 @@ pub const INSTANCE_ENDPOINT_SQL: &str = include_str!("../migrations/0004_instanc
 pub const CONTAINER_RUNTIME_SQL: &str = include_str!("../migrations/0005_container_runtime.sql");
 pub const SOFTWARE_FINGERPRINT_SQL: &str =
     include_str!("../migrations/0006_software_fingerprint.sql");
+pub const TENANT_REGISTRY_SQL: &str = include_str!("../migrations/0007_tenant_registry.sql");
 
 pub const MIGRATIONS: &[Migration] = &[
     Migration {
@@ -43,6 +45,10 @@ pub const MIGRATIONS: &[Migration] = &[
     Migration {
         version: SOFTWARE_FINGERPRINT_VERSION,
         sql: SOFTWARE_FINGERPRINT_SQL,
+    },
+    Migration {
+        version: TENANT_REGISTRY_VERSION,
+        sql: TENANT_REGISTRY_SQL,
     },
 ];
 
