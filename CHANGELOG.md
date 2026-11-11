@@ -3,7 +3,29 @@
 本文件记录 `wist-atlas` 的所有重要变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.4.1] · 2026-11-11
+
+### 变更（镜像构建对齐生态做法）
+
+镜像不再在 Docker 里 `cargo build`。改成与 `wist-field-api` / `wist-gateway` 同一套：
+CI 按平台**原生**编译（`x86_64-unknown-linux-gnu` / `aarch64-unknown-linux-gnu` / `aarch64-apple-darwin`），
+镜像只负责打包（`docker/<arch>/` 两个二进制）。
+
+- 起因：`platforms: linux/amd64,linux/arm64` 一次构建时，arm64 那一段要在 amd64 runner 上
+  过 QEMU 编译整个 workspace，`Build and push` 一步就 30 分钟起。
+- 随之对齐的几处：
+  - `docker/Dockerfile`：`COPY ${TARGETARCH}/…`，不再带 `rust` / `debian` 构建阶段；
+    运行基底换成 `ubuntu:24.04`（与原生构建 runner 同代 glibc）。
+  - 证书与静态 busybox 仍从现成镜像拷（**不引 apt**，与 0.4.0 一样）。
+  - ghcr 与 TCR 拆成两个工作流：`release.yml` 只出 ghcr + GitHub Release 资产；
+    `release-tcr.yml` 单独同步 TCR（跨境上传慢，失败不拖住发版）。
+  - 新增 GitHub Release 资产：每个平台一个 tarball（含 `wist-atlas` 与 `atlas-wist-ingest`）。
+
 ## [0.4.0] · 2026-11-11
+
+> ⚠ 这个版本**没有可用镜像**：它的构建跑在旧的「镜像里编译」流水线上（arm64 过 QEMU
+> 30 分钟起），发布到一半就被 0.4.1 的构建改造取代并取消。部署请用 0.4.1 及以后
+> （代码内容与本版一致，只改了打包方式）。
 
 ### 新增（多客户：一个进程、每客户一个库）
 

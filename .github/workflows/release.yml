@@ -25,9 +25,61 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
-  docker:
+  # 1. 按平台**原生**编译（与 wist-field-api / wist-gateway 同构；不在镜像里编译）。
+  build-binaries:
+    name: Build ${{ matrix.target }}
     needs: [verify]
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - os: macos-15
+            target: aarch64-apple-darwin
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+
+      - name: Cargo build
+        run: cargo build --release --locked --target ${{ matrix.target }} -p atlas-app -p atlas-wist-ingest
+
+      - name: Package tarball
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          cp "target/${{ matrix.target }}/release/wist-atlas" artifacts/wist-atlas
+          cp "target/${{ matrix.target }}/release/atlas-wist-ingest" artifacts/atlas-wist-ingest
+          tar -czf "wist-atlas-${{ github.ref_name }}-${{ matrix.target }}.tar.gz" \
+            -C artifacts wist-atlas atlas-wist-ingest
+          ls -lh "wist-atlas-${{ github.ref_name }}-${{ matrix.target }}.tar.gz"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wist-atlas-${{ matrix.target }}
+          path: wist-atlas-${{ github.ref_name }}-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  # 2a/2b. 原生分架构构建镜像，**不用 QEMU**：
+  #   amd64 → ubuntu-24.04，arm64 → ubuntu-24.04-arm。
+  #
+  #   **本工作流只推 ghcr**：TCR 在腾讯云，从 GitHub runner 上传经常要 8~10 分钟，
+  #   把它留在这里会把「tag → 可用镜像」拖长一个数量级。TCR 同步在 `release-tcr.yml`
+  #   里独立跑（同一个 tag 触发，单独一个 run，失败可以单独重跑，不阻塞发版）。
+  docker-amd64:
+    name: Docker image (linux/amd64)
+    needs: [build-binaries]
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: write
@@ -35,11 +87,19 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
+      - uses: actions/download-artifact@v8
+        with:
+          name: wist-atlas-x86_64-unknown-linux-gnu
+          path: staged
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+      - name: Stage binaries for docker build
+        run: |
+          set -euo pipefail
+          mkdir -p docker/amd64
+          tar -xzf "staged/wist-atlas-${{ github.ref_name }}-x86_64-unknown-linux-gnu.tar.gz" -C docker/amd64
+          ls -R docker/amd64
+
+      - uses: docker/setup-buildx-action@v4
 
       - name: Login to GHCR
         uses: docker/login-action@v4
@@ -48,38 +108,178 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # 国内镜像源（腾讯云 TCR）：国内服务器拉 ghcr.io 很慢，客户端改用 TCR 地址。
-      # 凭据在 TCR 控制台生成（访问凭证，需 push 权限），存 GitHub Secrets：
-      # TCR_USERNAME / TCR_PASSWORD；仓库也要先在 TCR 控制台建好（namespace `cloud`）。
-      - name: Login to TCR
+      - name: Build and push to ghcr by digest
+        id: ghcr
+        uses: docker/build-push-action@v7
+        with:
+          context: docker
+          platforms: linux/amd64
+          outputs: type=image,name=ghcr.io/${{ github.repository }},push-by-digest=true,push=true
+          cache-from: type=gha,scope=atlas-amd64
+          cache-to: type=gha,mode=max,scope=atlas-amd64
+
+      - name: Export digest
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/digests
+          ghcr="${{ steps.ghcr.outputs.digest }}"
+          [ -n "${ghcr}" ] || { echo "::error::build-push 没有返回 digest"; exit 1; }
+          printf '%s' "${ghcr#sha256:}" > /tmp/digests/ghcr-amd64
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: digests-amd64
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  docker-arm64:
+    name: Docker image (linux/arm64)
+    needs: [build-binaries]
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: wist-atlas-aarch64-unknown-linux-gnu
+          path: staged
+
+      - name: Stage binaries for docker build
+        run: |
+          set -euo pipefail
+          mkdir -p docker/arm64
+          tar -xzf "staged/wist-atlas-${{ github.ref_name }}-aarch64-unknown-linux-gnu.tar.gz" -C docker/arm64
+          ls -R docker/arm64
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Login to GHCR
         uses: docker/login-action@v4
         with:
-          registry: dy-sec.tencentcloudcr.com
-          username: ${{ secrets.TCR_USERNAME }}
-          password: ${{ secrets.TCR_PASSWORD }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push to ghcr by digest
+        id: ghcr
+        uses: docker/build-push-action@v7
+        with:
+          context: docker
+          platforms: linux/arm64
+          outputs: type=image,name=ghcr.io/${{ github.repository }},push-by-digest=true,push=true
+          cache-from: type=gha,scope=atlas-arm64
+          cache-to: type=gha,mode=max,scope=atlas-arm64
+
+      - name: Export digest
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/digests
+          ghcr="${{ steps.ghcr.outputs.digest }}"
+          [ -n "${ghcr}" ] || { echo "::error::build-push 没有返回 digest"; exit 1; }
+          printf '%s' "${ghcr#sha256:}" > /tmp/digests/ghcr-arm64
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: digests-arm64
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # 2c. 合并两个架构的 digest → 多架构 manifest（只写 manifest，不搬层）。
+  docker-manifest:
+    name: Compose multi-arch manifest
+    needs: [docker-amd64, docker-arm64]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: digests-*
+          path: /tmp/digests
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Login to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Compute image tags
         id: meta
         run: |
-          # 预发布 tag（v0.2.0-alpha 等）只推该 tag，不覆盖 :latest。
-          # 两个源（ghcr / TCR）同进退：客户端只选一个地址，不该出现“一边有一边没有”。
-          tcr="dy-sec.tencentcloudcr.com/cloud/${{ github.event.repository.name }}"
-          tags="ghcr.io/${{ github.repository }}:${{ github.ref_name }}"
-          tags="$(printf '%s\n%s' "$tags" "$tcr:${{ github.ref_name }}")"
+          # 预发布 tag 只推该 tag，**不覆盖 :latest**。
+          ghcr="ghcr.io/${{ github.repository }}"
+          ghcr_tags="${ghcr}:${{ github.ref_name }}"
           case "${{ github.ref_name }}" in
-            *-*)
-              ;;
-            *)
-              tags="$(printf '%s\n%s' "$tags" "ghcr.io/${{ github.repository }}:latest")"
-              tags="$(printf '%s\n%s' "$tags" "$tcr:latest")"
-              ;;
+            *-*) ;;
+            *) ghcr_tags="$(printf '%s\n%s' "$ghcr_tags" "$ghcr:latest")" ;;
           esac
-          printf 'tags<<__EOF__\n%s\n__EOF__\n' "$tags" >> "$GITHUB_OUTPUT"
+          printf 'ghcr_tags<<__EOF__\n%s\n__EOF__\n' "$ghcr_tags" >> "$GITHUB_OUTPUT"
 
-      - name: Build and push
-        uses: docker/build-push-action@v7
+      - name: Verify per-arch digests
+        run: |
+          set -euo pipefail
+          ghcr="ghcr.io/${{ github.repository }}"
+          for f in /tmp/digests/ghcr-*; do
+            docker buildx imagetools inspect "${ghcr}@sha256:$(cat "$f")" > /dev/null
+          done
+          [ "$(find /tmp/digests -name 'ghcr-*' | wc -l | tr -d ' ')" -eq 2 ] || { echo "::error::期望 2 个 ghcr digest"; exit 1; }
+
+      - name: Create ghcr multi-arch manifest
+        env:
+          TAGS: ${{ steps.meta.outputs.ghcr_tags }}
+        run: |
+          set -euo pipefail
+          args=()
+          while IFS= read -r tag; do
+            [ -n "$tag" ] && args+=(-t "$tag")
+          done <<< "$TAGS"
+          sources=()
+          for f in /tmp/digests/ghcr-*; do
+            sources+=("ghcr.io/${{ github.repository }}@sha256:$(cat "$f")")
+          done
+          docker buildx imagetools create "${args[@]}" "${sources[@]}"
+          while IFS= read -r tag; do
+            [ -n "$tag" ] && docker buildx imagetools inspect "$tag"
+          done <<< "$TAGS"
+
+  # 3. tarball 发到 GitHub Release。
+  release:
+    needs: [build-binaries]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
         with:
-          context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          platforms: linux/amd64,linux/arm64
+          pattern: wist-atlas-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Release
+        uses: softprops/action-gh-release@v3
+        with:
+          name: ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          prerelease: ${{ contains(github.ref_name, '-alpha') || contains(github.ref_name, '-beta') }}
+          generate_release_notes: true
+          files: artifacts/*.tar.gz
+
+# 本工作流只出 ghcr 镜像 + GitHub Release 资产。
+# TCR 是可选镜像源（国内站点用），由 `release-tcr.yml` 在同一 tag 上独立跑：
+# 它慢（跨境上传 8~10 分钟）、可能因网络抖动失败，但这些都不该拖住发版。
