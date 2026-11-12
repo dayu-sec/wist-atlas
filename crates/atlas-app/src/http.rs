@@ -343,6 +343,66 @@ struct HostListQuery {
 
 #[derive(Debug, Clone, serde::Deserialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
+struct NetworkDomainListQuery {
+    /// 默认不开：云上已删掉的 VPC / 子网保留行是为了历史。
+    include_stale: Option<bool>,
+    limit: Option<u32>,
+    offset: Option<u32>,
+    tenant: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+struct NetworkDomainListHttpEnvelope {
+    #[schema(value_type = String)]
+    status: &'static str,
+    data: NetworkDomainListHttpView,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+struct NetworkDomainListHttpView {
+    networkDomains: Vec<NetworkDomainHttpItem>,
+    limit: u32,
+    offset: u32,
+}
+
+/// 一个网络域 = 一个 VPC（云侧的地址空间）。
+///
+/// 子网挂在它下面一起返回：前端要画「VPC → 子网」两级，分两次请求会让面板闪两下，
+/// 而子网本来就是域的子集，一次给全更贴近数据形状。
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+struct NetworkDomainHttpItem {
+    id: Uuid,
+    /// 云侧 `VpcId`。**名字不是身份**：腾讯云每个地域都送建 `Default-VPC`。
+    external_ref: Option<String>,
+    name: String,
+    /// 地址空间（`10.0.0.0/16`）。
+    cidr: Option<String>,
+    cloud_account: Option<String>,
+    stale: bool,
+    stale_at: Option<String>,
+    segments: Vec<NetworkSegmentHttpItem>,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+struct NetworkSegmentHttpItem {
+    id: Uuid,
+    external_ref: Option<String>,
+    name: String,
+    cidr: Option<String>,
+    gateway_ip: Option<String>,
+    address_family: String,
+    cloud_account: Option<String>,
+    stale: bool,
+    /// 还挂在这个子网上的主机数（关联未封口）。
+    host_count: usize,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 struct ElasticIpListQuery {
     /// 默认不开：退役（云上已释放）的 EIP 保留行是为了历史，不该混进「现在有哪些公网地址」。
     include_stale: Option<bool>,
@@ -1200,6 +1260,194 @@ fn json_error(status: StatusCode, message: String) -> Response {
 }
 
 /// 主机列表（分页）：「现在有哪几台机」，写探针主机已剔除。
+/// 网络域（VPC）列表：域 + 子网 + 每段主机数。
+#[utoipa::path(
+    get,
+    path = "/api/network-domains",
+    tag = "topology",
+    summary = "网络域（VPC）与子网列表（分页）",
+    params(NetworkDomainListQuery),
+    responses((status = 200, description = "VPC 与子网", body = NetworkDomainListHttpEnvelope))
+)]
+async fn get_network_domains(
+    State(state): State<HttpAppState>,
+    Query(query): Query<NetworkDomainListQuery>,
+) -> Response {
+    let include_stale = query.include_stale.unwrap_or(false);
+    let limit = query.limit.unwrap_or(50).clamp(1, 500);
+    let offset = query.offset.unwrap_or(0);
+    let resolved = match state.resolve(query.tenant.as_deref()) {
+        Ok(resolved) => resolved,
+        Err(err) => return tenant_error(err),
+    };
+
+    match &resolved.app {
+        TopologyMonolith::Memory(store) => {
+            network_domain_list_response(
+                store.clone(),
+                resolved.tenant,
+                include_stale,
+                limit,
+                offset,
+            )
+            .await
+        }
+        TopologyMonolith::PostgresMock(store) => {
+            network_domain_list_response(
+                store.clone(),
+                resolved.tenant,
+                include_stale,
+                limit,
+                offset,
+            )
+            .await
+        }
+        TopologyMonolith::PostgresLive(store) => {
+            network_domain_list_response(
+                store.clone(),
+                resolved.tenant,
+                include_stale,
+                limit,
+                offset,
+            )
+            .await
+        }
+    }
+}
+
+async fn network_domain_list_response<S>(
+    store: S,
+    tenant: Option<TenantId>,
+    include_stale: bool,
+    limit: u32,
+    offset: u32,
+) -> Response
+where
+    S: Clone + AsyncCatalogStore + AsyncRuntimeStore + AsyncGovernanceStore,
+{
+    let page = Page { limit, offset };
+    let query = TopologyQueryService::new(store.clone());
+    // 租户口径与其它列表一致：多客户部署用选中的那个，单库部署退回库里唯一的那个。
+    let domains = match tenant {
+        Some(tenant_id) => AsyncCatalogStore::list_network_domains(&store, tenant_id, page).await,
+        None => match query.default_tenant_id_async().await {
+            Ok(Some(tenant_id)) => {
+                AsyncCatalogStore::list_network_domains(&store, tenant_id, page).await
+            }
+            // 空库：没有租户就等于没有资产。
+            Ok(None) => Ok(Vec::new()),
+            Err(err) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+        },
+    };
+    let domains = match domains {
+        Ok(domains) => domains,
+        Err(err) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+    };
+
+    // 子网与主机关联各读一遍再分组：面板要的是「整个账号的网络」，逐域逐段查会 N+M 次往返。
+    let tenant_id = domains.first().map(|domain| domain.tenant_id);
+    let segments = match tenant_id {
+        Some(tenant_id) => {
+            AsyncCatalogStore::list_network_segments(&store, tenant_id, full_page()).await
+        }
+        None => Ok(Vec::new()),
+    };
+    let segments = match segments {
+        Ok(segments) => segments,
+        Err(err) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+    };
+    let hosts = match tenant_id {
+        Some(tenant_id) => AsyncCatalogStore::list_hosts(&store, tenant_id, full_page()).await,
+        None => Ok(Vec::new()),
+    };
+    let hosts = match hosts {
+        Ok(hosts) => hosts,
+        Err(err) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+    };
+
+    // 每个子网还挂着几台机：只数没封口的关联（换过子网的主机不能被算两次）。
+    let mut host_counts: std::collections::BTreeMap<Uuid, usize> =
+        std::collections::BTreeMap::new();
+    for host in &hosts {
+        if host.stale_at.is_some() {
+            continue;
+        }
+        let Ok(assocs) =
+            AsyncRuntimeStore::list_host_net_assocs(&store, host.host_id, full_page()).await
+        else {
+            continue;
+        };
+        for assoc in assocs {
+            if assoc.validity.valid_to.is_none() {
+                *host_counts.entry(assoc.network_segment_id).or_insert(0) += 1;
+            }
+        }
+    }
+
+    let mut by_domain: std::collections::BTreeMap<Uuid, Vec<NetworkSegmentHttpItem>> =
+        std::collections::BTreeMap::new();
+    for segment in segments {
+        if !include_stale && segment.stale_at.is_some() {
+            continue;
+        }
+        let item = NetworkSegmentHttpItem {
+            id: segment.network_segment_id,
+            external_ref: segment.external_ref,
+            name: segment.name,
+            cidr: segment.cidr,
+            gateway_ip: segment.gateway_ip,
+            address_family: format!("{:?}", segment.address_family),
+            cloud_account: segment.cloud_account,
+            stale: segment.stale_at.is_some(),
+            host_count: host_counts
+                .get(&segment.network_segment_id)
+                .copied()
+                .unwrap_or(0),
+        };
+        if let Some(domain_id) = segment.network_domain_id {
+            by_domain.entry(domain_id).or_default().push(item);
+        }
+    }
+
+    let network_domains: Vec<NetworkDomainHttpItem> = domains
+        .into_iter()
+        .filter(|domain| include_stale || domain.stale_at.is_none())
+        .map(|domain| NetworkDomainHttpItem {
+            id: domain.network_domain_id,
+            external_ref: domain.external_ref,
+            name: domain.name,
+            cidr: domain.cidr,
+            cloud_account: domain.cloud_account,
+            stale: domain.stale_at.is_some(),
+            stale_at: domain.stale_at.map(|at| at.to_rfc3339()),
+            segments: by_domain
+                .remove(&domain.network_domain_id)
+                .unwrap_or_default(),
+        })
+        .collect();
+
+    (
+        StatusCode::OK,
+        Json(NetworkDomainListHttpEnvelope {
+            status: "ok",
+            data: NetworkDomainListHttpView {
+                networkDomains: network_domains,
+                limit,
+                offset,
+            },
+        }),
+    )
+        .into_response()
+}
+
+/// 列表接口内部用的「不限页」。
+fn full_page() -> Page {
+    Page {
+        limit: i32::MAX as u32,
+        offset: 0,
+    }
+}
+
 /// 弹性公网 IP 列表（分页）。
 #[utoipa::path(
     get,
@@ -1576,6 +1824,7 @@ fn documented_routes() -> OpenApiRouter<HttpAppState> {
     OpenApiRouter::new()
         .routes(routes!(get_hosts))
         .routes(routes!(get_elastic_ips))
+        .routes(routes!(get_network_domains))
         .routes(routes!(get_services))
         .routes(routes!(get_first_host_topology))
         .routes(routes!(get_host_topology))
@@ -1622,6 +1871,10 @@ fn openapi_spec() -> utoipa::openapi::OpenApi {
         ElasticIpListHttpEnvelope,
         ElasticIpListHttpView,
         ElasticIpHttpItem,
+        NetworkDomainListHttpEnvelope,
+        NetworkDomainListHttpView,
+        NetworkDomainHttpItem,
+        NetworkSegmentHttpItem,
         HostTopologyHttpEnvelope,
         HostTopologyHttpView,
         HostTopologyHostDto,
@@ -1892,6 +2145,7 @@ mod openapi_tests {
         let mut requests: Vec<(String, &str)> = vec![
             ("/api/hosts".to_string(), "/api/hosts"),
             ("/api/elastic-ips".to_string(), "/api/elastic-ips"),
+            ("/api/network-domains".to_string(), "/api/network-domains"),
             ("/api/services".to_string(), "/api/services"),
             (
                 "/api/topology/host/first".to_string(),

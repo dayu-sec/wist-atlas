@@ -1,5 +1,5 @@
 use super::*;
-use atlas_storage::{CatalogStore, Page};
+use atlas_storage::{CatalogStore, Page, RuntimeStore};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use serde_json::Value;
@@ -2053,4 +2053,173 @@ async fn http_router_hosts_expose_the_cloud_identity() {
     assert_eq!(host["cloudAccount"], "tencent:100041355715");
     // 端侧发现的主机没这两个字段：它们必须是 null 而不是空串。
     assert_eq!(host["observationState"], "live");
+}
+
+/// VPC 面板的数据来源：域 → 子网分组、每段主机数、已退役默认隐藏。
+///
+/// 这三件事各自都能悄悄错：分组按错键会得出「一个 VPC 下面挂全部子网」；
+/// 主机数不筛 `valid_to` 会把换过子网的机器算两次；退役不隐藏会让面板显示已删的网络。
+#[tokio::test]
+async fn http_router_groups_subnets_under_their_vpc() {
+    let store = InMemoryTopologyStore::default();
+    let tenant = atlas_domain::TenantId(Uuid::new_v4());
+    let now = chrono::Utc::now();
+    let domain = |id: Uuid, external: &str, name: &str, cidr: &str, stale: bool| {
+        atlas_domain::NetworkDomain {
+            network_domain_id: id,
+            tenant_id: tenant,
+            environment_id: None,
+            external_ref: Some(external.to_string()),
+            name: name.to_string(),
+            kind: atlas_domain::NetworkDomainKind::Vpc,
+            cidr: Some(cidr.to_string()),
+            description: None,
+            cloud_account: Some("tencent:100041355715".to_string()),
+            stale_at: stale.then_some(now),
+            miss_count: 0,
+            ingest_scope: None,
+            created_at: now,
+            updated_at: now,
+        }
+    };
+    let prod = Uuid::new_v4();
+    let gone = Uuid::new_v4();
+    CatalogStore::upsert_network_domain(
+        &store,
+        &domain(prod, "vpc-prod", "prod-vpc", "10.0.0.0/16", false),
+    )
+    .unwrap();
+    CatalogStore::upsert_network_domain(
+        &store,
+        &domain(gone, "vpc-gone", "old-vpc", "172.16.0.0/16", true),
+    )
+    .unwrap();
+
+    let segment =
+        |id: Uuid, external: &str, cidr: &str, domain_id: Uuid| atlas_domain::NetworkSegment {
+            network_segment_id: id,
+            tenant_id: tenant,
+            network_domain_id: Some(domain_id),
+            environment_id: None,
+            external_ref: Some(external.to_string()),
+            name: format!("subnet-{external}"),
+            cidr: Some(cidr.to_string()),
+            gateway_ip: Some("10.0.1.1".to_string()),
+            address_family: atlas_domain::AddressFamily::Ipv4,
+            cloud_account: Some("tencent:100041355715".to_string()),
+            stale_at: None,
+            miss_count: 0,
+            ingest_scope: None,
+            created_at: now,
+            updated_at: now,
+        };
+    let seg_a = Uuid::new_v4();
+    let seg_b = Uuid::new_v4();
+    let seg_old = Uuid::new_v4();
+    CatalogStore::upsert_network_segment(&store, &segment(seg_a, "subnet-a", "10.0.1.0/24", prod))
+        .unwrap();
+    CatalogStore::upsert_network_segment(&store, &segment(seg_b, "subnet-b", "10.0.2.0/24", prod))
+        .unwrap();
+    CatalogStore::upsert_network_segment(
+        &store,
+        &segment(seg_old, "subnet-old", "172.16.1.0/24", gone),
+    )
+    .unwrap();
+
+    // 两台主机落在 seg_a；第三台从 seg_a 搬到 seg_b（旧关联封口）。
+    let host = |name: &str| atlas_domain::HostInventory {
+        host_id: Uuid::new_v4(),
+        tenant_id: tenant,
+        environment_id: None,
+        host_name: name.to_string(),
+        machine_id: None,
+        cloud_instance_id: Some(format!("ins-{name}")),
+        cloud_account: Some("tencent:100041355715".to_string()),
+        os_name: None,
+        os_version: None,
+        arch: None,
+        created_at: now,
+        last_inventory_at: now,
+        stale_at: None,
+        miss_count: 0,
+        ingest_scope: None,
+    };
+    let host_a = host("node-a");
+    let host_b = host("node-b");
+    let host_c = host("node-c");
+    for item in [&host_a, &host_b, &host_c] {
+        CatalogStore::upsert_host(&store, item).unwrap();
+    }
+    let assoc = |host_id: Uuid, segment_id: Uuid, closed: bool| atlas_domain::HostNetAssoc {
+        assoc_id: Uuid::new_v4(),
+        tenant_id: tenant,
+        host_id,
+        network_segment_id: segment_id,
+        ip_addr: "10.0.1.10".to_string(),
+        iface_name: None,
+        validity: atlas_domain::ValidityWindow {
+            valid_from: now,
+            valid_to: closed.then_some(now),
+        },
+        created_at: now,
+        updated_at: now,
+    };
+    RuntimeStore::upsert_host_net_assoc(&store, &assoc(host_a.host_id, seg_a, false)).unwrap();
+    RuntimeStore::upsert_host_net_assoc(&store, &assoc(host_b.host_id, seg_a, false)).unwrap();
+    // host_c 的旧关联指向 seg_a 已封口，新关联指向 seg_b。
+    RuntimeStore::upsert_host_net_assoc(&store, &assoc(host_c.host_id, seg_a, true)).unwrap();
+    RuntimeStore::upsert_host_net_assoc(&store, &assoc(host_c.host_id, seg_b, false)).unwrap();
+
+    let router = build_http_router(HttpAppState::new(TopologyMonolith::Memory(store.clone())));
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/network-domains")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let payload: Value = serde_json::from_slice(&body).unwrap();
+    let domains = payload["data"]["networkDomains"].as_array().unwrap();
+    assert_eq!(domains.len(), 1, "已退役的 VPC 默认不出现：{payload}");
+    let vpc = &domains[0];
+    assert_eq!(vpc["externalRef"], "vpc-prod");
+    assert_eq!(vpc["cidr"], "10.0.0.0/16", "VPC 的地址空间必须能给出来");
+    assert_eq!(vpc["cloudAccount"], "tencent:100041355715");
+
+    let segments = vpc["segments"].as_array().unwrap();
+    assert_eq!(segments.len(), 2, "子网只挂在它自己的域下");
+    let by_ref = |external: &str| {
+        segments
+            .iter()
+            .find(|segment| segment["externalRef"] == external)
+            .unwrap_or_else(|| panic!("缺少子网 {external}"))
+    };
+    assert_eq!(by_ref("subnet-a")["hostCount"], 2, "封口的历史关联不算主机");
+    assert_eq!(by_ref("subnet-b")["hostCount"], 1);
+
+    // include_stale 打开就把退役的也带上。
+    let all = router
+        .oneshot(
+            Request::builder()
+                .uri("/api/network-domains?include_stale=true")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = axum::body::to_bytes(all.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let payload: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        payload["data"]["networkDomains"].as_array().unwrap().len(),
+        2
+    );
 }
