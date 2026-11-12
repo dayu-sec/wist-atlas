@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use atlas_domain::{
-    AgentHealth, BindingScope, BusinessCatalogCandidate, Confidence, HostCandidate, HostInventory,
+    BindingScope, BusinessCatalogCandidate, Confidence, HostCandidate, HostInventory, HostNetAssoc,
     HostRuntimeState, HostTelemetryCandidate, NetworkSegmentCandidate, ProcessRuntimeCandidate,
     ProcessRuntimeState, ProcessTelemetryCandidate, ResponsibilityAssignment, RuntimeBinding,
     RuntimeObjectType, ServiceEntity, ServiceInstance, Subject, SubjectCandidate, TenantId,
@@ -30,6 +30,79 @@ pub(crate) struct MaterializedHosts {
     pub host_count: usize,
     pub network_count: usize,
     pub assoc_count: usize,
+}
+
+/// 写「主机 ↔ 网段」关联，并把同一台主机其它仍然敞开的关联封口。
+///
+/// 为什么必须封口：关联 ID 里含 IP（见 `pipeline::host_net_assoc_for`），主机换私网 IP
+/// 就是一条新行。不关旧的，一台机在拓扑里会同时挂在两个子网、两个 IP 上，而且旧的那条
+/// 永远显示「现在有效」—— 这比丢数据更糟，因为它看起来是对的。
+fn upsert_host_net_assoc<S>(
+    store: &S,
+    catalog: &mut InMemoryCatalog,
+    assoc: &HostNetAssoc,
+    now: DateTime<Utc>,
+) -> StorageResult<()>
+where
+    S: CatalogStore + RuntimeStore,
+{
+    for mut existing in open_assocs_to_close(catalog, assoc) {
+        existing.validity.valid_to = Some(now);
+        existing.updated_at = now;
+        store.upsert_host_net_assoc(&existing)?;
+        replace_catalog_assoc(catalog, existing);
+    }
+
+    store.upsert_host_net_assoc(assoc)?;
+    replace_catalog_assoc(catalog, assoc.clone());
+    Ok(())
+}
+
+async fn upsert_host_net_assoc_async<S>(
+    store: &S,
+    catalog: &mut InMemoryCatalog,
+    assoc: &HostNetAssoc,
+    now: DateTime<Utc>,
+) -> StorageResult<()>
+where
+    S: AsyncCatalogStore + AsyncRuntimeStore,
+{
+    for mut existing in open_assocs_to_close(catalog, assoc) {
+        existing.validity.valid_to = Some(now);
+        existing.updated_at = now;
+        atlas_storage::AsyncRuntimeStore::upsert_host_net_assoc(store, &existing).await?;
+        replace_catalog_assoc(catalog, existing);
+    }
+
+    atlas_storage::AsyncRuntimeStore::upsert_host_net_assoc(store, assoc).await?;
+    replace_catalog_assoc(catalog, assoc.clone());
+    Ok(())
+}
+
+/// 同一台主机上、与这条不同的、还没封口的关联。
+fn open_assocs_to_close(catalog: &InMemoryCatalog, assoc: &HostNetAssoc) -> Vec<HostNetAssoc> {
+    catalog
+        .host_net_assocs
+        .iter()
+        .filter(|existing| {
+            existing.host_id == assoc.host_id
+                && existing.assoc_id != assoc.assoc_id
+                && existing.validity.valid_to.is_none()
+        })
+        .cloned()
+        .collect()
+}
+
+fn replace_catalog_assoc(catalog: &mut InMemoryCatalog, assoc: HostNetAssoc) {
+    if let Some(existing) = catalog
+        .host_net_assocs
+        .iter_mut()
+        .find(|item| item.assoc_id == assoc.assoc_id)
+    {
+        *existing = assoc;
+    } else {
+        catalog.host_net_assocs.push(assoc);
+    }
 }
 
 /// 网络域（云侧 VPC）落地。**必须在网段之前**：段靠域的稳定 ID 挂进去。
@@ -127,7 +200,7 @@ where
         store.upsert_host(&host)?;
         store.upsert_network_segment(&materialized.segment)?;
         if let Some(assoc) = &materialized.assoc {
-            store.upsert_host_net_assoc(assoc)?;
+            upsert_host_net_assoc(store, catalog, assoc, now)?;
             result.assoc_count += 1;
         }
         result.host_ids.insert(host.host_id);
@@ -147,7 +220,7 @@ where
         // 云侧主机带了私网 IP：把「它在哪个子网」建成关联。
         // 优先用 SubnetId，没有就按 CIDR 包含（最长前缀）兜底。
         if let Some(assoc) = host_net_assoc_for(catalog, &host_candidate, host.host_id, now) {
-            store.upsert_host_net_assoc(&assoc)?;
+            upsert_host_net_assoc(store, catalog, &assoc, now)?;
             result.assoc_count += 1;
         }
         result.host_ids.insert(host.host_id);
@@ -199,7 +272,7 @@ where
         upsert_catalog_host(catalog, host.clone());
         atlas_storage::AsyncCatalogStore::upsert_host(store, &host).await?;
         if let Some(assoc) = &materialized.assoc {
-            atlas_storage::AsyncRuntimeStore::upsert_host_net_assoc(store, assoc).await?;
+            upsert_host_net_assoc_async(store, catalog, assoc, now).await?;
             result.assoc_count += 1;
         }
         result.host_ids.insert(host.host_id);
@@ -217,7 +290,7 @@ where
         upsert_catalog_host(catalog, host.clone());
         atlas_storage::AsyncCatalogStore::upsert_host(store, &host).await?;
         if let Some(assoc) = host_net_assoc_for(catalog, &host_candidate, host.host_id, now) {
-            atlas_storage::AsyncRuntimeStore::upsert_host_net_assoc(store, &assoc).await?;
+            upsert_host_net_assoc_async(store, catalog, &assoc, now).await?;
             result.assoc_count += 1;
         }
         result.host_ids.insert(host.host_id);

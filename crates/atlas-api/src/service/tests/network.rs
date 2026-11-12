@@ -209,3 +209,64 @@ fn changing_a_subnet_cidr_keeps_the_segment_identity() {
     assert_eq!(after[0].network_segment_id, before.network_segment_id);
     assert_eq!(after[0].cidr.as_deref(), Some("10.0.9.0/24"), "CIDR 要更新");
 }
+
+#[test]
+fn moving_a_host_to_another_subnet_closes_the_old_association() {
+    // 关联 ID 里含 IP，换子网就是一条新行。旧的那条必须封口（valid_to 置位），
+    // 否则一台机在拓扑里同时挂在两个子网、两个 IP 上，而且看起来都「现在有效」。
+    let service = TopologyIngestService::new_in_memory();
+    let tenant_id = TenantId(Uuid::new_v4());
+
+    let two_subnets = json!({
+        "network_domains": [{ "external_ref": "vpc-1", "name": "prod-vpc", "cidr": "10.0.0.0/16" }],
+        "network_segments": [
+            { "segment_name": "a", "cidr": "10.0.1.0/24", "external_ref": "subnet-a",
+              "parent_external_ref": "vpc-1" },
+            { "segment_name": "b", "cidr": "10.0.2.0/24", "external_ref": "subnet-b",
+              "parent_external_ref": "vpc-1" },
+        ],
+    });
+
+    let mut first = two_subnets.clone();
+    first["hosts"] = json!([{
+        "hostname": "node-a",
+        "cloud_instance_id": "ins-1",
+        "ip_addr": "10.0.1.10",
+        "subnet_external_ref": "subnet-a",
+    }]);
+    ingest(&service, "ing-1", first, tenant_id);
+
+    let node_a = host_id(&service, tenant_id, "node-a");
+    assert_eq!(
+        assocs(&service, node_a)
+            .iter()
+            .filter(|assoc| assoc.validity.valid_to.is_none())
+            .count(),
+        1
+    );
+
+    // 换子网（连带换 IP）。
+    let mut second = two_subnets;
+    second["hosts"] = json!([{
+        "hostname": "node-a",
+        "cloud_instance_id": "ins-1",
+        "ip_addr": "10.0.2.10",
+        "subnet_external_ref": "subnet-b",
+    }]);
+    ingest(&service, "ing-2", second, tenant_id);
+
+    let rows = assocs(&service, node_a);
+    let open: Vec<_> = rows
+        .iter()
+        .filter(|assoc| assoc.validity.valid_to.is_none())
+        .collect();
+    assert_eq!(open.len(), 1, "同时只能有一条「现在有效」的关联");
+    assert_eq!(open[0].ip_addr, "10.0.2.10");
+
+    let closed: Vec<_> = rows
+        .iter()
+        .filter(|assoc| assoc.validity.valid_to.is_some())
+        .collect();
+    assert_eq!(closed.len(), 1, "旧的关联要封口，不能删（历史要留）");
+    assert_eq!(closed[0].ip_addr, "10.0.1.10");
+}
