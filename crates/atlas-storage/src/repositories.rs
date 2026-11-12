@@ -98,6 +98,8 @@ pub trait CatalogStore {
     /// 弹性公网 IP：**独立资产**，生命周期不跟主机（机器下线 EIP 还在）。
     fn upsert_elastic_ip(&self, ip: &ElasticIp) -> StorageResult<()>;
     fn list_elastic_ips(&self, tenant_id: TenantId, page: Page) -> StorageResult<Vec<ElasticIp>>;
+    /// 单库部署（一个库一个租户）的全量读取。与 `list_all_hosts` 同一条纪律。
+    fn list_all_elastic_ips(&self, page: Page) -> StorageResult<Vec<ElasticIp>>;
 }
 
 #[allow(async_fn_in_trait)]
@@ -165,12 +167,13 @@ pub trait AsyncCatalogStore: Sync {
     async fn upsert_subject(&self, subject: &Subject) -> StorageResult<()>;
     async fn get_subject(&self, subject_id: Uuid) -> StorageResult<Option<Subject>>;
     async fn list_subjects(&self, tenant_id: TenantId, page: Page) -> StorageResult<Vec<Subject>>;
-    async fn upsert_elastic_ip(&self, ip: &ElasticIp) -> StorageResult<()>;
+    async fn upsert_elastic_ip(&self, elastic_ip: &ElasticIp) -> StorageResult<()>;
     async fn list_elastic_ips(
         &self,
         tenant_id: TenantId,
         page: Page,
     ) -> StorageResult<Vec<ElasticIp>>;
+    async fn list_all_elastic_ips(&self, page: Page) -> StorageResult<Vec<ElasticIp>>;
 }
 
 pub trait RuntimeStore {

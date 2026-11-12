@@ -114,6 +114,10 @@ struct HostTopologyHostDto {
     os_name: Option<String>,
     os_version: Option<String>,
     arch: Option<String>,
+    /// 云侧实例 ID。有它 = 这台机器是云上归并来的（或端侧认出了 instance-id）。
+    cloud_instance_id: Option<String>,
+    /// 云账号归属（`vendor:AccountId`）。只有云侧来源才有。
+    cloud_account: Option<String>,
 }
 
 #[derive(Clone)]
@@ -337,6 +341,61 @@ struct HostListQuery {
     tenant: Option<String>,
 }
 
+#[derive(Debug, Clone, serde::Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+struct ElasticIpListQuery {
+    /// 默认不开：退役（云上已释放）的 EIP 保留行是为了历史，不该混进「现在有哪些公网地址」。
+    include_stale: Option<bool>,
+    limit: Option<u32>,
+    offset: Option<u32>,
+    tenant: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+struct ElasticIpListHttpEnvelope {
+    #[schema(value_type = String)]
+    status: &'static str,
+    data: ElasticIpListHttpView,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+struct ElasticIpListHttpView {
+    elasticIps: Vec<ElasticIpHttpItem>,
+    limit: u32,
+    offset: u32,
+}
+
+/// 一个弹性公网 IP。
+///
+/// 它是**独立资产**：生命周期不跟主机（机器下线 EIP 还能留着、还能换绑）。
+/// 所以这里不把它塞进主机对象，而是单列一张表、一个接口。
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+struct ElasticIpHttpItem {
+    id: Uuid,
+    /// 云侧 ID（`eip-xxxx`）。**地址不是身份**：释放后地址可能被别人申请走。
+    external_ref: String,
+    address: String,
+    /// `bound` / `unbound` / 其它（云侧原样给的状态）。
+    status: String,
+    charge_type: Option<String>,
+    bandwidth_mbps: Option<i64>,
+    cloud_account: Option<String>,
+    /// 绑定目标的类型（`host` / `nat` / `clb` …）。
+    bound_target_kind: Option<String>,
+    /// 绑定到的主机。`None` = 没绑、或绑的是 atlas 里没有的对象（NAT/CLB）。
+    bound_host_id: Option<Uuid>,
+    /// 绑定的云侧目标 ID（跟 `bound_host_id` 互为兜底：认不出主机时至少知道绑了谁）。
+    bound_external_target_ref: Option<String>,
+    bound_since: Option<String>,
+    last_inventory_at: String,
+    /// 云上已确认释放。行不删 —— 历史要留。
+    stale: bool,
+    stale_at: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 struct HostListHttpEnvelope {
@@ -371,6 +430,10 @@ struct HostSummaryHttpItem {
     observation_state: String,
     stale: bool,
     stale_at: Option<String>,
+    /// 云侧实例 ID。没有 = 这台是端侧发现的（或还没跟云侧归并上）。
+    cloud_instance_id: Option<String>,
+    /// 云账号归属。没有 = 非云侧来源。
+    cloud_account: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, utoipa::IntoParams)]
@@ -728,6 +791,8 @@ where
                         os_name: view.host.os_name,
                         os_version: view.host.os_version,
                         arch: view.host.arch,
+                        cloud_instance_id: view.host.cloud_instance_id,
+                        cloud_account: view.host.cloud_account,
                     },
                     latest_runtime: view.latest_runtime,
                     process_groups: view.process_groups,
@@ -787,6 +852,8 @@ where
                         os_name: view.host.os_name,
                         os_version: view.host.os_version,
                         arch: view.host.arch,
+                        cloud_instance_id: view.host.cloud_instance_id,
+                        cloud_account: view.host.cloud_account,
                     },
                     total_processes: view.total_processes,
                     total_groups: view.total_groups,
@@ -831,6 +898,8 @@ where
                         os_name: view.host.os_name,
                         os_version: view.host.os_version,
                         arch: view.host.arch,
+                        cloud_instance_id: view.host.cloud_instance_id,
+                        cloud_account: view.host.cloud_account,
                     },
                     total_processes: view.total_processes,
                     total_groups: view.total_groups,
@@ -1131,6 +1200,116 @@ fn json_error(status: StatusCode, message: String) -> Response {
 }
 
 /// 主机列表（分页）：「现在有哪几台机」，写探针主机已剔除。
+/// 弹性公网 IP 列表（分页）。
+#[utoipa::path(
+    get,
+    path = "/api/elastic-ips",
+    tag = "topology",
+    summary = "弹性公网 IP 列表（分页）",
+    params(ElasticIpListQuery),
+    responses((status = 200, description = "EIP 列表", body = ElasticIpListHttpEnvelope))
+)]
+async fn get_elastic_ips(
+    State(state): State<HttpAppState>,
+    Query(query): Query<ElasticIpListQuery>,
+) -> Response {
+    let include_stale = query.include_stale.unwrap_or(false);
+    let limit = query.limit.unwrap_or(50).clamp(1, 500);
+    let offset = query.offset.unwrap_or(0);
+    let resolved = match state.resolve(query.tenant.as_deref()) {
+        Ok(resolved) => resolved,
+        Err(err) => return tenant_error(err),
+    };
+
+    match &resolved.app {
+        TopologyMonolith::Memory(store) => {
+            elastic_ip_list_response(store.clone(), resolved.tenant, include_stale, limit, offset)
+                .await
+        }
+        TopologyMonolith::PostgresMock(store) => {
+            elastic_ip_list_response(store.clone(), resolved.tenant, include_stale, limit, offset)
+                .await
+        }
+        TopologyMonolith::PostgresLive(store) => {
+            elastic_ip_list_response(store.clone(), resolved.tenant, include_stale, limit, offset)
+                .await
+        }
+    }
+}
+
+async fn elastic_ip_list_response<S>(
+    store: S,
+    tenant: Option<TenantId>,
+    include_stale: bool,
+    limit: u32,
+    offset: u32,
+) -> Response
+where
+    S: Clone + AsyncCatalogStore + AsyncRuntimeStore + AsyncGovernanceStore,
+{
+    // 租户口径与其它列表一致：多客户部署用选中的那个，单库部署退回库里唯一的那个。
+    let query = TopologyQueryService::new(store.clone());
+    let tenant_id = match tenant {
+        Some(tenant_id) => Some(tenant_id),
+        None => match query.default_tenant_id_async().await {
+            Ok(tenant_id) => tenant_id,
+            Err(err) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+        },
+    };
+    let page = Page { limit, offset };
+    let listed = match tenant_id {
+        Some(tenant_id) => AsyncCatalogStore::list_elastic_ips(&store, tenant_id, page).await,
+        // 空库：没有租户就等于没有资产，返回空列表而不是错误。
+        None => AsyncCatalogStore::list_all_elastic_ips(&store, page).await,
+    };
+    let ips = match listed {
+        Ok(ips) => ips,
+        Err(err) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+    };
+    let elastic_ips: Vec<ElasticIpHttpItem> = ips
+        .into_iter()
+        .filter(|ip| include_stale || ip.stale_at.is_none())
+        .map(|ip| {
+            let binding = ip.binding;
+            ElasticIpHttpItem {
+                id: ip.elastic_ip_id,
+                external_ref: ip.external_ref,
+                address: ip.address,
+                status: ip.status.as_str().to_string(),
+                charge_type: ip.charge_type,
+                bandwidth_mbps: ip.bandwidth_mbps,
+                cloud_account: ip.cloud_account,
+                bound_target_kind: binding
+                    .as_ref()
+                    .map(|binding| binding.target_kind.as_str().to_string()),
+                bound_host_id: binding.as_ref().and_then(|binding| binding.host_id),
+                bound_external_target_ref: binding
+                    .as_ref()
+                    .and_then(|binding| binding.external_target_ref.clone()),
+                bound_since: binding
+                    .as_ref()
+                    .and_then(|binding| binding.bound_since)
+                    .map(|at| at.to_rfc3339()),
+                last_inventory_at: ip.last_inventory_at.to_rfc3339(),
+                stale: ip.stale_at.is_some(),
+                stale_at: ip.stale_at.map(|at| at.to_rfc3339()),
+            }
+        })
+        .collect();
+    (
+        StatusCode::OK,
+        Json(ElasticIpListHttpEnvelope {
+            status: "ok",
+            data: ElasticIpListHttpView {
+                elasticIps: elastic_ips,
+                limit,
+                offset,
+            },
+        }),
+    )
+        .into_response()
+}
+
 #[utoipa::path(
     get,
     path = "/api/hosts",
@@ -1271,6 +1450,8 @@ where
                         observation_state,
                         stale: view.host.stale_at.is_some(),
                         stale_at: view.host.stale_at.map(|at| at.to_rfc3339()),
+                        cloud_instance_id: view.host.cloud_instance_id,
+                        cloud_account: view.host.cloud_account,
                     }
                 })
                 .collect();
@@ -1394,6 +1575,7 @@ const DOCS_HTML: &str = include_str!("openapi_docs.html");
 fn documented_routes() -> OpenApiRouter<HttpAppState> {
     OpenApiRouter::new()
         .routes(routes!(get_hosts))
+        .routes(routes!(get_elastic_ips))
         .routes(routes!(get_services))
         .routes(routes!(get_first_host_topology))
         .routes(routes!(get_host_topology))
@@ -1437,6 +1619,9 @@ fn openapi_spec() -> utoipa::openapi::OpenApi {
         HostListHttpEnvelope,
         HostListHttpView,
         HostSummaryHttpItem,
+        ElasticIpListHttpEnvelope,
+        ElasticIpListHttpView,
+        ElasticIpHttpItem,
         HostTopologyHttpEnvelope,
         HostTopologyHttpView,
         HostTopologyHostDto,
@@ -1706,6 +1891,7 @@ mod openapi_tests {
 
         let mut requests: Vec<(String, &str)> = vec![
             ("/api/hosts".to_string(), "/api/hosts"),
+            ("/api/elastic-ips".to_string(), "/api/elastic-ips"),
             ("/api/services".to_string(), "/api/services"),
             (
                 "/api/topology/host/first".to_string(),

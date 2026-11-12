@@ -251,6 +251,13 @@ impl AsyncCatalogStore for PostgresTopologyStore<MemoryPostgresExecutor> {
         CatalogStore::list_elastic_ips(self, tenant_id, page)
     }
 
+    async fn list_all_elastic_ips(
+        &self,
+        page: Page,
+    ) -> StorageResult<Vec<atlas_domain::ElasticIp>> {
+        CatalogStore::list_all_elastic_ips(self, page)
+    }
+
     async fn upsert_subject(&self, subject: &Subject) -> StorageResult<()> {
         CatalogStore::upsert_subject(self, subject)
     }

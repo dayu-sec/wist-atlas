@@ -288,6 +288,18 @@ ORDER BY address ASC, elastic_ip_id ASC
 LIMIT NULLIF($2, '')::int4 OFFSET NULLIF($3, '')::int4
 "#;
 
+/// 单库部署（一个库一个租户）的读取，与 `LIST_ALL_HOSTS` 同一条纪律：
+/// 租户由库边界给，不在 SQL 里再筛一次。
+pub const LIST_ALL_ELASTIC_IPS: &str = r#"
+SELECT elastic_ip_id, tenant_id, environment_id, external_ref, address, status,
+       charge_type, bandwidth_mbps, cloud_account,
+       bound_target_kind, bound_host_id, bound_external_target_ref, bound_since,
+       created_at, last_inventory_at, stale_at, miss_count, ingest_scope
+FROM elastic_ip
+ORDER BY address ASC, elastic_ip_id ASC
+LIMIT NULLIF($1, '')::int4 OFFSET NULLIF($2, '')::int4
+"#;
+
 pub const UPSERT_SUBJECT: &str = r#"
 INSERT INTO subject (
     subject_id, tenant_id, subject_type, display_name, external_ref, email, is_active,

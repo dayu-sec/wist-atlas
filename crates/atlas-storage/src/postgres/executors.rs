@@ -269,6 +269,9 @@ impl PostgresExecutor for MemoryPostgresExecutor {
                 .filter(|row| row[1] == params[0])
                 .cloned()
                 .collect(),
+            value if value == sql::LIST_ALL_ELASTIC_IPS => {
+                state.elastic_ips.values().cloned().collect()
+            }
             value if value == sql::LIST_NETWORK_SEGMENTS => state
                 .network_segments
                 .values()

@@ -415,6 +415,19 @@ impl AsyncCatalogStore for PostgresTopologyStore<LivePostgresExecutor> {
         rows.into_iter().map(|row| decode_service(&row)).collect()
     }
 
+    async fn list_all_elastic_ips(&self, page: Page) -> StorageResult<Vec<ElasticIp>> {
+        let rows = self
+            .executor
+            .query_rows_async(
+                sql::LIST_ALL_ELASTIC_IPS,
+                &[page.limit.to_string(), page.offset.to_string()],
+            )
+            .await?;
+        rows.into_iter()
+            .map(|row| decode_elastic_ip(&row))
+            .collect()
+    }
+
     async fn upsert_subject(&self, subject: &Subject) -> StorageResult<()> {
         self.executor
             .exec_async(

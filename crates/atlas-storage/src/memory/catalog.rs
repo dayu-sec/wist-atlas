@@ -337,6 +337,22 @@ impl CatalogStore for InMemoryTopologyStore {
         })
     }
 
+    fn list_all_elastic_ips(&self, page: Page) -> StorageResult<Vec<atlas_domain::ElasticIp>> {
+        self.with_state(|state| {
+            let mut items: Vec<atlas_domain::ElasticIp> = state.elastic_ips.clone();
+            items.sort_by(|left, right| {
+                left.address
+                    .cmp(&right.address)
+                    .then(left.elastic_ip_id.cmp(&right.elastic_ip_id))
+            });
+            items
+                .into_iter()
+                .skip(page.offset as usize)
+                .take(page.limit as usize)
+                .collect()
+        })
+    }
+
     fn upsert_subject(&self, subject: &Subject) -> StorageResult<()> {
         self.with_state(|state| {
             if let Some(existing) = state

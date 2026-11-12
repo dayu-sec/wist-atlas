@@ -1904,3 +1904,153 @@ async fn http_ingest_accepts_an_inventory_snapshot_and_writes_hosts() {
     assert!(names.contains(&"order-api-01"), "实际: {names:?}");
     assert!(names.contains(&"order-api-02"), "实际: {names:?}");
 }
+
+fn eip(
+    ref_id: &str,
+    address: &str,
+    tenant: atlas_domain::TenantId,
+    stale: bool,
+) -> atlas_domain::ElasticIp {
+    let now = chrono::Utc::now();
+    atlas_domain::ElasticIp {
+        elastic_ip_id: Uuid::new_v4(),
+        tenant_id: tenant,
+        environment_id: None,
+        external_ref: ref_id.to_string(),
+        address: address.to_string(),
+        status: if stale {
+            atlas_domain::ElasticIpStatus::Unbound
+        } else {
+            atlas_domain::ElasticIpStatus::Bound
+        },
+        charge_type: Some("TRAFFIC_POSTPAID_BY_HOUR".to_string()),
+        bandwidth_mbps: Some(200),
+        cloud_account: Some("tencent:100041355715".to_string()),
+        binding: if stale {
+            None
+        } else {
+            Some(atlas_domain::ElasticIpBinding {
+                target_kind: atlas_domain::ElasticIpTarget::Host,
+                host_id: None,
+                external_target_ref: Some("ins-78qkipv0".to_string()),
+                bound_since: Some(now),
+            })
+        },
+        created_at: now,
+        last_inventory_at: now,
+        stale_at: stale.then_some(now),
+        miss_count: if stale { 3 } else { 0 },
+        ingest_scope: Some(
+            "atlas.in.inventory.v1:wist-harvest:tencent-cloud-prod:t:dev".to_string(),
+        ),
+    }
+}
+
+/// EIP 是独立资产：云上释放了行还留着，但默认不该出现在「现在有哪些公网地址」里。
+#[tokio::test]
+async fn http_router_lists_elastic_ips_and_hides_released_ones() {
+    let store = InMemoryTopologyStore::default();
+    let tenant = atlas_domain::TenantId(Uuid::new_v4());
+    CatalogStore::upsert_elastic_ip(&store, &eip("eip-live", "114.132.225.16", tenant, false))
+        .unwrap();
+    CatalogStore::upsert_elastic_ip(&store, &eip("eip-gone", "114.132.225.99", tenant, true))
+        .unwrap();
+
+    let router = build_http_router(HttpAppState::new(TopologyMonolith::Memory(store.clone())));
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/elastic-ips")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let payload: Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(payload["status"], "ok");
+    let ips = payload["data"]["elasticIps"].as_array().unwrap();
+    assert_eq!(ips.len(), 1, "已释放的默认不出现：{payload}");
+    assert_eq!(ips[0]["externalRef"], "eip-live");
+    assert_eq!(ips[0]["address"], "114.132.225.16");
+    assert_eq!(ips[0]["status"], "bound");
+    assert_eq!(ips[0]["bandwidthMbps"], 200);
+    assert_eq!(ips[0]["cloudAccount"], "tencent:100041355715");
+    assert_eq!(ips[0]["boundTargetKind"], "host");
+    // 认不出主机时至少要知道云上绑了谁 —— 不能只剩一个空对象。
+    assert_eq!(ips[0]["boundExternalTargetRef"], "ins-78qkipv0");
+    assert_eq!(ips[0]["stale"], false);
+
+    // 想看历史就把 include_stale 打开。
+    let all = router
+        .oneshot(
+            Request::builder()
+                .uri("/api/elastic-ips?include_stale=true")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = axum::body::to_bytes(all.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let payload: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(payload["data"]["elasticIps"].as_array().unwrap().len(), 2);
+}
+
+/// 主机列表要能看出「这台是云上归并来的、属于哪个账号」——
+/// 否则云资产和 agentd 发现的机器在页面上长得一模一样。
+#[tokio::test]
+async fn http_router_hosts_expose_the_cloud_identity() {
+    let store = InMemoryTopologyStore::default();
+    let tenant = atlas_domain::TenantId(Uuid::new_v4());
+    let now = chrono::Utc::now();
+    CatalogStore::upsert_host(
+        &store,
+        &atlas_domain::HostInventory {
+            host_id: Uuid::new_v4(),
+            tenant_id: tenant,
+            environment_id: None,
+            host_name: "CADDY-TEST-01".to_string(),
+            machine_id: None,
+            cloud_instance_id: Some("ins-1js1pvns".to_string()),
+            cloud_account: Some("tencent:100041355715".to_string()),
+            os_name: Some("Ubuntu Server 24.04 LTS 64bit".to_string()),
+            os_version: None,
+            arch: None,
+            created_at: now,
+            last_inventory_at: now,
+            stale_at: None,
+            miss_count: 0,
+            ingest_scope: Some(
+                "atlas.in.inventory.v1:wist-harvest:tencent-cloud-prod:t:dev".to_string(),
+            ),
+        },
+    )
+    .unwrap();
+
+    let router = build_http_router(HttpAppState::new(TopologyMonolith::Memory(store)));
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/api/hosts")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let payload: Value = serde_json::from_slice(&body).unwrap();
+    let host = &payload["data"]["hosts"][0];
+    assert_eq!(host["cloudInstanceId"], "ins-1js1pvns");
+    assert_eq!(host["cloudAccount"], "tencent:100041355715");
+    // 端侧发现的主机没这两个字段：它们必须是 null 而不是空串。
+    assert_eq!(host["observationState"], "live");
+}
