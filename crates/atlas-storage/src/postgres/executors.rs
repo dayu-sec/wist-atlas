@@ -394,7 +394,9 @@ impl PostgresExecutor for MemoryPostgresExecutor {
                 .filter(|row| row[1] == params[0])
                 .cloned()
                 .collect(),
-            value if value.contains("FROM network_domain WHERE network_domain_id = $1") => state
+            // 只匹配前半段：后面是 `= NULLIF($1, '')::uuid` 还是 `= $1` 都该命中。
+            // （真库那边必须写 `NULLIF($1,'')::uuid`，否则 `&str` 参数会被当成 uuid 序列化失败。）
+            value if value.contains("FROM network_domain WHERE network_domain_id") => state
                 .network_domains
                 .get(&params[0])
                 .into_iter()

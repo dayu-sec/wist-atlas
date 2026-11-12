@@ -55,6 +55,115 @@ fn declare_full_account_coverage(envelope: &mut IngestEnvelope, account: &str) {
         .insert("collect.coverage.account".to_string(), account.to_string());
 }
 
+/// 一帧云侧网络快照（段/域都带账号）。
+fn cloud_network_payload() -> Value {
+    let mut payload = vpc("prod-a", "10.0.1.0/24");
+    payload["network_segments"][0]["cloud_account"] = json!("tencent:a");
+    payload["network_domains"][0]["cloud_account"] = json!("tencent:a");
+    payload
+}
+
+/// 生产路径是 **async**（`atlas-wist-ingest`、HTTP 写入都是），sync 只给 CLI 用。
+/// 两条路径各写一份代码，只改一边就会出真事故：真账号 smoke 子网一行都没带
+/// `cloud_account` / `ingest_scope`，退役清扫对它永远失效。
+#[tokio::test]
+async fn the_async_path_writes_the_same_network_presence_as_the_sync_path() {
+    let tenant_id = TenantId(Uuid::new_v4());
+
+    let sync_service = TopologyIngestService::new_in_memory();
+    let mut sync_envelope = envelope("ing-1", cloud_network_payload(), tenant_id);
+    declare_full_account_coverage(&mut sync_envelope, "tencent:a");
+    sync_service
+        .submit_and_materialize(sync_envelope)
+        .expect("sync ingest");
+
+    let async_service = TopologyIngestService::new_in_memory();
+    let mut async_envelope = envelope("ing-1", cloud_network_payload(), tenant_id);
+    declare_full_account_coverage(&mut async_envelope, "tencent:a");
+    async_service
+        .submit_and_materialize_async(async_envelope)
+        .await
+        .expect("async ingest");
+
+    let from_sync = segments(&sync_service, tenant_id);
+    let from_async = segments(&async_service, tenant_id);
+    assert_eq!(from_sync.len(), 1);
+    assert_eq!(from_async.len(), 1);
+    // 不比对 `created_at` / `updated_at`：两边各自 `Utc::now()`，微秒级天然不同。
+    // 其余每个字段（尤其是 presence 和身份）都必须一样。
+    let shape = |segment: &atlas_domain::NetworkSegment| {
+        (
+            segment.network_segment_id,
+            segment.tenant_id,
+            segment.network_domain_id,
+            segment.external_ref.clone(),
+            segment.name.clone(),
+            segment.cidr.clone(),
+            segment.cloud_account.clone(),
+            segment.stale_at,
+            segment.miss_count,
+            segment.ingest_scope.clone(),
+        )
+    };
+    assert_eq!(
+        shape(&from_async[0]),
+        shape(&from_sync[0]),
+        "sync / async 落库的段必须逐字段一致（生产走 async，sync 只给 CLI）"
+    );
+
+    // 不依赖「两边一样」这个间接证据：直接钉住真正决定退役的字段。
+    assert_eq!(
+        from_async[0].cloud_account.as_deref(),
+        Some("tencent:a"),
+        "段不带账号键，退役清扫的账号闸会把它整批跳过"
+    );
+    assert!(
+        from_async[0].ingest_scope.is_some(),
+        "ingest_scope 是诊断「这一行最后是谁写的」的唯一线索"
+    );
+    assert_eq!(from_async[0].miss_count, 0);
+    assert!(from_async[0].stale_at.is_none());
+}
+
+/// 退役必须两条路径都成立 —— 光「写得一样」不够，行为也得一样。
+#[tokio::test]
+async fn the_async_path_also_retires_a_deleted_subnet() {
+    let service = TopologyIngestService::new_in_memory();
+    let tenant_id = TenantId(Uuid::new_v4());
+
+    let mut first = envelope("ing-1", cloud_network_payload(), tenant_id);
+    declare_full_account_coverage(&mut first, "tencent:a");
+    service
+        .submit_and_materialize_async(first)
+        .await
+        .expect("ingest");
+
+    let mut per_round = Vec::new();
+    for round in 0..crate::service::materialize::NETWORK_RETIRE_AFTER_COMPLETE_SNAPSHOTS {
+        let mut missing = envelope(
+            &format!("ing-miss-{round}"),
+            json!({ "network_segments": [], "network_domains": [], "hosts": [] }),
+            tenant_id,
+        );
+        declare_full_account_coverage(&mut missing, "tencent:a");
+        let summary = service
+            .submit_and_materialize_async(missing)
+            .await
+            .expect("ingest")
+            .1;
+        per_round.push(summary.stale_network_segment_count);
+    }
+
+    assert_eq!(
+        per_round.iter().sum::<u64>(),
+        1,
+        "async 路径也要在达到阈值时退一次：{per_round:?}"
+    );
+    let rows = segments(&service, tenant_id);
+    assert_eq!(rows.len(), 1, "退役不删行");
+    assert!(rows[0].stale_at.is_some(), "async 路径也要能退休");
+}
+
 fn segments(
     service: &TopologyIngestService<atlas_storage::InMemoryTopologyStore>,
     tenant_id: TenantId,

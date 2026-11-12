@@ -479,7 +479,7 @@ impl AsyncCatalogStore for PostgresTopologyStore<LivePostgresExecutor> {
         let rows = self
             .executor
             .query_rows_async(
-                "SELECT network_domain_id, tenant_id, environment_id, name, kind, description, created_at, updated_at, external_ref, cidr, cloud_account, stale_at, miss_count, ingest_scope FROM network_domain WHERE network_domain_id = $1",
+                "SELECT network_domain_id, tenant_id, environment_id, name, kind, description, created_at, updated_at, external_ref, cidr, cloud_account, stale_at, miss_count, ingest_scope FROM network_domain WHERE network_domain_id = NULLIF($1, '')::uuid",
                 &[network_domain_id.to_string()],
             )
             .await?;

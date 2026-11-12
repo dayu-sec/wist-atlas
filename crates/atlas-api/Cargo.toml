@@ -13,3 +13,8 @@ serde_json.workspace = true
 atlas-domain = { path = "../atlas-domain" }
 atlas-storage = { path = "../atlas-storage" }
 uuid.workspace = true
+
+[dev-dependencies]
+# 生产路径是 async（`atlas-wist-ingest` / HTTP 写入都走它），sync 只给 CLI 用。
+# 没有 async 用例就会出 sync/async 各写一份、只改了一边的事故。
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

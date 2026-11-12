@@ -295,6 +295,8 @@ pub fn envelope_from_sink_line(
                 "name": row.asset_name,
                 // VPC 的 CIDR 是地址空间本身：不存就只能每次回云上问。
                 "cidr": row.cidr,
+                // 账号归属：域退役也按账号圈定，漏了这个字段域就永远不会退役。
+                "cloud_account": account,
             })
         })
         .collect();
@@ -317,6 +319,8 @@ pub fn envelope_from_sink_line(
             // 子网 ID 是段的稳定键；所属 VPC ID 让它稳定挂进对应的域。
             "external_ref": row.source_asset_id,
             "parent_external_ref": if parent.is_empty() { Value::Null } else { json!(parent) },
+            // 账号归属：子网退役按账号圈定，漏了这个字段段就永远不会退役。
+            "cloud_account": account,
         }));
     }
 
@@ -467,6 +471,16 @@ mod tests {
         // 主机行也要带账号键：退役判定靠它与帧级声明相等。
         assert_eq!(
             value["payload"]["hosts"][0]["cloud_account"],
+            "tencent:1300000000"
+        );
+        // 子网 / VPC 同样要带：它们也有退役清扫，漏了就永远是 NULL、永远不被扫到。
+        // （真账号 smoke 踩过：库里 20 个子网、10 个 VPC 的 cloud_account 全是 NULL。）
+        assert_eq!(
+            value["payload"]["network_segments"][0]["cloud_account"],
+            "tencent:1300000000"
+        );
+        assert_eq!(
+            value["payload"]["network_domains"][0]["cloud_account"],
             "tencent:1300000000"
         );
     }

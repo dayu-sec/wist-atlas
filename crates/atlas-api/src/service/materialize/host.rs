@@ -425,15 +425,26 @@ where
 
     for network_candidate in networks {
         let network_resolution = resolve_network_candidate(catalog, &network_candidate, now);
-        upsert_segment(catalog, network_resolution.segment.clone());
+        // presence 与 sync 路径**必须逐字一致**：这条才是生产路径，sync 只给 CLI 用。
+        // （真账号 smoke 踩过：只改了 sync，结果子网一行都没带 cloud_account / ingest_scope，
+        //   退役清扫永远对它失效。）
+        let mut segment = network_resolution.segment.clone();
+        segment.cloud_account = network_candidate
+            .cloud_account
+            .clone()
+            .or_else(|| segment.cloud_account.clone());
+        segment.stale_at = None;
+        segment.miss_count = 0;
+        segment.ingest_scope = Some(scope.to_string());
+        segment.updated_at = now;
+        upsert_segment(catalog, segment.clone());
         for domain in &catalog.network_domains {
             atlas_storage::AsyncCatalogStore::upsert_network_domain(store, domain).await?;
         }
-        atlas_storage::AsyncCatalogStore::upsert_network_segment(
-            store,
-            &network_resolution.segment,
-        )
-        .await?;
+        atlas_storage::AsyncCatalogStore::upsert_network_segment(store, &segment).await?;
+        result
+            .network_segment_ids
+            .insert(segment.network_segment_id);
         result.network_count += 1;
 
         if network_candidate.ip_addr.is_none() {

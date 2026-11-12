@@ -1275,6 +1275,16 @@ fn real_postgres_network_presence_round_trip() {
         assert_eq!(stored_domain.miss_count, 0);
         assert!(stored_domain.stale_at.is_none());
 
+        // `get_network_domain` 也要能读 —— 域退役清扫靠它，且参数是 `&str`，
+        // SQL 必须 `NULLIF($1,'')::uuid`，否则 tokio-postgres 会报
+        // 「error serializing parameter 0」。（真账号 smoke 踩过：域退役整轮失败。）
+        let fetched = AsyncCatalogStore::get_network_domain(&store, domain.network_domain_id)
+            .await
+            .expect("get domain")
+            .expect("domain row");
+        assert_eq!(fetched.cidr.as_deref(), Some("10.0.0.0/16"));
+        assert_eq!(fetched.cloud_account.as_deref(), Some(account));
+
         // 段：15 个参数位次 + 解码列序（10=external_ref，11..14 是 presence）。
         let segment = NetworkSegment {
             network_segment_id: Uuid::new_v4(),

@@ -127,6 +127,8 @@ struct Report {
     hosts_marked_stale: u64,
     /// 本轮判定已释放的 EIP 数（同样只认账号级完整快照）。
     elastic_ips_marked_stale: u64,
+    /// 本轮判定已删除的子网数（域跟着「一个活段都不剩」一起退役，不单独计数）。
+    network_segments_marked_stale: u64,
 }
 
 impl Report {
@@ -139,13 +141,14 @@ impl Report {
 
 fn log_report(report: &Report, offset: u64) {
     println!(
-        "poll done: lines={} ingested={} skipped={} stale_processes={} stale_hosts={} stale_elastic_ips={} offset={offset}{}",
+        "poll done: lines={} ingested={} skipped={} stale_processes={} stale_hosts={} stale_elastic_ips={} stale_network_segments={} offset={offset}{}",
         report.lines,
         report.ingested,
         report.skipped,
         report.processes_marked_stale,
         report.hosts_marked_stale,
         report.elastic_ips_marked_stale,
+        report.network_segments_marked_stale,
         if report.stopped {
             " (stopped early)"
         } else {
@@ -172,6 +175,7 @@ async fn poll_once(
                 report.processes_marked_stale += outcome.stale_process_count;
                 report.hosts_marked_stale += outcome.stale_host_count;
                 report.elastic_ips_marked_stale += outcome.stale_elastic_ip_count;
+                report.network_segments_marked_stale += outcome.stale_network_segment_count;
                 tail.commit(line.next_offset)
                     .map_err(|err| CliError::Message(format!("commit: {err}")))?;
             }
@@ -235,6 +239,7 @@ where
                 report.processes_marked_stale += summary.stale_process_count;
                 report.hosts_marked_stale += summary.stale_host_count;
                 report.elastic_ips_marked_stale += summary.stale_elastic_ip_count;
+                report.network_segments_marked_stale += summary.stale_network_segment_count;
                 tail.commit(line.next_offset)
                     .map_err(|err| CliError::Message(format!("commit: {err}")))?;
             }
