@@ -1,10 +1,10 @@
 use atlas_domain::{
-    HostProcessGroupView, HostProcessGroupsPageView, HostProcessOverviewView,
+    HostInventory, HostProcessGroupView, HostProcessGroupsPageView, HostProcessOverviewView,
     HostServiceInstanceView, HostServiceView, HostTopologyView, ProcessRuntimeState,
     ProcessStateCount, RuntimeObjectType,
 };
 use atlas_storage::{AsyncCatalogStore, AsyncRuntimeStore, CatalogStore, Page, RuntimeStore};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use orion_error::conversion::ConvErr;
 use uuid::Uuid;
 
@@ -479,38 +479,45 @@ pub(super) fn build_process_groups(processes: &[ProcessRuntimeState]) -> Vec<Hos
     views
 }
 
+/// 进程概览 / 分页只关心「进程分组」，不关心服务、容器、网段、责任归属。
+///
+/// 以前这两个读模型都是从 `host_topology_view` 截出来的 —— 为了一份 top-N 分组，
+/// 会把整棵进程树、每台机的服务（逐进程一条 binding 查询）、容器、网段全取一遍。
+/// 一台上千进程的机器因此要付上千条查询，而调用方（画布主机卡）只要几个数。
+/// 这里只取进程行 + 一条 `build_process_groups`。
 pub(super) fn build_host_process_overview_view(
-    view: HostTopologyView,
+    host: HostInventory,
+    processes: &[ProcessRuntimeState],
+    generated_at: DateTime<Utc>,
     top_n: usize,
 ) -> HostProcessOverviewView {
-    let total_processes = view.processes.len();
-    let total_groups = view.process_groups.len();
-    let top_groups = view
-        .process_groups
-        .into_iter()
-        .take(top_n)
-        .collect::<Vec<_>>();
+    let total_processes = processes.len();
+    let process_groups = build_process_groups(processes);
+    let total_groups = process_groups.len();
+    let top_groups = process_groups.into_iter().take(top_n).collect::<Vec<_>>();
     let truncated_group_count = total_groups.saturating_sub(top_groups.len());
 
     HostProcessOverviewView {
-        host: view.host,
+        host,
         total_processes,
         total_groups,
         top_groups,
         truncated_group_count,
-        generated_at: view.generated_at,
+        generated_at,
     }
 }
 
 pub(super) fn build_host_process_groups_page_view(
-    view: HostTopologyView,
+    host: HostInventory,
+    processes: &[ProcessRuntimeState],
+    generated_at: DateTime<Utc>,
     offset: usize,
     limit: usize,
 ) -> HostProcessGroupsPageView {
-    let total_processes = view.processes.len();
-    let total_groups = view.process_groups.len();
-    let groups = view
-        .process_groups
+    let total_processes = processes.len();
+    let process_groups = build_process_groups(processes);
+    let total_groups = process_groups.len();
+    let groups = process_groups
         .into_iter()
         .skip(offset)
         .take(limit)
@@ -518,13 +525,13 @@ pub(super) fn build_host_process_groups_page_view(
     let has_more = offset.saturating_add(groups.len()) < total_groups;
 
     HostProcessGroupsPageView {
-        host: view.host,
+        host,
         total_processes,
         total_groups,
         groups,
         limit,
         offset,
         has_more,
-        generated_at: view.generated_at,
+        generated_at,
     }
 }

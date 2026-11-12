@@ -275,8 +275,9 @@ hostname:<host>:pid:<pid>:...
 当前有两类主要查询出口：
 
 - host-process graph：
-  - `/api/topology/host/first/processes`
-  - `/api/topology/host/{id}/processes`
+  - `/api/topology/host/first/processes`（站点有多台主机时返回**资产总览**：只有 `HostInventory` +
+    `NetworkSegment`，因为画布在多主机形态下只画这两类卡；单主机站点仍是完整进程图）
+  - `/api/topology/host/{id}/processes`（单机聚焦，永远是完整图）
 - host 结构化 read model：
   - `/api/topology/host/{id}`
 

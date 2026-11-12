@@ -1,6 +1,8 @@
 use atlas_api::TopologyQueryService;
 use atlas_domain::RuntimeObjectType;
-use atlas_storage::{AsyncCatalogStore, CatalogStore, GovernanceStore, Page, RuntimeStore};
+use atlas_storage::{
+    AsyncCatalogStore, AsyncRuntimeStore, CatalogStore, GovernanceStore, Page, RuntimeStore,
+};
 use chrono::Utc;
 use orion_error::conversion::ConvErr;
 use serde::Serialize;
@@ -11,6 +13,7 @@ use crate::{AppResult, materialization_missing};
 
 mod async_build;
 mod network;
+mod overview;
 mod service;
 
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
@@ -55,20 +58,49 @@ pub(crate) struct HostProcessTopologyMetadata {
     pub(crate) process_count: usize,
 }
 
-pub(crate) use async_build::build_host_process_topology_graph_async;
+pub(crate) use async_build::{
+    build_detailed_fleet_graph_async, build_host_process_topology_graph_async,
+};
 pub(crate) use network::build_network_topology_graph_async;
+pub(crate) use overview::{build_asset_overview_graph, build_asset_overview_graph_async};
 pub(crate) use service::build_service_topology_graph_async;
 
+/// 无焦点主机时要建哪一种图。
+///
+/// 这条分岔不是“优化开关”，是对两个不同产品语义的承认：
+/// - [`FleetShape::Canvas`]：**画布首屏**。站点有多台主机时，画布只画主机卡 + 共享网段
+///   （`buildOverviewDisplay`），所以只给资产总览；单主机站点仍是完整图。
+/// - [`FleetShape::Detailed`]：**离线导出/排查**（`export-visualization`）。无论几台主机
+///   都导完整图 —— 导出是给人翻的，不该因为“画布不画”就把进程树抽掉。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FleetShape {
+    Canvas,
+    Detailed,
+}
+
+/// 导出用：始终完整图。
 pub(crate) fn build_visualization_graph<S>(store: S) -> AppResult<HostProcessTopologyGraph>
 where
     S: Clone + CatalogStore + RuntimeStore + GovernanceStore,
 {
-    build_host_process_topology_graph(store, None)
+    build_graph(store, None, FleetShape::Detailed)
 }
 
+/// 画布 / CLI 打印用：跟首屏接口看到的一样（多主机时是资产总览）。
 pub(crate) fn build_host_process_topology_graph<S>(
     store: S,
     focus_host_id: Option<Uuid>,
+) -> AppResult<HostProcessTopologyGraph>
+where
+    S: Clone + CatalogStore + RuntimeStore + GovernanceStore,
+{
+    build_graph(store, focus_host_id, FleetShape::Canvas)
+}
+
+fn build_graph<S>(
+    store: S,
+    focus_host_id: Option<Uuid>,
+    shape: FleetShape,
 ) -> AppResult<HostProcessTopologyGraph>
 where
     S: Clone + CatalogStore + RuntimeStore + GovernanceStore,
@@ -98,6 +130,10 @@ where
                 break;
             }
         }
+    }
+
+    if shape == FleetShape::Canvas && focus_host_id.is_none() && hosts.len() > 1 {
+        return build_asset_overview_graph(&store, hosts);
     }
 
     let query = TopologyQueryService::new(store.clone());
@@ -467,6 +503,10 @@ where
     })
 }
 
+/// 网段层：这台机器接在哪些网段上（节点 + 关联边）。
+///
+/// 节点/边的形状由 `graph::overview::segment_node` / `assoc_edge` 定，与资产总览共用一套 ——
+/// 两处各写一遍必定漂：总览卡上有 `cidr`、聚焦卡上没有这种小差异最难查。
 pub(in crate::graph) fn append_network_graph(
     nodes: &mut Vec<HostProcessTopologyNode>,
     edges: &mut Vec<HostProcessTopologyEdge>,
@@ -474,52 +514,11 @@ pub(in crate::graph) fn append_network_graph(
     view: &atlas_domain::HostTopologyView,
 ) {
     for segment in &view.network_segments {
-        let node_id = format!("network:{}", segment.network_segment_id);
-        let mut properties = serde_json::Map::new();
-        if let Some(cidr) = &segment.cidr {
-            properties.insert("cidr".to_string(), Value::String(cidr.clone()));
-        }
-        properties.insert(
-            "addressFamily".to_string(),
-            Value::String(format!("{:?}", segment.address_family)),
-        );
-        if let Some(gateway_ip) = &segment.gateway_ip {
-            properties.insert("gatewayIp".to_string(), Value::String(gateway_ip.clone()));
-        }
-
-        nodes.push(HostProcessTopologyNode {
-            id: node_id,
-            object_kind: "NetworkSegment",
-            object_id: segment.network_segment_id.to_string(),
-            layer: "resource",
-            label: segment.name.clone(),
-            properties,
-        });
+        nodes.push(overview::segment_node(segment));
     }
 
     for assoc in &view.network_assocs {
-        let target = format!("network:{}", assoc.network_segment_id);
-        let mut properties = serde_json::Map::new();
-        properties.insert("ipAddr".to_string(), Value::String(assoc.ip_addr.clone()));
-        if let Some(iface_name) = &assoc.iface_name {
-            properties.insert("ifaceName".to_string(), Value::String(iface_name.clone()));
-        }
-        properties.insert(
-            "validFrom".to_string(),
-            Value::String(assoc.validity.valid_from.to_rfc3339()),
-        );
-        if let Some(valid_to) = assoc.validity.valid_to {
-            properties.insert("validTo".to_string(), Value::String(valid_to.to_rfc3339()));
-        }
-
-        edges.push(HostProcessTopologyEdge {
-            id: format!("edge:{}:{}", host_node_id, assoc.assoc_id),
-            edge_kind: "host_network_assoc",
-            source: host_node_id.to_string(),
-            target,
-            label: assoc.iface_name.clone(),
-            properties,
-        });
+        edges.push(overview::assoc_edge(host_node_id, assoc));
     }
 }
 
@@ -666,4 +665,63 @@ where
     AsyncCatalogStore::list_all_hosts(store, page)
         .await
         .conv_err()
+}
+
+/// 一次取多少台主机的进程计数（与 `atlas-api` 的列表查询同口径）。
+const HOST_COUNT_PAGE_LIMIT: u32 = 200;
+
+/// 每台主机的活进程数：一条 `GROUP BY host_id` 聚合，按页取全。
+///
+/// 资产总览 / 网段视图的卡片只需要这个数 —— 不要为了几个数字去逐台机读进程树。
+/// 只取第一页会让第 201 台之后的主机显示成 0 进程。
+pub(super) fn host_process_counts<S>(store: &S) -> AppResult<std::collections::BTreeMap<Uuid, i64>>
+where
+    S: RuntimeStore,
+{
+    let mut counts = std::collections::BTreeMap::new();
+    let mut offset = 0;
+    loop {
+        let batch = store
+            .list_host_process_counts(Page {
+                limit: HOST_COUNT_PAGE_LIMIT,
+                offset,
+            })
+            .conv_err()?;
+        let len = batch.len();
+        counts.extend(batch);
+        if len < HOST_COUNT_PAGE_LIMIT as usize {
+            break;
+        }
+        offset += len as u32;
+    }
+    Ok(counts)
+}
+
+/// 同上，异步版。
+pub(super) async fn host_process_counts_async<S>(
+    store: &S,
+) -> AppResult<std::collections::BTreeMap<Uuid, i64>>
+where
+    S: AsyncRuntimeStore,
+{
+    let mut counts = std::collections::BTreeMap::new();
+    let mut offset = 0;
+    loop {
+        let batch = AsyncRuntimeStore::list_host_process_counts(
+            store,
+            Page {
+                limit: HOST_COUNT_PAGE_LIMIT,
+                offset,
+            },
+        )
+        .await
+        .conv_err()?;
+        let len = batch.len();
+        counts.extend(batch);
+        if len < HOST_COUNT_PAGE_LIMIT as usize {
+            break;
+        }
+        offset += len as u32;
+    }
+    Ok(counts)
 }

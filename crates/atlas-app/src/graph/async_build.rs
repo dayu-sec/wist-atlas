@@ -20,6 +20,27 @@ pub(crate) async fn build_host_process_topology_graph_async<S>(
 where
     S: Clone + AsyncCatalogStore + AsyncRuntimeStore + AsyncGovernanceStore,
 {
+    build_graph_async(store, focus_host_id, super::FleetShape::Canvas).await
+}
+
+/// 导出用：始终完整图（与同步侧 `build_visualization_graph` 对齐）。
+pub(crate) async fn build_detailed_fleet_graph_async<S>(
+    store: S,
+) -> AppResult<HostProcessTopologyGraph>
+where
+    S: Clone + AsyncCatalogStore + AsyncRuntimeStore + AsyncGovernanceStore,
+{
+    build_graph_async(store, None, super::FleetShape::Detailed).await
+}
+
+async fn build_graph_async<S>(
+    store: S,
+    focus_host_id: Option<Uuid>,
+    shape: super::FleetShape,
+) -> AppResult<HostProcessTopologyGraph>
+where
+    S: Clone + AsyncCatalogStore + AsyncRuntimeStore + AsyncGovernanceStore,
+{
     let mut hosts = Vec::new();
     if let Some(host_id) = focus_host_id {
         let host = AsyncCatalogStore::get_host(&store, host_id)
@@ -45,6 +66,10 @@ where
                 break;
             }
         }
+    }
+
+    if shape == super::FleetShape::Canvas && focus_host_id.is_none() && hosts.len() > 1 {
+        return super::build_asset_overview_graph_async(&store, hosts).await;
     }
 
     let query = TopologyQueryService::new(store.clone());

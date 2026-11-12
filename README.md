@@ -215,7 +215,7 @@ GET /api/topology/host/first                  第一台主机的焦点视图
 GET /api/topology/host/{id}                   主机焦点视图
 GET /api/topology/host/{id}/process-overview  进程概览（截断）
 GET /api/topology/host/{id}/process-groups    进程组分页
-GET /api/topology/host/first/processes        第一台主机的进程拓扑图
+GET /api/topology/host/first/processes        资产总览图（多主机时只有主机 + 共享网段）
 GET /api/topology/host/{id}/processes         主机进程拓扑图
 GET /api/topology/network/{id}                网段视图
 GET /api/topology/service/{id}                服务视图

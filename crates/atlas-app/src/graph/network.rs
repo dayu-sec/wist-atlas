@@ -5,7 +5,7 @@
 //! 画布与卡片都不用新增节点类型。
 
 use atlas_api::TopologyQueryService;
-use atlas_storage::{AsyncCatalogStore, AsyncGovernanceStore, AsyncRuntimeStore, Page};
+use atlas_storage::{AsyncCatalogStore, AsyncGovernanceStore, AsyncRuntimeStore};
 use chrono::Utc;
 use orion_error::conversion::ConvErr;
 use serde_json::Value;
@@ -16,9 +16,6 @@ use super::{
     HostProcessTopologyNode,
 };
 use crate::AppResult;
-
-/// 一次取多少个主机的进程计数（与 `atlas-api` 的列表查询同口径）。
-const HOST_COUNT_PAGE_LIMIT: u32 = 200;
 
 pub(crate) async fn build_network_topology_graph_async<S>(
     store: S,
@@ -35,7 +32,7 @@ where
         return Ok(None);
     };
 
-    let counts = host_process_counts(&store).await?;
+    let counts = super::host_process_counts_async(&store).await?;
     let segment = &view.segment;
 
     let segment_node_id = format!("segment:{}", segment.network_segment_id);
@@ -130,33 +127,4 @@ where
             process_count: process_total,
         },
     }))
-}
-
-/// 主机进程计数按页取全：只取第一页会让第 101 台之后的主机在卡片上显示成 0 进程。
-async fn host_process_counts<S>(store: &S) -> AppResult<std::collections::BTreeMap<Uuid, i64>>
-where
-    S: AsyncRuntimeStore,
-{
-    let mut counts = std::collections::BTreeMap::new();
-    let mut offset = 0;
-    loop {
-        let batch = AsyncRuntimeStore::list_host_process_counts(
-            store,
-            Page {
-                limit: HOST_COUNT_PAGE_LIMIT,
-                offset,
-            },
-        )
-        .await
-        .conv_err()?;
-        let len = batch.len();
-        for (host_id, count) in batch {
-            counts.insert(host_id, count);
-        }
-        if len < HOST_COUNT_PAGE_LIMIT as usize {
-            break;
-        }
-        offset += len as u32;
-    }
-    Ok(counts)
 }

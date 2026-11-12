@@ -846,6 +846,99 @@ async fn http_router_hides_stale_hosts_unless_asked() {
 }
 
 #[tokio::test]
+async fn http_router_overview_graph_is_asset_overview_only() {
+    // 多主机 = 资产总览：画布只画主机卡与共享网段。
+    // 后端也就不该把进程树塞进响应（一个 12 台机 / 2800 进程的站点是 ~2.8 MB，
+    // 浏览器下载完会把它们全丢掉）。
+    let app = TopologyMonolith::new_in_memory();
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/atlas_edge_network_hosts_sample.jsonl");
+    app.replay_jsonl(fixture).unwrap();
+
+    let router = build_http_router(HttpAppState::new(app));
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/api/topology/host/first/processes")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let payload: Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(payload["status"], "ok");
+    // 规模仍然要对：总览页的「N 台机 / N 个进程」读的是 metadata。
+    assert_eq!(payload["data"]["metadata"]["hostCount"], 2);
+    assert_eq!(payload["data"]["metadata"]["processCount"], 2);
+
+    let nodes = payload["data"]["nodes"].as_array().unwrap();
+    assert_eq!(
+        nodes
+            .iter()
+            .filter(|node| node["objectKind"] == "HostInventory")
+            .count(),
+        2
+    );
+    assert_eq!(
+        nodes
+            .iter()
+            .filter(|node| node["objectKind"] == "NetworkSegment")
+            .count(),
+        1
+    );
+    // 主机内部细节一个都不带。
+    assert!(
+        nodes.iter().all(|node| matches!(
+            node["objectKind"].as_str(),
+            Some("HostInventory") | Some("NetworkSegment")
+        )),
+        "总览图只该有主机与网段节点: {nodes:?}"
+    );
+    assert!(
+        payload["data"]["edges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|edge| edge["edgeKind"] == "host_network_assoc")
+    );
+}
+
+#[test]
+fn export_visualization_keeps_the_full_fleet_graph() {
+    // 首屏为了体积只给资产总览，但**导出是给人翻的**：无论几台主机都导完整图
+    // （`FleetShape::Detailed`）。这条用例守住“导出不被首屏的优化顺手抽掉”。
+    let app = TopologyMonolith::new_in_memory();
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/atlas_edge_network_hosts_sample.jsonl");
+    app.replay_jsonl(fixture).unwrap();
+
+    let path = std::env::temp_dir().join("wist-atlas-export-full-graph.json");
+    app.run(MonolithInput::ExportVisualization(path.clone()))
+        .unwrap();
+
+    let payload: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let _ = std::fs::remove_file(&path);
+
+    let kinds: Vec<&str> = payload["data"]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|node| node["objectKind"].as_str())
+        .collect();
+    assert!(kinds.contains(&"HostInventory"));
+    assert!(
+        kinds.contains(&"ProcessSummary") && kinds.contains(&"ProcessRuntime"),
+        "导出必须是完整图: {kinds:?}"
+    );
+}
+
+#[tokio::test]
 async fn http_router_returns_first_host_process_topology_in_memory() {
     let app = TopologyMonolith::new_in_memory();
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

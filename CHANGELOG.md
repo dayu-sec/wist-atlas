@@ -3,6 +3,38 @@
 本文件记录 `wist-atlas` 的所有重要变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.6.0] · 2026-11-12
+
+### 变更（多主机总览只给资产图：2.8 MB 的响应降到 ~21 KB）
+
+资产拓扑页打开慢，主因不在画布，而在**总览图里塞了画布根本不会画的进程树**。
+
+`GET /api/topology/host/first/processes` 在站点有**两台以上主机**时返回的就是资产总览
+（主机卡 + 共享网段）—— 画布端 `buildOverviewDisplay` 会把进程、进程分组、服务、实例、
+容器整棵丢掉。但后端仍然逐台机 `host_topology_view`：读全部进程行、逐进程一条
+`list_runtime_bindings_for_object`、算服务/容器/责任归属，最后只被前端丢掉。
+一个 12 台机 / 2876 个进程的站点：响应 ~2.8 MB、3117 条边、上千条 SQL。
+
+- **多主机走新的 `graph::overview`**：主机行 + 网段关联 + 每台机的进程计数（一条聚合 SQL）。
+  同口径实测（12 台机 / 2876 进程）：**911 ms / 2025 KiB → 31 ms / 21 KiB**，节点 3129 → 19。
+  网段节点顺带按 `network_segment_id` 去重（以前同一网段每台机各发一份，前端自己按 CIDR 合并）。
+- **单主机（含聚焦某台机）不变**：进程分组还要能展开，完整图照旧。
+- **`process-overview` / `process-groups` 不再先建完整主机视图再截断**：只取进程行 +
+  一次 `build_process_groups`。省掉「为了一份 top-12 分组，把整棵进程树 + 服务 + 容器 +
+  网段 + 责任归属全读一遍」，其中最大头是每台机上「逐进程一条 binding 查询」。
+  12 台机各要一份概览时，11 条并发请求的合计耗时 1270 ms → 84 ms。
+
+### 不兼容
+
+站点有**多台主机**时，`/api/topology/host/first/processes` 的 `nodes` 只含
+`HostInventory` 与 `NetworkSegment`，`edges` 只含 `host_network_assoc`；
+`metadata.hostCount` / `metadata.processCount` 照旧给规模。要进程树请用
+`/api/topology/host/{id}/processes`（单机聚焦）。
+
+`export-visualization` **不受影响**：导出始终是完整图（几台主机都导进程树）——
+首屏的优化不该把离线排查用的快照抽小。这条由
+`export_visualization_keeps_the_full_fleet_graph` 守住。
+
 ## [0.5.1] · 2026-11-12
 
 ### 修复（0.5.0 的两处默认库残留）

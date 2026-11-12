@@ -485,11 +485,17 @@ async fn get_host_process_topology(
 }
 
 /// 第一台主机的进程拓扑图（节点 + 边）。
+/// 资产总览图（节点 + 边）。
+///
+/// 站点有多台主机时返回的是**资产总览**：只有 `HostInventory` 与 `NetworkSegment`
+/// （以及 `host_network_assoc` 边）—— 画布在多主机形态下只画这两类卡，进程树会被整棵丢掉，
+/// 所以不传。单主机站点仍是完整的主机进程图（分组可展开）。
+/// 详见 `graph::overview`。
 #[utoipa::path(
     get,
     path = "/api/topology/host/first/processes",
     tag = "topology",
-    summary = "第一台主机的进程拓扑图",
+    summary = "资产总览图（多主机时只有主机与共享网段）",
     params(TenantQuery),
     responses(
         (status = 200, description = "拓扑图", body = VisualizationEnvelope),

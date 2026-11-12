@@ -124,10 +124,17 @@ where
         host_id: Uuid,
         top_n: usize,
     ) -> ApiResult<Option<HostProcessOverviewView>> {
-        let Some(view) = self.host_topology_view(host_id)? else {
+        let host = self.store.get_host(host_id).conv_err()?;
+        let Some(host) = host else {
             return Ok(None);
         };
-        Ok(Some(build_host_process_overview_view(view, top_n)))
+        let processes = list_all_process_runtime_states(&self.store, host_id)?;
+        Ok(Some(build_host_process_overview_view(
+            host,
+            &processes,
+            Utc::now(),
+            top_n,
+        )))
     }
 
     pub fn host_process_groups_page_view(
@@ -136,11 +143,17 @@ where
         offset: usize,
         limit: usize,
     ) -> ApiResult<Option<HostProcessGroupsPageView>> {
-        let Some(view) = self.host_topology_view(host_id)? else {
+        let host = self.store.get_host(host_id).conv_err()?;
+        let Some(host) = host else {
             return Ok(None);
         };
+        let processes = list_all_process_runtime_states(&self.store, host_id)?;
         Ok(Some(build_host_process_groups_page_view(
-            view, offset, limit,
+            host,
+            &processes,
+            Utc::now(),
+            offset,
+            limit,
         )))
     }
 
@@ -389,10 +402,19 @@ where
         host_id: Uuid,
         top_n: usize,
     ) -> ApiResult<Option<HostProcessOverviewView>> {
-        let Some(view) = self.host_topology_view_async(host_id).await? else {
+        let host = AsyncCatalogStore::get_host(&self.store, host_id)
+            .await
+            .conv_err()?;
+        let Some(host) = host else {
             return Ok(None);
         };
-        Ok(Some(build_host_process_overview_view(view, top_n)))
+        let processes = list_all_process_runtime_states_async(&self.store, host_id).await?;
+        Ok(Some(build_host_process_overview_view(
+            host,
+            &processes,
+            Utc::now(),
+            top_n,
+        )))
     }
 
     pub async fn host_process_groups_page_view_async(
@@ -401,11 +423,19 @@ where
         offset: usize,
         limit: usize,
     ) -> ApiResult<Option<HostProcessGroupsPageView>> {
-        let Some(view) = self.host_topology_view_async(host_id).await? else {
+        let host = AsyncCatalogStore::get_host(&self.store, host_id)
+            .await
+            .conv_err()?;
+        let Some(host) = host else {
             return Ok(None);
         };
+        let processes = list_all_process_runtime_states_async(&self.store, host_id).await?;
         Ok(Some(build_host_process_groups_page_view(
-            view, offset, limit,
+            host,
+            &processes,
+            Utc::now(),
+            offset,
+            limit,
         )))
     }
 

@@ -17,8 +17,8 @@ use uuid::Uuid;
 
 use crate::error::{invalid_args, materialization_missing};
 use crate::graph::{
-    build_host_process_topology_graph, build_host_process_topology_graph_async,
-    build_visualization_graph,
+    build_detailed_fleet_graph_async, build_host_process_topology_graph,
+    build_host_process_topology_graph_async, build_visualization_graph,
 };
 use crate::http::VisualizationEnvelope;
 use crate::payload_io::{load_demo_payload, load_payload_from_file};
@@ -272,7 +272,7 @@ async fn export_visualization_for_store_async<S>(
 where
     S: Clone + AsyncCatalogStore + AsyncRuntimeStore + AsyncGovernanceStore,
 {
-    let graph = build_host_process_topology_graph_async(store, None).await?;
+    let graph = build_detailed_fleet_graph_async(store).await?;
     if let Some(parent) = output_path.parent() {
         fs::create_dir_all(parent).source_err(
             AppReason::InputLoadFailed,
