@@ -418,20 +418,18 @@ impl PostgresExecutor for MemoryPostgresExecutor {
                 .into_iter()
                 .cloned()
                 .collect(),
-            value if value.contains("FROM subject WHERE tenant_id = $1") => state
+            value if value.contains("FROM subject WHERE tenant_id") => state
                 .subjects
                 .values()
                 .filter(|row| row[1] == params[0])
                 .cloned()
                 .collect(),
-            value if value.contains("FROM responsibility_assignment WHERE assignment_id = $1") => {
-                state
-                    .responsibility_assignments
-                    .get(&params[0])
-                    .into_iter()
-                    .cloned()
-                    .collect()
-            }
+            value if value.contains("FROM responsibility_assignment WHERE assignment_id") => state
+                .responsibility_assignments
+                .get(&params[0])
+                .into_iter()
+                .cloned()
+                .collect(),
             value if value == sql::GET_SOFTWARE_ARTIFACT => state
                 .software_artifacts
                 .get(&params[0])

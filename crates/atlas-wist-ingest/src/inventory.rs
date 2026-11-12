@@ -485,6 +485,97 @@ mod tests {
         );
     }
 
+    /// 加了新集合却忘了带 `cloud_account` 的守卫。
+    ///
+    /// 真账号 smoke 踩过：主机和 EIP 带了账号键，子网和 VPC 忘写 —— 库里 20 个段、
+    /// 10 个域全是 NULL，而退役清扫按账号圈定，它们永远不被扫到（既不退役也不报错）。
+    /// 这里按「集合」遍历而不是逐个断言，就是让下一个新集合躲不过去。
+    #[test]
+    fn every_collection_carries_the_account_key() {
+        let mut snapshot: Value = serde_json::from_str(&snapshot()).unwrap();
+        snapshot["coverage"] = json!({
+            "scope": "account",
+            "complete": true,
+            "account": "tencent:100041355715"
+        });
+        snapshot["assets"]["EIP"] = json!([{
+            "source_asset_id": "eip-1",
+            "eip_address_ip": "114.132.225.16",
+            "eip_address_status": "BIND",
+            "eip_instance_id": "ins-1",
+            "eip_instance_type": "CVM",
+            "eip_charge_type": "TRAFFIC_POSTPAID_BY_HOUR",
+            "eip_bandwidth": 200
+        }]);
+
+        let value =
+            envelope_from_sink_line(&sink_line(&snapshot.to_string()), "DEV-X4", None).unwrap();
+
+        // 四个集合都必须非空，否则这条用例会漏掉某一类。
+        for collection in [
+            "hosts",
+            "elastic_ips",
+            "network_domains",
+            "network_segments",
+        ] {
+            let rows = value["payload"][collection]
+                .as_array()
+                .unwrap_or_else(|| panic!("payload 里没有 {collection}"));
+            assert!(!rows.is_empty(), "{collection} 不该是空的");
+            for (index, row) in rows.iter().enumerate() {
+                assert_eq!(
+                    row["cloud_account"], "tencent:100041355715",
+                    "{collection}[{index}] 没带账号键：退役清扫按账号圈定，漏了它就永远扫不到"
+                );
+            }
+        }
+    }
+
+    /// 跨服务的字段名契约：harvest 的原生字段名 → atlas 抽取器读的字段名。
+    ///
+    /// 这不是类型系统能保证的部分，改一边不改另一边编译器不会响。真账号 smoke 里
+    /// `subvpcid` 一旦没映射成 `subnet_external_ref`，26 台机器会一台都挂不上子网，
+    /// 而且没有任何报错。
+    #[test]
+    fn harvest_field_names_map_onto_what_atlas_reads() {
+        let mut snapshot: Value = serde_json::from_str(&snapshot()).unwrap();
+        snapshot["assets"]["EIP"] = json!([{
+            "source_asset_id": "eip-1",
+            "eip_address_ip": "114.132.225.16",
+            "eip_address_status": "BIND",
+            "eip_instance_id": "ins-1",
+            "eip_instance_type": "CVM"
+        }]);
+        let value =
+            envelope_from_sink_line(&sink_line(&snapshot.to_string()), "DEV-X4", None).unwrap();
+
+        let host = &value["payload"]["hosts"][0];
+        // `source_asset_id` 同时是外部引用和跨来源归并键。
+        assert_eq!(host["external_ref"], "ins-1");
+        assert_eq!(host["cloud_instance_id"], "ins-1");
+        // `subvpcid` 是腾讯云给子网 ID 的字段名，atlas 侧叫 `subnet_external_ref`。
+        assert_eq!(host["subnet_external_ref"], "subnet-1");
+        // `asset_name` → `host_name`；为空时回退 `host_id`。
+        assert_eq!(host["host_name"], "order-api-01");
+        assert_eq!(value["payload"]["hosts"][1]["host_name"], "ins-2");
+
+        let domain = &value["payload"]["network_domains"][0];
+        assert_eq!(domain["external_ref"], "vpc-1");
+        assert_eq!(domain["cidr"], "10.0.0.0/16", "VPC 的地址空间要随域一起送");
+
+        let segment = &value["payload"]["network_segments"][0];
+        assert_eq!(segment["external_ref"], "subnet-1");
+        // `parent_source_asset_id` → `parent_external_ref`：段靠它挂进域。
+        assert_eq!(segment["parent_external_ref"], "vpc-1");
+
+        let ip = &value["payload"]["elastic_ips"][0];
+        assert_eq!(ip["external_ref"], "eip-1", "地址 ID 是稳定键");
+        assert_eq!(ip["address"], "114.132.225.16");
+        // `eip_instance_id` / `eip_instance_type` → 绑定目标两件套。
+        assert_eq!(ip["bound_instance_ref"], "ins-1");
+        assert_eq!(ip["bound_instance_type"], "CVM");
+    }
+
     #[test]
     fn does_not_invent_coverage_when_the_collector_omits_it() {
         // 采集器没声明就什么都不说：宁可退不了役，也不要自己编一个账号键。

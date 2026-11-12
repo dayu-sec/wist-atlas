@@ -1430,3 +1430,108 @@ fn network_domain_keeps_its_cidr() {
     assert_eq!(stored.cidr.as_deref(), Some("10.0.0.0/16"));
     assert_eq!(stored.external_ref.as_deref(), Some("vpc-1"));
 }
+
+/// 真库上的「按 ID 查」：这三条语句原来写的是 `= $1`（uuid 列直接拿字符串比），
+/// 在 tokio-postgres 上必报 `error serializing parameter 0`。
+///
+/// 静态守卫（`sql_guard`）守着「格式」，这条守着「行为」—— 两者都要，因为守卫只能
+/// 证明 SQL 长得对，证明不了它能跑。`get_network_domain` 就是只靠静态格式活到了线上的。
+#[test]
+#[ignore = "需要真 PostgreSQL；设 WIST_ATLAS_TEST_DATABASE_URL 后加 --ignored"]
+fn real_postgres_text_bound_id_lookups_work() {
+    let Ok(url) =
+        std::env::var("WIST_ATLAS_TEST_DATABASE_URL").or_else(|_| std::env::var("DATABASE_URL"))
+    else {
+        eprintln!("skip: WIST_ATLAS_TEST_DATABASE_URL / DATABASE_URL 未设置");
+        return;
+    };
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+
+    runtime.block_on(async move {
+        let executor = LivePostgresExecutor::new(url)
+            .await
+            .expect("connect postgres");
+        let schema = format!(
+            "atlas_probe_{}",
+            Uuid::new_v4().to_string().replace('-', "")
+        );
+        executor
+            .exec_batch_async(&format!("CREATE SCHEMA {schema}"))
+            .await
+            .expect("create schema");
+        executor
+            .exec_batch_async(&format!("SET search_path TO {schema}"))
+            .await
+            .expect("set search_path");
+
+        let store = PostgresTopologyStore::new(executor.clone());
+        store.run_migrations_async().await.expect("migrations");
+
+        let tenant_id = TenantId(Uuid::new_v4());
+        let now = Utc::now();
+
+        // 1) `subject WHERE tenant_id = $1 ... LIMIT $2 OFFSET $3`
+        //    租户是 uuid、limit/offset 是 int4，三个参数都按字符串绑定。
+        let subject = atlas_domain::Subject {
+            subject_id: Uuid::new_v4(),
+            tenant_id,
+            subject_type: atlas_domain::SubjectType::User,
+            display_name: "alice".to_string(),
+            external_ref: None,
+            email: Some("alice@example.com".to_string()),
+            is_active: true,
+            created_at: now,
+            updated_at: now,
+        };
+        AsyncCatalogStore::upsert_subject(&store, &subject)
+            .await
+            .expect("insert subject");
+        let listed = AsyncCatalogStore::list_subjects(
+            &store,
+            tenant_id,
+            Page {
+                limit: 10,
+                offset: 0,
+            },
+        )
+        .await
+        .expect("list subjects（uuid + int4 三个参数）");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].display_name, "alice");
+
+        // 2) `responsibility_assignment WHERE assignment_id = $1`
+        let assignment = atlas_domain::ResponsibilityAssignment {
+            assignment_id: Uuid::new_v4(),
+            tenant_id,
+            subject_id: subject.subject_id,
+            target_kind: atlas_domain::ObjectKind::Host,
+            target_id: Uuid::new_v4(),
+            role: atlas_domain::ResponsibilityRole::Owner,
+            source: "batch_import".to_string(),
+            validity: atlas_domain::ValidityWindow {
+                valid_from: now,
+                valid_to: None,
+            },
+            created_at: now,
+            updated_at: now,
+        };
+        AsyncGovernanceStore::upsert_responsibility_assignment(&store, &assignment)
+            .await
+            .expect("insert assignment");
+        let fetched =
+            AsyncGovernanceStore::get_responsibility_assignment(&store, assignment.assignment_id)
+                .await
+                .expect("按 id 查责任归属")
+                .expect("assignment row");
+        assert_eq!(fetched.subject_id, subject.subject_id);
+
+        executor
+            .exec_batch_async(&format!("DROP SCHEMA {schema} CASCADE"))
+            .await
+            .ok();
+    });
+}

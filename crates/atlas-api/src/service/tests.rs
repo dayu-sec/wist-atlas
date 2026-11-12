@@ -1,3 +1,4 @@
+mod async_parity;
 mod container;
 mod core;
 mod elastic_ip;

@@ -502,4 +502,6 @@ mod row_decode;
 use row_decode::*;
 
 #[cfg(test)]
+mod sql_guard;
+#[cfg(test)]
 mod tests;

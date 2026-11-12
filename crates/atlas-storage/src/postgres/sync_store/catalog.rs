@@ -461,7 +461,7 @@ where
 
     fn list_subjects(&self, tenant_id: TenantId, page: Page) -> StorageResult<Vec<Subject>> {
         let rows = self.executor.query_rows(
-            "SELECT subject_id, tenant_id, subject_type, display_name, external_ref, email, is_active, created_at, updated_at FROM subject WHERE tenant_id = $1 ORDER BY display_name ASC, subject_id ASC LIMIT $2 OFFSET $3",
+            "SELECT subject_id, tenant_id, subject_type, display_name, external_ref, email, is_active, created_at, updated_at FROM subject WHERE tenant_id = NULLIF($1, '')::uuid ORDER BY display_name ASC, subject_id ASC LIMIT NULLIF($2, '')::int4 OFFSET NULLIF($3, '')::int4",
             &[
                 tenant_id.0.to_string(),
                 page.limit.to_string(),

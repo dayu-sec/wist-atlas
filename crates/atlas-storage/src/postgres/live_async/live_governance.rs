@@ -73,7 +73,7 @@ impl AsyncGovernanceStore for PostgresTopologyStore<LivePostgresExecutor> {
         let rows = self
             .executor
             .query_rows_async(
-                "SELECT assignment_id, tenant_id, subject_id, target_kind, target_id, role, source, valid_from, valid_to, created_at, updated_at FROM responsibility_assignment WHERE assignment_id = $1",
+                "SELECT assignment_id, tenant_id, subject_id, target_kind, target_id, role, source, valid_from, valid_to, created_at, updated_at FROM responsibility_assignment WHERE assignment_id = NULLIF($1, '')::uuid",
                 &[assignment_id.to_string()],
             )
             .await?;
