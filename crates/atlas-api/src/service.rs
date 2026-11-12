@@ -355,10 +355,17 @@ use materialize::{
     validate_and_record, validate_and_record_async,
 };
 
-/// 主机退役清扫（只在 `snapshot` 模式下）。
+/// 主机退役清扫。
 ///
-/// 与进程同一道闸：`incremental` / `window` / `correction` 描述的是**部分**观测，
-/// 拿去当「全集」比对会把没投递的主机累计成退役。
+/// 两道闸，缺一不可：
+///
+/// 1. `snapshot` 模式 —— `incremental` / `window` / `correction` 描述的是**部分**观测，
+///    拿去当「全集」比对会把没投递的主机累计成退役。
+/// 2. **信封声明了账号级完整覆盖** —— 云 API 少一页、地域超时、限流，在数据上跟
+///    「实例被销毁」长得一模一样。没声明就当它什么也没说：宁可不退役。
+///
+/// 端侧（agentd）永远过不了第 2 道闸，这是故意的：采集不到只说明观测不到，
+/// 关机 / agent 停掉 / 网络不通在 atlas 侧是同一件事，三者都不说明机器不存在。
 fn sweep_stale_hosts<S>(
     store: &S,
     envelope: &IngestEnvelope,
@@ -369,7 +376,9 @@ fn sweep_stale_hosts<S>(
 where
     S: CatalogStore,
 {
-    if envelope.ingest_mode != atlas_domain::IngestMode::Snapshot {
+    if envelope.ingest_mode != atlas_domain::IngestMode::Snapshot
+        || !envelope.declares_full_account_coverage()
+    {
         return Ok(0);
     }
     Ok(
@@ -389,7 +398,9 @@ async fn sweep_stale_hosts_async<S>(
 where
     S: AsyncCatalogStore,
 {
-    if envelope.ingest_mode != atlas_domain::IngestMode::Snapshot {
+    if envelope.ingest_mode != atlas_domain::IngestMode::Snapshot
+        || !envelope.declares_full_account_coverage()
+    {
         return Ok(0);
     }
     Ok(

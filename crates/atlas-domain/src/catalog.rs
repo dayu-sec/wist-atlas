@@ -178,19 +178,72 @@ pub struct HostInventory {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arch: Option<String>,
     pub created_at: DateTime<Utc>,
-    pub last_inventory_at: DateTime<Utc>,
-    /// 首次判定退役的时刻；`None` = 仍存活。
+    /// 最近一次被**任一来源**看到的时刻。每次出现都刷新。
     ///
-    /// 与进程的 stale **不是同一个判据**：进程按「一份快照没出现」算，主机按「连续多份
-    /// 完整快照都没出现」算 —— 主机消失可能只是一轮探针失败，误标的代价大得多。
+    /// 这是「可达性」的唯一事实来源。注意它**不表达存在性**：这个值停在三天前
+    /// 只说明三天没有观测，机器可能是关机、agent 停了、网不通 —— 三者在这里是同一件事。
+    pub last_inventory_at: DateTime<Utc>,
+    /// 首次判定**退役**（云上确认销毁）的时刻；`None` = 仍存在。
+    ///
+    /// 与进程的 stale **不是同一个判据**，而且比它严得多：进程是「某来源报的这份列表里
+    /// 没有它」，主机是「账号级完整快照连续多轮都没有它」。**端侧缺席永远不写这个字段** ——
+    /// 采集不到只说明观测不到，不说明机器不存在。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stale_at: Option<DateTime<Utc>>,
-    /// 连续多少份完整快照里没出现它。出现即清零；达到阈值才写 `stale_at`。
+    /// 连续多少份**声明账号级完整**的快照里没出现它。出现即清零；达到阈值才写 `stale_at`。
+    ///
+    /// 不完整的轮次既不加也不清零：它不被当作一份快照。
     #[serde(default)]
     pub miss_count: i64,
     /// 归属的快照作用域 `schema:system:producer:tenant:env`（见 `ProcessRuntimeState::ingest_scope`）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ingest_scope: Option<String>,
+}
+
+/// 主机「最近还有没有被任何来源看到」的派生状态。
+///
+/// **与存在性正交**：关机、agent 停止上报、网络不通在 atlas 侧是同一件事 —— 没有新观测。
+/// 三者都不说明机器不存在，所以 `Silent` 不能让主机从资产目录里消失，只能让界面显示
+/// 「最近没有上报」。要判断它还在不在，得看权威来源（云账号完整快照）有没有它。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ObservationState {
+    /// 最近一个上报周期内见过。
+    Live,
+    /// 超过一个上报周期，但还在一天之内。
+    Quiet,
+    /// 超过一天没有新观测。**不代表不存在**，只是没有证据说明它还在。
+    Silent,
+}
+
+impl ObservationState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Live => "live",
+            Self::Quiet => "quiet",
+            Self::Silent => "silent",
+        }
+    }
+}
+
+/// `Live` 的窗口：要容得下最快来源的一个上报周期（agentd 默认 5 分钟）。
+pub const OBSERVATION_LIVE_SECONDS: i64 = 10 * 60;
+/// `Quiet` 的窗口：一天。超过它就只剩历史观测，不能再声称「现在还看得到」。
+pub const OBSERVATION_QUIET_SECONDS: i64 = 24 * 60 * 60;
+
+impl HostInventory {
+    /// 按 `last_inventory_at` 算可达性。未来时间戳（时钟偏差）按 `Live` 处理 ——
+    /// 宁可说「刚看到」也不要因为时钟把一台正常上报的机器标成 `Silent`。
+    pub fn observation_state(&self, now: DateTime<Utc>) -> ObservationState {
+        let age = (now - self.last_inventory_at).num_seconds();
+        if age <= OBSERVATION_LIVE_SECONDS {
+            ObservationState::Live
+        } else if age <= OBSERVATION_QUIET_SECONDS {
+            ObservationState::Quiet
+        } else {
+            ObservationState::Silent
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -243,4 +296,60 @@ pub struct Subject {
     pub is_active: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn host(seen_ago_seconds: i64) -> (HostInventory, DateTime<Utc>) {
+        let now = Utc::now();
+        let host = HostInventory {
+            host_id: Uuid::new_v4(),
+            tenant_id: TenantId(Uuid::new_v4()),
+            environment_id: None,
+            host_name: "node-1".to_string(),
+            machine_id: Some("machine-1".to_string()),
+            cloud_instance_id: None,
+            os_name: None,
+            os_version: None,
+            arch: None,
+            created_at: now,
+            last_inventory_at: now - chrono::Duration::seconds(seen_ago_seconds),
+            stale_at: None,
+            miss_count: 0,
+            ingest_scope: None,
+        };
+        (host, now)
+    }
+
+    #[test]
+    fn observation_state_splits_live_quiet_and_silent() {
+        // 「最近有没有观测」是一条独立的轴：silent ≠ 不存在，所以它只影响展示。
+        let (live, now) = host(60);
+        assert_eq!(live.observation_state(now), ObservationState::Live);
+
+        let (quiet, now) = host(OBSERVATION_LIVE_SECONDS + 60);
+        assert_eq!(quiet.observation_state(now), ObservationState::Quiet);
+
+        let (silent, now) = host(OBSERVATION_QUIET_SECONDS + 60);
+        assert_eq!(silent.observation_state(now), ObservationState::Silent);
+        assert!(silent.stale_at.is_none(), "silent 不写 stale_at");
+    }
+
+    #[test]
+    fn observation_state_treats_future_timestamps_as_live() {
+        // 时钟偏差下宁可说「刚看到」，也别把正常上报的机器标成 silent。
+        let (host, now) = host(-3600);
+        assert_eq!(host.observation_state(now), ObservationState::Live);
+    }
+
+    #[test]
+    fn observation_state_serializes_as_snake_case() {
+        assert_eq!(ObservationState::Live.as_str(), "live");
+        assert_eq!(
+            serde_json::to_value(ObservationState::Silent).unwrap(),
+            serde_json::json!("silent")
+        );
+    }
 }

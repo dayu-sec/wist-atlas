@@ -403,7 +403,7 @@ pub(super) use governance::{
     materialize_subjects_and_assignments, materialize_subjects_and_assignments_async,
 };
 pub(super) use host::{
-    HOST_STALE_AFTER_MISSES, HostStaleSweep, MaterializedHosts, mark_stale_hosts,
+    HOST_RETIRE_AFTER_COMPLETE_SNAPSHOTS, HostStaleSweep, MaterializedHosts, mark_stale_hosts,
     mark_stale_hosts_async, materialize_candidates, materialize_candidates_async,
 };
 pub(super) use process::{

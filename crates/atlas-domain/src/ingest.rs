@@ -67,6 +67,50 @@ pub struct AtlasInputCollect {
         skip_serializing_if = "Option::is_none"
     )]
     pub res_ver: Option<String>,
+    /// 生产方对「这一帧能不能当全集用」的声明。
+    ///
+    /// 缺省 = 没声明 = **不能**当全集用。只有云资产目录（账号级全量采集）之类
+    /// 真正知道全集的来源才会带它。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coverage: Option<AtlasInputCoverage>,
+}
+
+/// 采集覆盖范围声明。
+///
+/// 为什么必须有：`快照里没有某台机器` 有两种完全不同的原因 —— 它被销毁了，或者
+/// 这次没采全（地域超时、限流、分页断、只采了部分资产类型）。atlas 只看数据是区分
+/// 不出来的。没有声明就只能两者取其一：要么把采集不全当销毁（误删资产），
+/// 要么永远不退役（已销毁的实例永远占着目录）。声明把这两者分开。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AtlasInputCoverage {
+    pub scope: AtlasInputCoverageScope,
+    /// 采集器自身的完整性校验是否通过（工作项全完成、分页总数对齐、地域齐全）。
+    pub complete: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AtlasInputCoverageScope {
+    /// 账号级全集：所有可见地域、所有资产类型都采到了。
+    Account,
+    /// 部分覆盖（手写地域子集、单资产类型、增量抓取）：「没有」什么也不证明。
+    Partial,
+}
+
+impl AtlasInputCoverageScope {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Account => "account",
+            Self::Partial => "partial",
+        }
+    }
+}
+
+impl AtlasInputCoverage {
+    /// 是否有资格作为「不存在」的证据。
+    pub fn is_authoritative(&self) -> bool {
+        self.complete && self.scope == AtlasInputCoverageScope::Account
+    }
 }
 
 impl AtlasInputCollect {
@@ -281,6 +325,16 @@ impl AtlasInputEnvelope {
         if let Some(res_ver) = self.collect.res_ver.as_ref() {
             metadata.insert("collect.res_ver".to_string(), res_ver.clone());
         }
+        if let Some(coverage) = self.collect.coverage.as_ref() {
+            metadata.insert(
+                "collect.coverage.scope".to_string(),
+                coverage.scope.as_str().to_string(),
+            );
+            metadata.insert(
+                "collect.coverage.complete".to_string(),
+                coverage.complete.to_string(),
+            );
+        }
 
         IngestEnvelope {
             ingest_id,
@@ -324,6 +378,22 @@ impl IngestEnvelope {
             "{schema}:{}:{}:{environment}",
             self.source_name, self.tenant_id.0
         )
+    }
+
+    /// 这一帧是否声明了「账号级全量、且采集完整」。
+    ///
+    /// 只有它为真时，`快照里没有它` 才能当作`云上已不存在`的证据。没声明、声明了
+    /// `partial`、或采集器自己说没采全，一律当作「这一帧对存在性什么也没说」。
+    pub fn declares_full_account_coverage(&self) -> bool {
+        self.metadata
+            .get("collect.coverage.scope")
+            .map(String::as_str)
+            == Some("account")
+            && self
+                .metadata
+                .get("collect.coverage.complete")
+                .map(String::as_str)
+                == Some("true")
     }
 }
 

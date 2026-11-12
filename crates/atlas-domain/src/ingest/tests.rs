@@ -149,3 +149,52 @@ fn atlas_input_accepts_short_source_aliases_and_numeric_res_ver() {
         "atlas.in.edge.v1:warp-insight:agent-local-01:tenant-demo:office:edge-snap-local-01"
     );
 }
+
+/// 完整性声明是「能不能拿缺席当删除证据」的唯一开关。
+#[test]
+fn coverage_must_be_account_and_complete_to_be_authoritative() {
+    let build = |coverage: serde_json::Value| -> AtlasInputEnvelope {
+        serde_json::from_value(json!({
+            "schema": "atlas.in.inventory.v1",
+            "source": {
+                "system": "wist-harvest",
+                "producer": "tencent-cloud-prod",
+                "tenant": "demo"
+            },
+            "collect": {
+                "mode": "snapshot",
+                "snap_id": "snap-1",
+                "coverage": coverage
+            },
+            "payload": { "hosts": [] }
+        }))
+        .unwrap()
+    };
+
+    let declarations = |input: AtlasInputEnvelope| -> (bool, bool) {
+        let authoritative = input
+            .collect
+            .coverage
+            .as_ref()
+            .is_some_and(|coverage| coverage.is_authoritative());
+        let envelope = input.into_ingest_envelope(TenantId(Uuid::new_v4()), None, Utc::now());
+        (authoritative, envelope.declares_full_account_coverage())
+    };
+
+    assert_eq!(
+        declarations(build(json!({"scope": "account", "complete": true}))),
+        (true, true)
+    );
+    assert_eq!(
+        declarations(build(json!({"scope": "partial", "complete": true}))),
+        (false, false),
+        "手写地域子集：没有它什么也不证明"
+    );
+    assert_eq!(
+        declarations(build(json!({"scope": "account", "complete": false}))),
+        (false, false),
+        "采集器自己说没采全"
+    );
+    // 没声明 = 什么也没说。老采集器/端侧都走这条路。
+    assert_eq!(declarations(build(json!(null))), (false, false));
+}

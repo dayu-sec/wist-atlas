@@ -365,6 +365,10 @@ struct HostSummaryHttpItem {
     process_count: i64,
     segment_count: usize,
     last_inventory_at: String,
+    /// 可达性：`live` / `quiet` / `silent`。**与存在性无关** —— `silent` 只说明
+    /// 很久没有观测（关机 / agent 停掉 / 网络不通在服务侧是同一件事），
+    /// 不代表这台机器不存在。真退役看 `stale`。
+    observation_state: String,
     stale: bool,
     stale_at: Option<String>,
 }
@@ -1249,18 +1253,27 @@ where
                 // 写探针的主机不进展示：它不是资产，只是「写入能跑通」的证据。
                 // 与 evidence 把 `_probe` 从列表里藏起来是同一条纪律。
                 .filter(|view| view.host.host_name != crate::probe::PROBE_HOST)
-                .map(|view| HostSummaryHttpItem {
-                    id: view.host.host_id,
-                    host_name: view.host.host_name,
-                    machine_id: view.host.machine_id,
-                    os_name: view.host.os_name,
-                    os_version: view.host.os_version,
-                    arch: view.host.arch,
-                    process_count: view.process_count,
-                    segment_count: view.segment_count,
-                    last_inventory_at: view.host.last_inventory_at.to_rfc3339(),
-                    stale: view.host.stale_at.is_some(),
-                    stale_at: view.host.stale_at.map(|at| at.to_rfc3339()),
+                .map(|view| {
+                    // 先算再搬：`host` 的字段会被逐个 move 进响应结构。
+                    let observation_state = view
+                        .host
+                        .observation_state(chrono::Utc::now())
+                        .as_str()
+                        .to_string();
+                    HostSummaryHttpItem {
+                        id: view.host.host_id,
+                        host_name: view.host.host_name,
+                        machine_id: view.host.machine_id,
+                        os_name: view.host.os_name,
+                        os_version: view.host.os_version,
+                        arch: view.host.arch,
+                        process_count: view.process_count,
+                        segment_count: view.segment_count,
+                        last_inventory_at: view.host.last_inventory_at.to_rfc3339(),
+                        observation_state,
+                        stale: view.host.stale_at.is_some(),
+                        stale_at: view.host.stale_at.map(|at| at.to_rfc3339()),
+                    }
                 })
                 .collect();
             (

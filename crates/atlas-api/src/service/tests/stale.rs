@@ -471,15 +471,19 @@ fn a_stale_row_keeps_its_original_observation_time() {
     );
 }
 
-// ── 主机退役：连续缺失计数，不是「一份没看到就退役」 ──────────────
+// ── 主机退役：只信「账号级完整快照」，不信「我们没看到」────────────
 //
-// 注意这里必须用**多主机快照**才能测到清扫：一台主机一个信封时，信封里没它
-// 就意味着这份数据根本不涉及它，`seen` 也不会是「少了某一个」。
-// 当前适配器是一台机一个信封，所以主机退役实际上要等多主机快照（网关侧聚合 /
-// CMDB 同步）才会真正触发 —— 机制先就位，并用下面这组用例守住。
+// 这里守的是一条产品判断：**采集不到 ≠ 不存在**。关机、agent 被卸、网络不通，
+// 在 atlas 侧是同一件事 —— 没有新观测。三者都不说明机器没了，所以端侧快照
+// 永远不能把主机退役。唯一能判死的是账号级完整快照：云上那张资产表就是「它存在」
+// 的定义，但前提是这次真把全地域全类型采全了（`collect.coverage`）。
 
 const HOST_A: &str = "node-a";
 const HOST_B: &str = "node-b";
+
+/// 端侧生产者与云侧生产者分开：退役判据靠 `ingest_scope` 区分，同名就测不出边界。
+const EDGE_PRODUCER: &str = "agent-1";
+const CLOUD_PRODUCER: &str = "harvest-1";
 
 fn payload_with_hosts(hosts: &[(&str, &str)]) -> serde_json::Value {
     json!({
@@ -503,12 +507,47 @@ fn snapshot_hosts(
     let (_record, summary) = service
         .submit_and_materialize(envelope(
             ingest_id,
-            "agent-1",
+            EDGE_PRODUCER,
             IngestMode::Snapshot,
             tenant_id,
             payload_with_hosts(hosts),
         ))
         .expect("snapshot ingest");
+    summary.stale_host_count
+}
+
+/// 云账号级快照。`coverage = None` 表示没声明（等价于「什么也没说」）。
+fn cloud_snapshot_hosts(
+    service: &TopologyIngestService<atlas_storage::InMemoryTopologyStore>,
+    ingest_id: &str,
+    producer: &str,
+    hosts: &[(&str, &str)],
+    coverage: Option<(&str, bool)>,
+    mode: IngestMode,
+    tenant_id: TenantId,
+) -> u64 {
+    let mut envelope = envelope(
+        ingest_id,
+        producer,
+        mode,
+        tenant_id,
+        payload_with_hosts(hosts),
+    );
+    envelope
+        .metadata
+        .insert("schema".to_string(), "atlas.in.inventory.v1".to_string());
+    if let Some((scope, complete)) = coverage {
+        envelope
+            .metadata
+            .insert("collect.coverage.scope".to_string(), scope.to_string());
+        envelope.metadata.insert(
+            "collect.coverage.complete".to_string(),
+            complete.to_string(),
+        );
+    }
+    let (_record, summary) = service
+        .submit_and_materialize(envelope)
+        .expect("cloud ingest");
     summary.stale_host_count
 }
 
@@ -524,9 +563,20 @@ fn host_state(
         .map(|host| (host.miss_count, host.stale_at.is_some()))
 }
 
+fn host_row(
+    service: &TopologyIngestService<atlas_storage::InMemoryTopologyStore>,
+    tenant_id: TenantId,
+    host_name: &str,
+) -> Option<atlas_domain::HostInventory> {
+    CatalogStore::list_hosts(service.store(), tenant_id, Page::default())
+        .expect("list hosts")
+        .into_iter()
+        .find(|host| host.host_name == host_name)
+}
+
 /// 阈值只在 atlas-api 内部定义，测试里对称取用。
-fn atlas_api_host_threshold() -> i64 {
-    crate::service::materialize::HOST_STALE_AFTER_MISSES
+fn host_retire_threshold() -> i64 {
+    crate::service::materialize::HOST_RETIRE_AFTER_COMPLETE_SNAPSHOTS
 }
 
 fn both_hosts() -> Vec<(&'static str, &'static str)> {
@@ -538,44 +588,116 @@ fn only_a() -> Vec<(&'static str, &'static str)> {
 }
 
 #[test]
-fn a_host_is_not_retired_after_a_single_missing_snapshot() {
-    // 主机消失可能只是一轮探针失败。误标一台活主机的代价远大于晚几轮。
+fn hosts_missing_from_an_agent_snapshot_are_never_retired() {
+    // 关机 / agent 被卸 / 网不通 —— 在 atlas 侧都是「这一轮没看到它」。
+    // 什么都能缺，就是不能因此认定机器不存在。
     let service = TopologyIngestService::new_in_memory();
     let tenant_id = TenantId(Uuid::new_v4());
 
     snapshot_hosts(&service, "ing-1", &both_hosts(), tenant_id);
+    let before = host_row(&service, tenant_id, HOST_B).expect("host b");
     assert_eq!(host_state(&service, tenant_id, HOST_B), Some((0, false)));
 
-    snapshot_hosts(&service, "ing-2", &only_a(), tenant_id);
+    for round in 0..host_retire_threshold() + 2 {
+        snapshot_hosts(&service, &format!("ing-miss-{round}"), &only_a(), tenant_id);
+    }
+
     assert_eq!(
         host_state(&service, tenant_id, HOST_B),
-        Some((1, false)),
-        "缺一份只累计计数，不退役"
+        Some((0, false)),
+        "端侧缺席永不能累积成退役，连计数都不该动"
     );
     assert_eq!(
-        host_state(&service, tenant_id, HOST_A),
-        Some((0, false)),
-        "出现过的主机计数归零"
+        host_row(&service, tenant_id, HOST_B)
+            .expect("host b")
+            .last_inventory_at,
+        before.last_inventory_at,
+        "没看到就不该刷新 last_inventory_at"
     );
 }
 
 #[test]
-fn a_host_is_retired_after_the_miss_threshold() {
+fn host_is_retired_only_after_complete_account_snapshots() {
+    // 只有「账号级全量 + 采集完整」的快照能当「云上已不存在」的证据。
     let service = TopologyIngestService::new_in_memory();
     let tenant_id = TenantId(Uuid::new_v4());
 
-    snapshot_hosts(&service, "ing-1", &both_hosts(), tenant_id);
+    cloud_snapshot_hosts(
+        &service,
+        "ing-1",
+        CLOUD_PRODUCER,
+        &both_hosts(),
+        Some(("account", true)),
+        IngestMode::Snapshot,
+        tenant_id,
+    );
 
-    let mut newly_stale = 0;
-    for round in 0..atlas_api_host_threshold() {
-        newly_stale = snapshot_hosts(&service, &format!("ing-miss-{round}"), &only_a(), tenant_id);
+    // 差一轮时还不能退役。
+    for round in 0..host_retire_threshold() - 1 {
+        let newly = cloud_snapshot_hosts(
+            &service,
+            &format!("ing-miss-{round}"),
+            CLOUD_PRODUCER,
+            &only_a(),
+            Some(("account", true)),
+            IngestMode::Snapshot,
+            tenant_id,
+        );
+        assert_eq!(newly, 0, "没到阈值不退役");
     }
 
-    assert_eq!(newly_stale, 1, "达到阈值那一轮才报「新退役」1 台");
+    let newly = cloud_snapshot_hosts(
+        &service,
+        "ing-threshold",
+        CLOUD_PRODUCER,
+        &only_a(),
+        Some(("account", true)),
+        IngestMode::Snapshot,
+        tenant_id,
+    );
+    assert_eq!(newly, 1, "达到阈值那一轮才报「新退役」1 台");
     assert_eq!(
         host_state(&service, tenant_id, HOST_B),
-        Some((atlas_api_host_threshold(), true)),
+        Some((host_retire_threshold(), true)),
         "计数停在达阈值的位置，且已标 stale"
+    );
+}
+
+#[test]
+fn a_snapshot_without_authoritative_coverage_never_retires_a_host() {
+    // 「没声明」「声明了但没采全」「只盖了部分地域」—— 三者对存在性都什么也没说。
+    let service = TopologyIngestService::new_in_memory();
+    let tenant_id = TenantId(Uuid::new_v4());
+
+    cloud_snapshot_hosts(
+        &service,
+        "ing-1",
+        CLOUD_PRODUCER,
+        &both_hosts(),
+        Some(("account", true)),
+        IngestMode::Snapshot,
+        tenant_id,
+    );
+
+    let coverages = [Some(("partial", true)), Some(("account", false)), None];
+    for (round, coverage) in coverages.into_iter().enumerate() {
+        for repeat in 0..host_retire_threshold() {
+            cloud_snapshot_hosts(
+                &service,
+                &format!("ing-{round}-{repeat}"),
+                CLOUD_PRODUCER,
+                &only_a(),
+                coverage,
+                IngestMode::Snapshot,
+                tenant_id,
+            );
+        }
+    }
+
+    assert_eq!(
+        host_state(&service, tenant_id, HOST_B),
+        Some((0, false)),
+        "覆盖不扎实的快照不能当证据，连计数也不能推进"
     );
 }
 
@@ -583,32 +705,43 @@ fn a_host_is_retired_after_the_miss_threshold() {
 fn a_retired_host_keeps_its_first_retirement_time() {
     let service = TopologyIngestService::new_in_memory();
     let tenant_id = TenantId(Uuid::new_v4());
-    snapshot_hosts(&service, "ing-1", &both_hosts(), tenant_id);
-    for round in 0..atlas_api_host_threshold() {
-        snapshot_hosts(&service, &format!("ing-miss-{round}"), &only_a(), tenant_id);
+    cloud_snapshot_hosts(
+        &service,
+        "ing-1",
+        CLOUD_PRODUCER,
+        &both_hosts(),
+        Some(("account", true)),
+        IngestMode::Snapshot,
+        tenant_id,
+    );
+    for round in 0..host_retire_threshold() {
+        cloud_snapshot_hosts(
+            &service,
+            &format!("ing-miss-{round}"),
+            CLOUD_PRODUCER,
+            &only_a(),
+            Some(("account", true)),
+            IngestMode::Snapshot,
+            tenant_id,
+        );
     }
 
-    let before = CatalogStore::list_hosts(service.store(), tenant_id, Page::default())
-        .expect("list hosts")
-        .into_iter()
-        .find(|host| host.host_name == HOST_B)
-        .expect("host");
+    let before = host_row(&service, tenant_id, HOST_B).expect("host");
     let first = before.stale_at.expect("retired");
 
     for round in 0..3 {
-        let newly = snapshot_hosts(
+        let newly = cloud_snapshot_hosts(
             &service,
             &format!("ing-extra-{round}"),
+            CLOUD_PRODUCER,
             &only_a(),
+            Some(("account", true)),
+            IngestMode::Snapshot,
             tenant_id,
         );
         assert_eq!(newly, 0, "已退役的不重复计入");
     }
-    let after = CatalogStore::list_hosts(service.store(), tenant_id, Page::default())
-        .expect("list hosts")
-        .into_iter()
-        .find(|host| host.host_name == HOST_B)
-        .expect("host");
+    let after = host_row(&service, tenant_id, HOST_B).expect("host");
 
     assert_eq!(after.stale_at, Some(first), "首次退役时间必须冻结");
     assert_eq!(after.miss_count, before.miss_count, "已退役的不再累加");
@@ -619,22 +752,54 @@ fn a_returning_host_is_revived_and_its_counter_cleared() {
     let service = TopologyIngestService::new_in_memory();
     let tenant_id = TenantId(Uuid::new_v4());
 
-    snapshot_hosts(&service, "ing-1", &both_hosts(), tenant_id);
+    cloud_snapshot_hosts(
+        &service,
+        "ing-1",
+        CLOUD_PRODUCER,
+        &both_hosts(),
+        Some(("account", true)),
+        IngestMode::Snapshot,
+        tenant_id,
+    );
     // 缺到刚好差一轮就退役。
-    for round in 0..atlas_api_host_threshold() - 1 {
-        snapshot_hosts(&service, &format!("ing-miss-{round}"), &only_a(), tenant_id);
+    for round in 0..host_retire_threshold() - 1 {
+        cloud_snapshot_hosts(
+            &service,
+            &format!("ing-miss-{round}"),
+            CLOUD_PRODUCER,
+            &only_a(),
+            Some(("account", true)),
+            IngestMode::Snapshot,
+            tenant_id,
+        );
     }
     assert_eq!(
         host_state(&service, tenant_id, HOST_B),
-        Some((atlas_api_host_threshold() - 1, false))
+        Some((host_retire_threshold() - 1, false))
     );
 
     // 又出现了：计数归零。
-    snapshot_hosts(&service, "ing-back", &both_hosts(), tenant_id);
+    cloud_snapshot_hosts(
+        &service,
+        "ing-back",
+        CLOUD_PRODUCER,
+        &both_hosts(),
+        Some(("account", true)),
+        IngestMode::Snapshot,
+        tenant_id,
+    );
     assert_eq!(host_state(&service, tenant_id, HOST_B), Some((0, false)));
 
-    // 之后再缺一轮，也只是从 1 重新开始 —— 证明「一次抖动不会累积成退役」。
-    snapshot_hosts(&service, "ing-miss-again", &only_a(), tenant_id);
+    // 之后再缺一轮，也只是从 1 重新开始。
+    cloud_snapshot_hosts(
+        &service,
+        "ing-miss-again",
+        CLOUD_PRODUCER,
+        &only_a(),
+        Some(("account", true)),
+        IngestMode::Snapshot,
+        tenant_id,
+    );
     assert_eq!(host_state(&service, tenant_id, HOST_B), Some((1, false)));
 }
 
@@ -643,46 +808,63 @@ fn hosts_from_another_producer_scope_are_not_swept() {
     let service = TopologyIngestService::new_in_memory();
     let tenant_id = TenantId(Uuid::new_v4());
 
-    // 另一个生产者报 node-b。
-    service
-        .submit_and_materialize(envelope(
-            "ing-other",
-            "container-agent",
+    // 另一个云采集器（另一个账号）报 node-b。
+    cloud_snapshot_hosts(
+        &service,
+        "ing-other",
+        "harvest-2",
+        &[(HOST_B, "machine-b")],
+        Some(("account", true)),
+        IngestMode::Snapshot,
+        tenant_id,
+    );
+
+    // 我们的账号级快照里一直没有 node-b。
+    for round in 0..host_retire_threshold() {
+        cloud_snapshot_hosts(
+            &service,
+            &format!("ing-mine-{round}"),
+            CLOUD_PRODUCER,
+            &only_a(),
+            Some(("account", true)),
             IngestMode::Snapshot,
             tenant_id,
-            payload_with_hosts(&[(HOST_B, "machine-b")]),
-        ))
-        .expect("other producer");
-
-    // 我们的快照里一直没有 node-b。
-    for round in 0..atlas_api_host_threshold() {
-        snapshot_hosts(&service, &format!("ing-mine-{round}"), &only_a(), tenant_id);
+        );
     }
 
     assert_eq!(
         host_state(&service, tenant_id, HOST_B),
         Some((0, false)),
-        "别的作用域报的主机不该被我们的缺失计数拖成退役"
+        "别的作用域的资产不能拿我们的快照判死"
     );
 }
 
 #[test]
 fn incremental_mode_never_accumulates_host_misses() {
+    // 即使采集器声明了账号级完整，增量/批量模式描述的也是**部分**观测，不能当全集比对。
     let service = TopologyIngestService::new_in_memory();
     let tenant_id = TenantId(Uuid::new_v4());
-    snapshot_hosts(&service, "ing-1", &both_hosts(), tenant_id);
+    cloud_snapshot_hosts(
+        &service,
+        "ing-1",
+        CLOUD_PRODUCER,
+        &both_hosts(),
+        Some(("account", true)),
+        IngestMode::Snapshot,
+        tenant_id,
+    );
 
-    for round in 0..atlas_api_host_threshold() + 2 {
-        let (_record, summary) = service
-            .submit_and_materialize(envelope(
-                &format!("ing-batch-{round}"),
-                "agent-1",
-                IngestMode::BatchUpsert,
-                tenant_id,
-                payload_with_hosts(&only_a()),
-            ))
-            .expect("batch upsert");
-        assert_eq!(summary.stale_host_count, 0);
+    for round in 0..host_retire_threshold() + 2 {
+        let newly = cloud_snapshot_hosts(
+            &service,
+            &format!("ing-batch-{round}"),
+            CLOUD_PRODUCER,
+            &only_a(),
+            Some(("account", true)),
+            IngestMode::BatchUpsert,
+            tenant_id,
+        );
+        assert_eq!(newly, 0);
     }
 
     assert_eq!(
@@ -690,6 +872,25 @@ fn incremental_mode_never_accumulates_host_misses() {
         Some((0, false)),
         "部分观测不能当成「主机不在了」"
     );
+}
+
+#[test]
+fn last_inventory_at_tracks_the_latest_observation() {
+    // 可达性的唯一事实来源：它必须随每次上报推进，否则「最后采集于」永远是首次发现时间。
+    let service = TopologyIngestService::new_in_memory();
+    let tenant_id = TenantId(Uuid::new_v4());
+
+    snapshot_hosts(&service, "ing-1", &both_hosts(), tenant_id);
+    let first = host_row(&service, tenant_id, HOST_A).expect("host a");
+
+    snapshot_hosts(&service, "ing-2", &both_hosts(), tenant_id);
+    let second = host_row(&service, tenant_id, HOST_A).expect("host a");
+
+    assert!(
+        second.last_inventory_at > first.last_inventory_at,
+        "再次看到的机器要刷新最后观测时间"
+    );
+    assert_eq!(second.created_at, first.created_at, "首次发现时间不动");
 }
 
 // ── 描述字段刷新（主机匹配到已有行时）──────────────────────────

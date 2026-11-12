@@ -272,7 +272,8 @@ where
         offset: 0,
     };
     let hosts = CatalogStore::list_hosts(store, tenant_id, full_page).conv_err()?;
-    // 与现役视图同口径：退役主机不算「现在有多少台」。
+    // 只排除**确认销毁**的主机。暂时连不上的（关机 / agent 停 / 网不通）算在内 ——
+    // 它们只是没有新观测，不是消失了。
     summary.host_count = hosts.iter().filter(|host| host.stale_at.is_none()).count();
     summary.network_count = CatalogStore::list_network_segments(store, tenant_id, full_page)
         .conv_err()?
@@ -327,6 +328,7 @@ where
     let hosts = AsyncCatalogStore::list_hosts(store, tenant_id, full_page)
         .await
         .conv_err()?;
+    // 只排除**确认销毁**的主机；暂时观测不到的不算退役。
     summary.host_count = hosts.iter().filter(|host| host.stale_at.is_none()).count();
     summary.network_count = AsyncCatalogStore::list_network_segments(store, tenant_id, full_page)
         .await
