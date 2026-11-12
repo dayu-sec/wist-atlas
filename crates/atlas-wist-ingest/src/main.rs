@@ -118,7 +118,13 @@ struct Report {
     skipped: usize,
     /// 撞上写库错误而提前结束。
     stopped: bool,
+    /// 本轮标成 stale 的进程数。
     processes_marked_stale: u64,
+    /// 本轮退役（云上确认销毁）的主机数。
+    ///
+    /// 必须和进程分开报：主机退役只认账号级完整快照，和「进程这份列表里没了」
+    /// 是两套判据。早期只报进程，运维会以为主机退役没生效。
+    hosts_marked_stale: u64,
 }
 
 impl Report {
@@ -131,11 +137,12 @@ impl Report {
 
 fn log_report(report: &Report, offset: u64) {
     println!(
-        "poll done: lines={} ingested={} skipped={} stale_marked={} offset={offset}{}",
+        "poll done: lines={} ingested={} skipped={} stale_processes={} stale_hosts={} offset={offset}{}",
         report.lines,
         report.ingested,
         report.skipped,
         report.processes_marked_stale,
+        report.hosts_marked_stale,
         if report.stopped {
             " (stopped early)"
         } else {
@@ -159,7 +166,8 @@ async fn poll_once(
         match ingest_line(service, line, args) {
             Ok(outcome) => {
                 report.ingested += 1;
-                report.processes_marked_stale += outcome;
+                report.processes_marked_stale += outcome.stale_process_count;
+                report.hosts_marked_stale += outcome.stale_host_count;
                 tail.commit(line.next_offset)
                     .map_err(|err| CliError::Message(format!("commit: {err}")))?;
             }
@@ -221,6 +229,7 @@ where
             Ok((_record, summary)) => {
                 report.ingested += 1;
                 report.processes_marked_stale += summary.stale_process_count;
+                report.hosts_marked_stale += summary.stale_host_count;
                 tail.commit(line.next_offset)
                     .map_err(|err| CliError::Message(format!("commit: {err}")))?;
             }
@@ -250,13 +259,13 @@ fn ingest_line(
     service: &TopologyIngestService<atlas_storage::InMemoryTopologyStore>,
     line: &LineAt,
     args: &Invocation,
-) -> Result<u64, LineError> {
+) -> Result<atlas_api::PipelineRunSummary, LineError> {
     let input = convert_sink_line(&line.text, &args.tenant, args.env.as_deref())
         .map_err(LineError::Permanent)?;
 
     service
         .submit_atlas_input_and_materialize(input, TenantId(args.tenant_id), None)
-        .map(|(_record, summary)| summary.stale_process_count)
+        .map(|(_record, summary)| summary)
         .map_err(|err| LineError::Transient(err.to_string()))
 }
 
