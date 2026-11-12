@@ -118,11 +118,11 @@ LIMIT NULLIF($2, '')::int4 OFFSET NULLIF($3, '')::int4
 pub const UPSERT_NETWORK_DOMAIN: &str = r#"
 INSERT INTO network_domain (
     network_domain_id, tenant_id, environment_id, name, kind, description, created_at, updated_at,
-    external_ref
+    external_ref, cidr
 ) VALUES (
     NULLIF($1, '')::uuid, NULLIF($2, '')::uuid, NULLIF($3, '')::uuid, $4, $5,
     NULLIF($6, ''), NULLIF($7, '')::timestamptz, NULLIF($8, '')::timestamptz,
-    NULLIF($9, '')
+    NULLIF($9, ''), NULLIF($10, '')
 )
 ON CONFLICT (network_domain_id) DO UPDATE SET
     tenant_id = EXCLUDED.tenant_id,
@@ -131,7 +131,8 @@ ON CONFLICT (network_domain_id) DO UPDATE SET
     kind = EXCLUDED.kind,
     description = EXCLUDED.description,
     updated_at = EXCLUDED.updated_at,
-    external_ref = COALESCE(EXCLUDED.external_ref, network_domain.external_ref)
+    external_ref = COALESCE(EXCLUDED.external_ref, network_domain.external_ref),
+    cidr = COALESCE(EXCLUDED.cidr, network_domain.cidr)
 "#;
 
 pub const UPSERT_NETWORK_SEGMENT: &str = r#"

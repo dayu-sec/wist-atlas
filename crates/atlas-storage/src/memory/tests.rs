@@ -31,6 +31,7 @@ fn in_memory_store_persists_host_network_and_ingest_job() {
         external_ref: None,
         name: "default".to_string(),
         kind: NetworkDomainKind::Unknown,
+        cidr: None,
         description: None,
         created_at: Utc::now(),
         updated_at: Utc::now(),

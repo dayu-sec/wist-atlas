@@ -73,7 +73,7 @@ fn host_id(
 
 fn vpc(name: &str, subnet_cidr: &str) -> Value {
     json!({
-        "network_domains": [{ "external_ref": "vpc-1", "name": "prod-vpc" }],
+        "network_domains": [{ "external_ref": "vpc-1", "name": "prod-vpc", "cidr": "10.0.0.0/16" }],
         "network_segments": [{
             "segment_name": name,
             "cidr": subnet_cidr,
@@ -103,6 +103,12 @@ fn a_vpc_and_its_subnet_land_without_any_host() {
         .expect("domain row");
     assert_eq!(domain.kind, NetworkDomainKind::Vpc, "VPC 是域，不是段");
     assert_eq!(domain.name, "prod-vpc");
+    assert_eq!(
+        domain.cidr.as_deref(),
+        Some("10.0.0.0/16"),
+        "VPC 的地址空间是域的核心属性，必须存下来"
+    );
+    assert_eq!(domain.external_ref.as_deref(), Some("vpc-1"));
 }
 
 #[test]
@@ -138,7 +144,7 @@ fn a_host_without_a_subnet_ref_is_matched_by_cidr_containment() {
 
     // 两个子网都在同一条地址轴上：10.1.0.0/16 包住 10.1.2.0/24。
     let mut payload = json!({
-        "network_domains": [{ "external_ref": "vpc-1", "name": "prod-vpc" }],
+        "network_domains": [{ "external_ref": "vpc-1", "name": "prod-vpc", "cidr": "10.0.0.0/16" }],
         "network_segments": [
             { "segment_name": "wide", "cidr": "10.1.0.0/16", "external_ref": "subnet-wide",
               "parent_external_ref": "vpc-1" },

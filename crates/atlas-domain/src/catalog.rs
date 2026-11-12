@@ -271,6 +271,9 @@ pub struct NetworkDomain {
     pub external_ref: Option<String>,
     pub name: String,
     pub kind: NetworkDomainKind,
+    /// 地址空间（`10.0.0.0/16`）。VPC 的核心属性：不做目录就回答不了「谁和谁同一个地址空间」。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cidr: Option<String>,
     pub description: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,

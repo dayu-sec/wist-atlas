@@ -210,7 +210,7 @@ pub fn resolve_network_candidate(
     // 归属先算：命中已有段时也要把归属刷新（VPC 换了就是换了）。
     let domain_id = match candidate.parent_external_ref.as_deref() {
         Some(vpc_ref) => {
-            ensure_cloud_network_domain(catalog, candidate.tenant_id, vpc_ref, None, now)
+            ensure_cloud_network_domain(catalog, candidate.tenant_id, vpc_ref, None, None, now)
         }
         None => ensure_default_network_domain(catalog, candidate.tenant_id, now),
     };
@@ -415,14 +415,27 @@ pub(crate) fn ensure_cloud_network_domain(
     tenant_id: TenantId,
     external_ref: &str,
     name: Option<&str>,
+    cidr: Option<&str>,
     now: DateTime<Utc>,
 ) -> Uuid {
     let id = stable_uuid("network_domain", &format!("{}:{external_ref}", tenant_id.0));
+    // 名字与 CIDR 以云侧为准：VPC 改名 / 扩段都要能进来，否则域会永远停在第一次被看到时的样子。
+    let refreshed_name = name
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string);
     if let Some(domain) = catalog
         .network_domains
-        .iter()
+        .iter_mut()
         .find(|domain| domain.network_domain_id == id)
     {
+        if let Some(name) = refreshed_name {
+            domain.name = name;
+        }
+        if cidr.is_some() {
+            domain.cidr = cidr.map(str::to_string);
+        }
+        domain.updated_at = now;
         return domain.network_domain_id;
     }
 
@@ -431,12 +444,9 @@ pub(crate) fn ensure_cloud_network_domain(
         tenant_id,
         environment_id: None,
         external_ref: Some(external_ref.to_string()),
-        name: name
-            .map(str::trim)
-            .filter(|name| !name.is_empty())
-            .unwrap_or(external_ref)
-            .to_string(),
+        name: refreshed_name.unwrap_or_else(|| external_ref.to_string()),
         kind: NetworkDomainKind::Vpc,
+        cidr: cidr.map(str::to_string),
         description: Some(format!("cloud vpc {external_ref}")),
         created_at: now,
         updated_at: now,
@@ -483,6 +493,7 @@ fn ensure_default_network_domain(
         external_ref: None,
         name: "default".to_string(),
         kind: NetworkDomainKind::Unknown,
+        cidr: None,
         description: Some("auto-created default network domain".to_string()),
         created_at: now,
         updated_at: now,

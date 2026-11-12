@@ -37,6 +37,11 @@ pub const ELASTIC_IP_SQL: &str = include_str!("../migrations/0010_elastic_ip.sql
 pub const NETWORK_IDENTITY_VERSION: &str = "0011_network_identity";
 pub const NETWORK_IDENTITY_SQL: &str = include_str!("../migrations/0011_network_identity.sql");
 
+/// 域（VPC）自己的 CIDR：地址空间是域的核心属性。
+pub const NETWORK_DOMAIN_CIDR_VERSION: &str = "0012_network_domain_cidr";
+pub const NETWORK_DOMAIN_CIDR_SQL: &str =
+    include_str!("../migrations/0012_network_domain_cidr.sql");
+
 pub const MIGRATIONS: &[Migration] = &[
     Migration {
         version: INITIAL_SCHEMA_VERSION,
@@ -81,6 +86,10 @@ pub const MIGRATIONS: &[Migration] = &[
     Migration {
         version: NETWORK_IDENTITY_VERSION,
         sql: NETWORK_IDENTITY_SQL,
+    },
+    Migration {
+        version: NETWORK_DOMAIN_CIDR_VERSION,
+        sql: NETWORK_DOMAIN_CIDR_SQL,
     },
 ];
 

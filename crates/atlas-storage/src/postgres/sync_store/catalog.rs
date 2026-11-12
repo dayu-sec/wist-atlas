@@ -227,6 +227,7 @@ where
                 domain.created_at.to_rfc3339(),
                 domain.updated_at.to_rfc3339(),
                 domain.external_ref.clone().unwrap_or_default(),
+                domain.cidr.clone().unwrap_or_default(),
             ],
         )?;
         Ok(())
@@ -234,7 +235,7 @@ where
 
     fn get_network_domain(&self, network_domain_id: Uuid) -> StorageResult<Option<NetworkDomain>> {
         let rows = self.executor.query_rows(
-            "SELECT network_domain_id, tenant_id, environment_id, name, kind, description, created_at, updated_at, external_ref FROM network_domain WHERE network_domain_id = $1",
+            "SELECT network_domain_id, tenant_id, environment_id, name, kind, description, created_at, updated_at, external_ref, cidr FROM network_domain WHERE network_domain_id = $1",
             &[network_domain_id.to_string()],
         )?;
         Ok(rows

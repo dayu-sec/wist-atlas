@@ -439,6 +439,7 @@ fn memory_postgres_executor_round_trips_minimal_p0_records() {
         external_ref: None,
         name: "default".to_string(),
         kind: atlas_domain::NetworkDomainKind::Unknown,
+        cidr: None,
         description: None,
         created_at: now,
         updated_at: now,
@@ -1168,4 +1169,32 @@ fn real_postgres_elastic_ip_round_trip() {
             .await
             .ok();
     });
+}
+
+#[test]
+fn network_domain_keeps_its_cidr() {
+    // VPC 的地址空间是域的核心属性：写不进去 / 读不回来，就只剩下一个名字。
+    let store = PostgresTopologyStore::new(MemoryPostgresExecutor::default());
+    let tenant_id = TenantId(Uuid::new_v4());
+    let now = Utc::now();
+    let domain_id = Uuid::new_v4();
+    let domain = NetworkDomain {
+        network_domain_id: domain_id,
+        tenant_id,
+        environment_id: None,
+        external_ref: Some("vpc-1".to_string()),
+        name: "prod-vpc".to_string(),
+        kind: atlas_domain::NetworkDomainKind::Vpc,
+        cidr: Some("10.0.0.0/16".to_string()),
+        description: None,
+        created_at: now,
+        updated_at: now,
+    };
+    CatalogStore::upsert_network_domain(&store, &domain).unwrap();
+
+    let stored = CatalogStore::get_network_domain(&store, domain_id)
+        .unwrap()
+        .expect("domain row");
+    assert_eq!(stored.cidr.as_deref(), Some("10.0.0.0/16"));
+    assert_eq!(stored.external_ref.as_deref(), Some("vpc-1"));
 }

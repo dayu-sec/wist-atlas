@@ -102,6 +102,7 @@ pub(super) fn decode_network_domain(row: &[String]) -> StorageResult<NetworkDoma
         external_ref: empty_to_none(&row[8]),
         name: row[3].clone(),
         kind: parse_network_domain_kind(&row[4])?,
+        cidr: empty_to_none(&row[9]),
         description: empty_to_none(&row[5]),
         created_at: parse_datetime(&row[6])?,
         updated_at: parse_datetime(&row[7])?,

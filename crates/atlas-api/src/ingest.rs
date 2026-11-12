@@ -169,6 +169,7 @@ pub fn extract_network_domain_candidates(
             // VPC ID 是域的稳定键：改名不换身份。
             external_ref: required_string_any(row, &["external_ref", "vpc_id"])?,
             name: optional_string(row, "name")?.or(optional_string(row, "domain_name")?),
+            cidr: optional_string(row, "cidr")?,
         });
     }
 

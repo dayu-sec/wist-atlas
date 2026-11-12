@@ -49,6 +49,7 @@ where
             candidate.tenant_id,
             &candidate.external_ref,
             candidate.name.as_deref(),
+            candidate.cidr.as_deref(),
             now,
         );
     }
@@ -74,6 +75,7 @@ where
             candidate.tenant_id,
             &candidate.external_ref,
             candidate.name.as_deref(),
+            candidate.cidr.as_deref(),
             now,
         );
     }

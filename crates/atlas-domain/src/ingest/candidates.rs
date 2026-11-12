@@ -106,6 +106,9 @@ pub struct NetworkDomainCandidate {
     pub external_ref: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// 地址空间（VPC 的 CIDR）。域的核心属性。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cidr: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

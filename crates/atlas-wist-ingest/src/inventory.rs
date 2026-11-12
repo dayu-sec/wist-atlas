@@ -293,6 +293,8 @@ pub fn envelope_from_sink_line(
             json!({
                 "external_ref": row.source_asset_id,
                 "name": row.asset_name,
+                // VPC 的 CIDR 是地址空间本身：不存就只能每次回云上问。
+                "cidr": row.cidr,
             })
         })
         .collect();
@@ -426,6 +428,10 @@ mod tests {
         assert_eq!(domains.len(), 1, "一个 VPC 一个域");
         assert_eq!(domains[0]["external_ref"], "vpc-1");
         assert_eq!(domains[0]["name"], "prod-vpc");
+        assert_eq!(
+            domains[0]["cidr"], "10.0.0.0/16",
+            "VPC 的地址空间要随域一起送"
+        );
 
         let segments = value["payload"]["network_segments"].as_array().unwrap();
         assert_eq!(segments.len(), 1, "cidr 为空的段要丢掉，否则整批被拒");
