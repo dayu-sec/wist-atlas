@@ -1513,6 +1513,7 @@ fn memory_cell(
             host_name: host_name.to_string(),
             machine_id: None,
             cloud_instance_id: None,
+            cloud_account: None,
             os_name: None,
             os_version: None,
             arch: None,

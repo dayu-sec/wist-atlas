@@ -62,6 +62,23 @@ struct Snapshot {
     source_code: String,
     #[serde(default)]
     assets: Assets,
+    /// 采集器对「这帧能不能当全集用」的声明。缺省 = 没声明 = 不能当全集。
+    #[serde(default)]
+    coverage: Option<CoverageDecl>,
+}
+
+/// `{"scope":"account","complete":true,"account":"tencent:1300000000"}`。
+///
+/// `account` 是**全键**（`vendor:account`）：atlas 只拿它做相等比较，不解析。
+/// 缺账号就不能退役 —— 不知道该扫哪些主机，拿它去扫整个租户是灾难。
+#[derive(Debug, Default, Deserialize)]
+struct CoverageDecl {
+    #[serde(default)]
+    scope: String,
+    #[serde(default)]
+    complete: bool,
+    #[serde(default)]
+    account: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -150,6 +167,31 @@ pub fn envelope_from_sink_line(
                 .map(str::to_string)
         });
 
+    // 账号键：以采集器声明为准。它同时写进 `collect.coverage.account`（帧级）和各主机行，
+    // 两处用同一个值——退役判定靠它们相等。采集器不给就不给：宁可退不了役，
+    // 也不要自己编一个键出来把别人的机器扫掉。
+    let account = snapshot
+        .coverage
+        .as_ref()
+        .and_then(|coverage| coverage.account.as_deref())
+        .map(str::trim)
+        .filter(|account| !account.is_empty())
+        .map(str::to_string);
+
+    // 声明的归一化：认不出来的 `scope` 一律降级成 `partial`（少退役，不误删）。
+    let coverage_value = snapshot.coverage.as_ref().map(|coverage| {
+        let scope = if coverage.scope.trim().eq_ignore_ascii_case("account") {
+            "account"
+        } else {
+            "partial"
+        };
+        let mut value = json!({ "scope": scope, "complete": coverage.complete });
+        if let Some(account) = account.as_ref() {
+            value["account"] = json!(account);
+        }
+        value
+    });
+
     let hosts: Vec<Value> = snapshot
         .assets
         .hosts
@@ -169,6 +211,8 @@ pub fn envelope_from_sink_line(
                 // 跨来源归并键。**当前抽取器还不读它**（`HostCandidate` 没有这个字段），
                 // 但先放到线上：等字段加上时数据面不用再改。
                 "cloud_instance_id": host.source_asset_id,
+                // 账号归属：退役判定的作用域（云侧独占写）。
+                "cloud_account": account,
                 "os_name": host.os_name,
                 "ip": host.ip,
                 "arch": host.arch,
@@ -217,6 +261,9 @@ pub fn envelope_from_sink_line(
             "snap_id": snapshot.snap_id,
             "observed_at": observed_at,
             "collected_at": observed_at,
+            // 采集器没声明就不带这个键：缺席与 `partial` 同义，但下游能看出
+            // 「这个采集器还没升级」，而不是以为它宣称了不完整。
+            "coverage": coverage_value.unwrap_or(Value::Null),
         },
         "payload": {
             "hosts": hosts,
@@ -299,6 +346,51 @@ mod tests {
         assert_eq!(segments.len(), 2, "cidr 为空的段要丢掉，否则整批被拒");
         assert_eq!(segments[0]["cidr"], "10.0.0.0/16");
         assert_eq!(segments[1]["cidr"], "10.0.1.0/24");
+    }
+
+    #[test]
+    fn passes_through_the_coverage_declaration_and_account_key() {
+        // 没有这个声明，atlas 就只能二选一：把采集不全当销毁，或者永不退役。
+        let mut snapshot: Value = serde_json::from_str(&snapshot()).unwrap();
+        snapshot["coverage"] = json!({
+            "scope": "account",
+            "complete": true,
+            "account": "tencent:1300000000"
+        });
+
+        let value =
+            envelope_from_sink_line(&sink_line(&snapshot.to_string()), "DEV-X4", None).unwrap();
+        assert_eq!(value["collect"]["coverage"]["scope"], "account");
+        assert_eq!(value["collect"]["coverage"]["complete"], true);
+        assert_eq!(
+            value["collect"]["coverage"]["account"],
+            "tencent:1300000000"
+        );
+        // 主机行也要带账号键：退役判定靠它与帧级声明相等。
+        assert_eq!(
+            value["payload"]["hosts"][0]["cloud_account"],
+            "tencent:1300000000"
+        );
+    }
+
+    #[test]
+    fn does_not_invent_coverage_when_the_collector_omits_it() {
+        // 采集器没声明就什么都不说：宁可退不了役，也不要自己编一个账号键。
+        let value = envelope_from_sink_line(&sink_line(&snapshot()), "DEV-X4", None).unwrap();
+        assert!(value["collect"]["coverage"].is_null());
+        assert!(value["payload"]["hosts"][0]["cloud_account"].is_null());
+    }
+
+    #[test]
+    fn an_unknown_coverage_scope_degrades_to_partial() {
+        let mut snapshot: Value = serde_json::from_str(&snapshot()).unwrap();
+        snapshot["coverage"] = json!({"scope": "everything", "complete": true});
+        let value =
+            envelope_from_sink_line(&sink_line(&snapshot.to_string()), "DEV-X4", None).unwrap();
+        assert_eq!(
+            value["collect"]["coverage"]["scope"], "partial",
+            "认不出来的 scope 一律降级：少退役，不误删"
+        );
     }
 
     #[test]

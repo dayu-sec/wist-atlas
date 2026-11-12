@@ -166,6 +166,7 @@ pub(crate) fn resolve_host_candidate_for_network(
                 host_name: host.host_name.clone(),
                 machine_id: host.machine_id.clone(),
                 cloud_instance_id: host.cloud_instance_id.clone(),
+                cloud_account: host.cloud_account.clone(),
                 os_name: host.os_name.clone(),
                 os_version: host.os_version.clone(),
                 arch: host.arch.clone(),
@@ -191,6 +192,7 @@ pub(crate) fn resolve_host_candidate_for_network(
                 host_name: host.host_name.clone(),
                 machine_id: host.machine_id.clone(),
                 cloud_instance_id: host.cloud_instance_id.clone(),
+                cloud_account: host.cloud_account.clone(),
                 os_name: host.os_name.clone(),
                 os_version: host.os_version.clone(),
                 arch: host.arch.clone(),
@@ -219,6 +221,7 @@ pub(crate) fn resolve_host_candidate_for_process(
                 host_name: host.host_name.clone(),
                 machine_id: host.machine_id.clone(),
                 cloud_instance_id: host.cloud_instance_id.clone(),
+                cloud_account: host.cloud_account.clone(),
                 os_name: host.os_name.clone(),
                 os_version: host.os_version.clone(),
                 arch: host.arch.clone(),
@@ -240,6 +243,7 @@ pub(crate) fn resolve_host_candidate_for_process(
                 host_name: host.host_name.clone(),
                 machine_id: host.machine_id.clone(),
                 cloud_instance_id: host.cloud_instance_id.clone(),
+                cloud_account: host.cloud_account.clone(),
                 os_name: host.os_name.clone(),
                 os_version: host.os_version.clone(),
                 arch: host.arch.clone(),
@@ -291,6 +295,12 @@ fn mark_seen(host: &mut HostInventory, candidate: &HostCandidate, scope: &str, n
     if candidate.arch.is_some() {
         host.arch = candidate.arch.clone();
     }
+    // 账号归属由云侧独占写入；端侧候选通常把它留空，所以只在前者给值时才动。
+    // 用「有值就覆盖」而不是「空才填」：采集器改了账号键（source_code → AccountId）
+    // 时，存量行要能自我修正，否则它们永远匹配不上退役判定。
+    if candidate.cloud_account.is_some() {
+        host.cloud_account = candidate.cloud_account.clone();
+    }
     host.last_inventory_at = now;
     host.stale_at = None;
     host.miss_count = 0;
@@ -328,15 +338,15 @@ pub(crate) struct HostStaleSweep {
 ///
 /// 1. **按阈值、不按单次**。见 [`HOST_RETIRE_AFTER_COMPLETE_SNAPSHOTS`]。
 /// 2. **已退役的冻结**：`stale_at` 保留首次判定时间，也不再继续累加计数。
-/// 3. **只动本作用域的行**：不许拿云账号的快照去扫端侧发现的主机。代价是
-///    「被 agentd 最后写过的那台云主机」暂时扫不到（`ingest_scope` 是最后写入者），
-///    这是**故意选的方向**：少退役一台（安全）比跨账号误删一台强。
-///    按云账号圈定目标的那一步（`cloud_account`）是后续改动。
+/// 3. **只动本账号的行**：目标集是 `cloud_account == account` 且带 `cloud_instance_id`
+///    的主机。**不能用 `ingest_scope`**：那是「最后谁写过」，一台装了 agentd 的云主机
+///    每 5 分钟就被端侧覆盖一次，云侧那轮永远扫不到它。`cloud_account` 是资产属性，
+///    不随采集顺序变化；IDC 机器没有它，云侧永远不碰。
 pub(crate) fn mark_stale_hosts<S>(
     store: &S,
     tenant_id: TenantId,
     seen: &BTreeSet<Uuid>,
-    scope: &str,
+    account: &str,
     at: DateTime<Utc>,
 ) -> StorageResult<HostStaleSweep>
 where
@@ -351,7 +361,8 @@ where
 
     let mut result = HostStaleSweep::default();
     for mut host in list_hosts_paged(store, tenant_id)? {
-        if host.ingest_scope.as_deref() != Some(scope) {
+        // 本账号的云资产才算本次快照的覆盖对象；端侧发现的主机（没有 cloud_account）不参与。
+        if host.cloud_account.as_deref() != Some(account) || host.cloud_instance_id.is_none() {
             continue;
         }
         if seen.contains(&host.host_id) || host.stale_at.is_some() {
@@ -375,7 +386,7 @@ pub(crate) async fn mark_stale_hosts_async<S>(
     store: &S,
     tenant_id: TenantId,
     seen: &BTreeSet<Uuid>,
-    scope: &str,
+    account: &str,
     at: DateTime<Utc>,
 ) -> StorageResult<HostStaleSweep>
 where
@@ -390,7 +401,8 @@ where
 
     let mut result = HostStaleSweep::default();
     for mut host in list_hosts_paged_async(store, tenant_id).await? {
-        if host.ingest_scope.as_deref() != Some(scope) {
+        // 本账号的云资产才算本次快照的覆盖对象；端侧发现的主机（没有 cloud_account）不参与。
+        if host.cloud_account.as_deref() != Some(account) || host.cloud_instance_id.is_none() {
             continue;
         }
         if seen.contains(&host.host_id) || host.stale_at.is_some() {

@@ -182,7 +182,9 @@ fn coverage_must_be_account_and_complete_to_be_authoritative() {
     };
 
     assert_eq!(
-        declarations(build(json!({"scope": "account", "complete": true}))),
+        declarations(build(
+            json!({"scope": "account", "complete": true, "account": "tencent:1300000000"})
+        )),
         (true, true)
     );
     assert_eq!(
@@ -194,6 +196,13 @@ fn coverage_must_be_account_and_complete_to_be_authoritative() {
         declarations(build(json!({"scope": "account", "complete": false}))),
         (false, false),
         "采集器自己说没采全"
+    );
+    assert_eq!(
+        declarations(build(
+            json!({"scope": "account", "complete": true, "account": "  "})
+        )),
+        (false, false),
+        "没有账号键就不知道该扫哪些主机，不能当证据"
     );
     // 没声明 = 什么也没说。老采集器/端侧都走这条路。
     assert_eq!(declarations(build(json!(null))), (false, false));

@@ -81,11 +81,15 @@ pub struct AtlasInputCollect {
 /// 这次没采全（地域超时、限流、分页断、只采了部分资产类型）。atlas 只看数据是区分
 /// 不出来的。没有声明就只能两者取其一：要么把采集不全当销毁（误删资产），
 /// 要么永远不退役（已销毁的实例永远占着目录）。声明把这两者分开。
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AtlasInputCoverage {
     pub scope: AtlasInputCoverageScope,
     /// 采集器自身的完整性校验是否通过（工作项全完成、分页总数对齐、地域齐全）。
     pub complete: bool,
+    /// 本帧覆盖的**云账号键**。退役只会动 `cloud_account` 等于它的主机 ——
+    /// 这是唯一能区分「我这个账号没有它」和「别的账号报的机器」的凭据。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -108,8 +112,23 @@ impl AtlasInputCoverageScope {
 
 impl AtlasInputCoverage {
     /// 是否有资格作为「不存在」的证据。
+    ///
+    /// 没有账号键也不行：不知道该扫哪些主机，拿它去扫整个租户就是灾难。
     pub fn is_authoritative(&self) -> bool {
-        self.complete && self.scope == AtlasInputCoverageScope::Account
+        self.complete
+            && self.scope == AtlasInputCoverageScope::Account
+            && self
+                .account
+                .as_deref()
+                .is_some_and(|a| !a.trim().is_empty())
+    }
+
+    /// 声明的账号键（已去空白）。
+    pub fn account_key(&self) -> Option<&str> {
+        self.account
+            .as_deref()
+            .map(str::trim)
+            .filter(|a| !a.is_empty())
     }
 }
 
@@ -334,6 +353,9 @@ impl AtlasInputEnvelope {
                 "collect.coverage.complete".to_string(),
                 coverage.complete.to_string(),
             );
+            if let Some(account) = coverage.account_key() {
+                metadata.insert("collect.coverage.account".to_string(), account.to_string());
+            }
         }
 
         IngestEnvelope {
@@ -394,6 +416,16 @@ impl IngestEnvelope {
                 .get("collect.coverage.complete")
                 .map(String::as_str)
                 == Some("true")
+            && self.covered_account().is_some()
+    }
+
+    /// 本帧声明的云账号键。没声明 / 空串 → `None`。
+    pub fn covered_account(&self) -> Option<&str> {
+        self.metadata
+            .get("collect.coverage.account")
+            .map(String::as_str)
+            .map(str::trim)
+            .filter(|account| !account.is_empty())
     }
 }
 

@@ -29,6 +29,7 @@ pub(super) fn decode_host(row: &[String]) -> StorageResult<HostInventory> {
         miss_count: parse_optional_i64(&row[12])?.unwrap_or(0),
         // 追加在最后：不改动既有列的下标，老快照/老断言不用跟着动。
         cloud_instance_id: empty_to_none(&row[13]),
+        cloud_account: empty_to_none(&row[14]),
     })
 }
 

@@ -516,12 +516,33 @@ fn snapshot_hosts(
     summary.stale_host_count
 }
 
+/// 云账号键。atlas 只做相等比较，不解析它的形状。
+const CLOUD_ACCOUNT: &str = "tencent:1300000000";
+const OTHER_ACCOUNT: &str = "tencent:1400000000";
+
+/// 云侧资产行：`cloud_instance_id` + `cloud_account`（退役判定的两个前提）。
+fn cloud_payload(hosts: &[(&str, &str)], account: &str) -> serde_json::Value {
+    json!({
+        "hosts": hosts
+            .iter()
+            .map(|(name, instance_id)| json!({
+                "hostname": name,
+                "cloud_instance_id": instance_id,
+                "cloud_account": account,
+            }))
+            .collect::<Vec<_>>()
+    })
+}
+
 /// 云账号级快照。`coverage = None` 表示没声明（等价于「什么也没说」）。
+/// 参数多是因为每个维度都真的会被参数化（账号 / 声明 / 模式 / 生产者）。
+#[allow(clippy::too_many_arguments)]
 fn cloud_snapshot_hosts(
     service: &TopologyIngestService<atlas_storage::InMemoryTopologyStore>,
     ingest_id: &str,
     producer: &str,
     hosts: &[(&str, &str)],
+    account: &str,
     coverage: Option<(&str, bool)>,
     mode: IngestMode,
     tenant_id: TenantId,
@@ -531,7 +552,7 @@ fn cloud_snapshot_hosts(
         producer,
         mode,
         tenant_id,
-        payload_with_hosts(hosts),
+        cloud_payload(hosts, account),
     );
     envelope
         .metadata
@@ -544,6 +565,10 @@ fn cloud_snapshot_hosts(
             "collect.coverage.complete".to_string(),
             complete.to_string(),
         );
+        // 账号键：退役目标靠它圈定，三处（coverage / 主机行 / 本函数）必须是同一个值。
+        envelope
+            .metadata
+            .insert("collect.coverage.account".to_string(), account.to_string());
     }
     let (_record, summary) = service
         .submit_and_materialize(envelope)
@@ -627,6 +652,7 @@ fn host_is_retired_only_after_complete_account_snapshots() {
         "ing-1",
         CLOUD_PRODUCER,
         &both_hosts(),
+        CLOUD_ACCOUNT,
         Some(("account", true)),
         IngestMode::Snapshot,
         tenant_id,
@@ -639,6 +665,7 @@ fn host_is_retired_only_after_complete_account_snapshots() {
             &format!("ing-miss-{round}"),
             CLOUD_PRODUCER,
             &only_a(),
+            CLOUD_ACCOUNT,
             Some(("account", true)),
             IngestMode::Snapshot,
             tenant_id,
@@ -651,6 +678,7 @@ fn host_is_retired_only_after_complete_account_snapshots() {
         "ing-threshold",
         CLOUD_PRODUCER,
         &only_a(),
+        CLOUD_ACCOUNT,
         Some(("account", true)),
         IngestMode::Snapshot,
         tenant_id,
@@ -674,6 +702,7 @@ fn a_snapshot_without_authoritative_coverage_never_retires_a_host() {
         "ing-1",
         CLOUD_PRODUCER,
         &both_hosts(),
+        CLOUD_ACCOUNT,
         Some(("account", true)),
         IngestMode::Snapshot,
         tenant_id,
@@ -687,6 +716,7 @@ fn a_snapshot_without_authoritative_coverage_never_retires_a_host() {
                 &format!("ing-{round}-{repeat}"),
                 CLOUD_PRODUCER,
                 &only_a(),
+                CLOUD_ACCOUNT,
                 coverage,
                 IngestMode::Snapshot,
                 tenant_id,
@@ -702,6 +732,62 @@ fn a_snapshot_without_authoritative_coverage_never_retires_a_host() {
 }
 
 #[test]
+fn a_host_seen_by_agentd_is_still_retired_by_the_cloud() {
+    // 这是 `cloud_account` 存在的全部理由：agentd 每 5 分钟覆盖一次 `ingest_scope`。
+    // 如果退役目标按「最后谁写过」圈定，装了 agent 的云主机永远退不了役 ——
+    // 而那批机器恰恰是成本治理最关心的。
+    let service = TopologyIngestService::new_in_memory();
+    let tenant_id = TenantId(Uuid::new_v4());
+
+    cloud_snapshot_hosts(
+        &service,
+        "cloud-1",
+        CLOUD_PRODUCER,
+        &both_hosts(),
+        CLOUD_ACCOUNT,
+        Some(("account", true)),
+        IngestMode::Snapshot,
+        tenant_id,
+    );
+    // 端侧后到，把这两台机的 ingest_scope 改成自己的。
+    snapshot_hosts(&service, "edge-1", &both_hosts(), tenant_id);
+    let host_b = host_row(&service, tenant_id, HOST_B).expect("host b");
+    assert!(
+        host_b
+            .ingest_scope
+            .as_deref()
+            .is_some_and(|scope| scope.contains(EDGE_PRODUCER)),
+        "端侧后到就该拿到 scope（否则这条用例测不到真实场景）"
+    );
+    assert_eq!(
+        host_b.cloud_account.as_deref(),
+        Some(CLOUD_ACCOUNT),
+        "账号归属是资产属性，不能被端侧报告抹掉"
+    );
+
+    // 云上这只实例没了。目标按账号圈定，不按 scope。
+    let mut newly = 0;
+    for round in 0..host_retire_threshold() {
+        newly = cloud_snapshot_hosts(
+            &service,
+            &format!("cloud-miss-{round}"),
+            CLOUD_PRODUCER,
+            &only_a(),
+            CLOUD_ACCOUNT,
+            Some(("account", true)),
+            IngestMode::Snapshot,
+            tenant_id,
+        );
+    }
+
+    assert_eq!(newly, 1, "云侧完整快照连续缺失，应当退役");
+    assert_eq!(
+        host_state(&service, tenant_id, HOST_B),
+        Some((host_retire_threshold(), true))
+    );
+}
+
+#[test]
 fn a_retired_host_keeps_its_first_retirement_time() {
     let service = TopologyIngestService::new_in_memory();
     let tenant_id = TenantId(Uuid::new_v4());
@@ -710,6 +796,7 @@ fn a_retired_host_keeps_its_first_retirement_time() {
         "ing-1",
         CLOUD_PRODUCER,
         &both_hosts(),
+        CLOUD_ACCOUNT,
         Some(("account", true)),
         IngestMode::Snapshot,
         tenant_id,
@@ -720,6 +807,7 @@ fn a_retired_host_keeps_its_first_retirement_time() {
             &format!("ing-miss-{round}"),
             CLOUD_PRODUCER,
             &only_a(),
+            CLOUD_ACCOUNT,
             Some(("account", true)),
             IngestMode::Snapshot,
             tenant_id,
@@ -735,6 +823,7 @@ fn a_retired_host_keeps_its_first_retirement_time() {
             &format!("ing-extra-{round}"),
             CLOUD_PRODUCER,
             &only_a(),
+            CLOUD_ACCOUNT,
             Some(("account", true)),
             IngestMode::Snapshot,
             tenant_id,
@@ -757,6 +846,7 @@ fn a_returning_host_is_revived_and_its_counter_cleared() {
         "ing-1",
         CLOUD_PRODUCER,
         &both_hosts(),
+        CLOUD_ACCOUNT,
         Some(("account", true)),
         IngestMode::Snapshot,
         tenant_id,
@@ -768,6 +858,7 @@ fn a_returning_host_is_revived_and_its_counter_cleared() {
             &format!("ing-miss-{round}"),
             CLOUD_PRODUCER,
             &only_a(),
+            CLOUD_ACCOUNT,
             Some(("account", true)),
             IngestMode::Snapshot,
             tenant_id,
@@ -784,6 +875,7 @@ fn a_returning_host_is_revived_and_its_counter_cleared() {
         "ing-back",
         CLOUD_PRODUCER,
         &both_hosts(),
+        CLOUD_ACCOUNT,
         Some(("account", true)),
         IngestMode::Snapshot,
         tenant_id,
@@ -796,6 +888,7 @@ fn a_returning_host_is_revived_and_its_counter_cleared() {
         "ing-miss-again",
         CLOUD_PRODUCER,
         &only_a(),
+        CLOUD_ACCOUNT,
         Some(("account", true)),
         IngestMode::Snapshot,
         tenant_id,
@@ -814,6 +907,7 @@ fn hosts_from_another_producer_scope_are_not_swept() {
         "ing-other",
         "harvest-2",
         &[(HOST_B, "machine-b")],
+        OTHER_ACCOUNT,
         Some(("account", true)),
         IngestMode::Snapshot,
         tenant_id,
@@ -826,6 +920,7 @@ fn hosts_from_another_producer_scope_are_not_swept() {
             &format!("ing-mine-{round}"),
             CLOUD_PRODUCER,
             &only_a(),
+            CLOUD_ACCOUNT,
             Some(("account", true)),
             IngestMode::Snapshot,
             tenant_id,
@@ -849,6 +944,7 @@ fn incremental_mode_never_accumulates_host_misses() {
         "ing-1",
         CLOUD_PRODUCER,
         &both_hosts(),
+        CLOUD_ACCOUNT,
         Some(("account", true)),
         IngestMode::Snapshot,
         tenant_id,
@@ -860,6 +956,7 @@ fn incremental_mode_never_accumulates_host_misses() {
             &format!("ing-batch-{round}"),
             CLOUD_PRODUCER,
             &only_a(),
+            CLOUD_ACCOUNT,
             Some(("account", true)),
             IngestMode::BatchUpsert,
             tenant_id,

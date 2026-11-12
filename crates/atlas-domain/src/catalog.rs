@@ -169,6 +169,14 @@ pub struct HostInventory {
     /// "机器重装系统"看起来是同一件事。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cloud_instance_id: Option<String>,
+    /// 云端权威来源对该资产的**账号归属**（`vendor:account`，过渡期用采集器声明的账号键）。
+    ///
+    /// 这是退役判定的作用域：只有本账号的完整快照里没它，才说明它在这个账号下不存在。
+    ///
+    /// 与 `ingest_scope` 的区别：后者是「最后谁写过」，会随 agentd / 云侧来回翻转；
+    /// 这个是**资产属性**，不随采集顺序变化 —— 一台装了 agent 的云主机靠它才能被云侧判死。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cloud_account: Option<String>,
     pub os_name: Option<String>,
     pub os_version: Option<String>,
     /// CPU 架构（`aarch64` / `x86_64`）。与事实摘要的 `arch` 同一取值（`std::env::consts::ARCH`）。
@@ -311,6 +319,7 @@ mod tests {
             host_name: "node-1".to_string(),
             machine_id: Some("machine-1".to_string()),
             cloud_instance_id: None,
+            cloud_account: None,
             os_name: None,
             os_version: None,
             arch: None,

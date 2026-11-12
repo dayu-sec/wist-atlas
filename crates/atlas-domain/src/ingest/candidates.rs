@@ -32,6 +32,9 @@ pub struct HostCandidate {
     /// resolver 用它把"云 API 报的主机"和"agentd 报的同一台主机"并成一个对象。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cloud_instance_id: Option<String>,
+    /// 云端账号归属。云 API 采集器负责给；agentd 不知道也不需要知道。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cloud_account: Option<String>,
     pub os_name: Option<String>,
     pub os_version: Option<String>,
     pub arch: Option<String>,

@@ -25,6 +25,10 @@ pub const HOST_CLOUD_INSTANCE_ID_VERSION: &str = "0008_host_cloud_instance_id";
 pub const HOST_CLOUD_INSTANCE_ID_SQL: &str =
     include_str!("../migrations/0008_host_cloud_instance_id.sql");
 
+/// 主机补 `cloud_account`：退役判定的作用域（按账号，不按最后写入者）。
+pub const HOST_CLOUD_ACCOUNT_VERSION: &str = "0009_host_cloud_account";
+pub const HOST_CLOUD_ACCOUNT_SQL: &str = include_str!("../migrations/0009_host_cloud_account.sql");
+
 pub const MIGRATIONS: &[Migration] = &[
     Migration {
         version: INITIAL_SCHEMA_VERSION,
@@ -58,6 +62,10 @@ pub const MIGRATIONS: &[Migration] = &[
         version: HOST_CLOUD_INSTANCE_ID_VERSION,
         sql: HOST_CLOUD_INSTANCE_ID_SQL,
     },
+    Migration {
+        version: HOST_CLOUD_ACCOUNT_VERSION,
+        sql: HOST_CLOUD_ACCOUNT_SQL,
+    },
 ];
 
 #[cfg(test)]
@@ -80,6 +88,25 @@ mod tests {
             super::MIGRATIONS
                 .iter()
                 .any(|migration| migration.version == super::HOST_CLOUD_INSTANCE_ID_VERSION)
+        );
+    }
+
+    #[test]
+    fn cloud_account_migration_is_idempotent_and_scoped_by_tenant() {
+        let sql = super::HOST_CLOUD_ACCOUNT_SQL;
+        assert!(sql.contains("ADD COLUMN IF NOT EXISTS cloud_account"));
+        // 退役清扫按 (tenant, account) 取候选集。
+        assert!(
+            sql.contains("ON host_inventory(tenant_id, cloud_account)"),
+            "cloud_account 的索引必须带 tenant_id"
+        );
+        // 不加唯一索引：账号键天然是一对多。
+        assert!(!sql.contains("UNIQUE"));
+        assert!(sql.contains("ON CONFLICT (version) DO NOTHING"));
+        assert!(
+            super::MIGRATIONS
+                .iter()
+                .any(|migration| migration.version == super::HOST_CLOUD_ACCOUNT_VERSION)
         );
     }
 

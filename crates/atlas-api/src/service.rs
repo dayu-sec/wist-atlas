@@ -104,8 +104,7 @@ where
         )
         .conv_err()?;
         let host_stale_count =
-            sweep_stale_hosts(&self.store, &envelope, &materialized, &scope, accepted_at)
-                .conv_err()?;
+            sweep_stale_hosts(&self.store, &envelope, &materialized, accepted_at).conv_err()?;
         let process_sweep = materialize_processes(
             &self.store,
             &mut catalog,
@@ -239,7 +238,7 @@ where
         .await
         .conv_err()?;
         let host_stale_count =
-            sweep_stale_hosts_async(&self.store, &envelope, &materialized, &scope, accepted_at)
+            sweep_stale_hosts_async(&self.store, &envelope, &materialized, accepted_at)
                 .await
                 .conv_err()?;
         let process_sweep = materialize_processes_async(
@@ -370,45 +369,60 @@ fn sweep_stale_hosts<S>(
     store: &S,
     envelope: &IngestEnvelope,
     materialized: &MaterializedHosts,
-    scope: &str,
     at: DateTime<Utc>,
 ) -> ApiResult<u64>
 where
     S: CatalogStore,
 {
-    if envelope.ingest_mode != atlas_domain::IngestMode::Snapshot
-        || !envelope.declares_full_account_coverage()
-    {
+    let Some(account) = retirement_account(envelope) else {
         return Ok(0);
-    }
-    Ok(
-        mark_stale_hosts(store, envelope.tenant_id, &materialized.host_ids, scope, at)
-            .conv_err()?
-            .newly_stale,
+    };
+    Ok(mark_stale_hosts(
+        store,
+        envelope.tenant_id,
+        &materialized.host_ids,
+        account,
+        at,
     )
+    .conv_err()?
+    .newly_stale)
 }
 
 async fn sweep_stale_hosts_async<S>(
     store: &S,
     envelope: &IngestEnvelope,
     materialized: &MaterializedHosts,
-    scope: &str,
     at: DateTime<Utc>,
 ) -> ApiResult<u64>
 where
     S: AsyncCatalogStore,
 {
+    let Some(account) = retirement_account(envelope) else {
+        return Ok(0);
+    };
+    Ok(mark_stale_hosts_async(
+        store,
+        envelope.tenant_id,
+        &materialized.host_ids,
+        account,
+        at,
+    )
+    .await
+    .conv_err()?
+    .newly_stale)
+}
+
+/// 这一帧有没有资格判定「主机已不存在」？有就返回它覆盖的账号键。
+///
+/// 两道条件缺一不可：`snapshot` 模式（部分观测不能当全集），以及采集器声明了
+/// 账号级完整覆盖（少一页 / 超时 / 限流在数据上跟「销毁」长得一样）。
+fn retirement_account(envelope: &IngestEnvelope) -> Option<&str> {
     if envelope.ingest_mode != atlas_domain::IngestMode::Snapshot
         || !envelope.declares_full_account_coverage()
     {
-        return Ok(0);
+        return None;
     }
-    Ok(
-        mark_stale_hosts_async(store, envelope.tenant_id, &materialized.host_ids, scope, at)
-            .await
-            .conv_err()?
-            .newly_stale,
-    )
+    envelope.covered_account()
 }
 
 /// 只在 `snapshot` 模式下做替换清扫。

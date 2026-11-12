@@ -51,6 +51,9 @@ fn backfill_host(target: &mut HostInventory, candidate: &HostCandidate) {
     if target.cloud_instance_id.is_none() {
         target.cloud_instance_id = candidate.cloud_instance_id.clone();
     }
+    if target.cloud_account.is_none() {
+        target.cloud_account = candidate.cloud_account.clone();
+    }
     if target.os_name.is_none() {
         target.os_name = candidate.os_name.clone();
     }
@@ -169,6 +172,7 @@ pub fn resolve_host_candidate(
         host_name: candidate.host_name.clone(),
         machine_id: candidate.machine_id.clone(),
         cloud_instance_id: candidate.cloud_instance_id.clone(),
+        cloud_account: candidate.cloud_account.clone(),
         os_name: candidate.os_name.clone(),
         os_version: candidate.os_version.clone(),
         arch: candidate.arch.clone(),
@@ -455,6 +459,7 @@ mod tests {
             host_name: "laptop-01".to_string(),
             machine_id: Some("machine-01".to_string()),
             cloud_instance_id: None,
+            cloud_account: None,
             os_name: Some("linux".to_string()),
             os_version: Some("6.8".to_string()),
             arch: Some("x86_64".to_string()),
