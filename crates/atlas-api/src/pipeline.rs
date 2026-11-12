@@ -64,6 +64,43 @@ pub fn resolve_host_candidate(
         };
     }
 
+    // 云实例 ID：agentd（读元数据服务）与云 API（`InstanceId`）共有的**确定性**键，
+    // 用来把两路报到的同一台云主机并成一个对象。
+    //
+    // 为什么放在 `host_name` 之前：同名不同机比"实例 ID 相同"常见得多；反过来，
+    // 云上改名会让 host_name 变掉，但实例 ID 不变 —— 靠名字匹配会分裂成两个节点。
+    //
+    // 按 tenant 限定（与 DB 里那条唯一索引一致）：不同租户各自的云账号下，
+    // 实例 ID 理论上可能撞。
+    if let Some(cloud_id) = candidate.cloud_instance_id.as_deref()
+        && let Some(host) = catalog.hosts.iter().find(|host| {
+            host.tenant_id == candidate.tenant_id
+                && host.cloud_instance_id.as_deref() == Some(cloud_id)
+        })
+    {
+        // 顺手把这次看到的实例 ID 补进已存在的对象：先由 agentd 建的对象当时可能
+        // 还没读到元数据，不补的话下一次匹配又会走 host_name。
+        let mut matched = host.clone();
+        if matched.cloud_instance_id.is_none() {
+            matched.cloud_instance_id = Some(cloud_id.to_string());
+        }
+        return HostResolution {
+            host: matched,
+            resolution: ResolutionResult {
+                object_kind: ObjectKind::Host,
+                status: ResolutionStatus::Matched,
+                matched_id: Some(host.host_id),
+                confidence: Confidence::High,
+                rule_name: "host.cloud_instance_id".to_string(),
+                matched_identifiers: vec![IdentifierMatch {
+                    key: "cloud_instance_id".to_string(),
+                    value: cloud_id.to_string(),
+                }],
+                conflicting_ids: Vec::new(),
+            },
+        };
+    }
+
     if let Some(host) = catalog
         .hosts
         .iter()
@@ -86,9 +123,11 @@ pub fn resolve_host_candidate(
         };
     }
 
+    // 稳定 key 的优先级与匹配顺序一致：机器自证 > 云平台给的 > 名字。
     let host_key = candidate
         .machine_id
         .clone()
+        .or_else(|| candidate.cloud_instance_id.clone())
         .unwrap_or_else(|| candidate.host_name.clone());
     let host = HostInventory {
         host_id: stable_uuid("host", &host_key),
@@ -96,6 +135,7 @@ pub fn resolve_host_candidate(
         environment_id: candidate.environment_id,
         host_name: candidate.host_name.clone(),
         machine_id: candidate.machine_id.clone(),
+        cloud_instance_id: candidate.cloud_instance_id.clone(),
         os_name: candidate.os_name.clone(),
         os_version: candidate.os_version.clone(),
         arch: candidate.arch.clone(),
@@ -118,6 +158,7 @@ pub fn resolve_host_candidate(
             matched_identifiers: collect_identifiers([
                 ("host_name", Some(host.host_name.clone())),
                 ("machine_id", host.machine_id.clone()),
+                ("cloud_instance_id", host.cloud_instance_id.clone()),
             ]),
             conflicting_ids: Vec::new(),
         },
@@ -380,6 +421,7 @@ mod tests {
             external_ref: None,
             host_name: "laptop-01".to_string(),
             machine_id: Some("machine-01".to_string()),
+            cloud_instance_id: None,
             os_name: Some("linux".to_string()),
             os_version: Some("6.8".to_string()),
             arch: Some("x86_64".to_string()),
@@ -399,6 +441,67 @@ mod tests {
             machine_id: Some("machine-01".to_string()),
             iface_name: Some("wlan0".to_string()),
         }
+    }
+
+    /// 云实例 ID 是双来源归并的确定性键：云 API 先到、agentd 后到，必须并成一台。
+    #[test]
+    fn cloud_instance_id_merges_the_two_sources_into_one_host() {
+        let tenant_id = tenant_id();
+        let mut catalog = InMemoryCatalog::default();
+        let now = Utc::now();
+
+        // 云 API 先到：只有实例 ID，没有 machine_id（云平台不知道 /etc/machine-id）。
+        let mut cloud_only = host_candidate(tenant_id);
+        cloud_only.host_name = "order-api-01".to_string();
+        cloud_only.machine_id = None;
+        cloud_only.cloud_instance_id = Some("ins-123".to_string());
+        let first = resolve_host_candidate(&mut catalog, &cloud_only, now);
+        assert!(matches!(first.resolution.status, ResolutionStatus::Created));
+        catalog.hosts.push(first.host.clone());
+
+        // agentd 后到：自证 machine_id + 元数据读到同一个实例 ID，主机名却不同
+        // （云上改过名）。按名字匹配会分裂成两个节点，必须按实例 ID 合并。
+        let mut from_agent = host_candidate(tenant_id);
+        from_agent.host_name = "CADDY-TEST-01".to_string();
+        from_agent.machine_id = Some("machine-abc".to_string());
+        from_agent.cloud_instance_id = Some("ins-123".to_string());
+        let second = resolve_host_candidate(&mut catalog, &from_agent, now);
+
+        assert!(
+            matches!(second.resolution.status, ResolutionStatus::Matched),
+            "应按实例 ID 命中已有对象，实际: {:?}",
+            second.resolution
+        );
+        assert_eq!(second.resolution.rule_name, "host.cloud_instance_id");
+        assert_eq!(second.host.host_id, first.host.host_id, "必须并成同一台");
+        assert_eq!(catalog.hosts.len(), 1);
+    }
+
+    /// 另一条路径：agentd 先建（当时还没读到元数据），云 API 后到，也要并上。
+    #[test]
+    fn cloud_candidate_merges_into_a_host_created_by_agentd() {
+        let tenant_id = tenant_id();
+        let mut catalog = InMemoryCatalog::default();
+        let now = Utc::now();
+
+        let mut from_agent = host_candidate(tenant_id);
+        from_agent.host_name = "caddy-test-01".to_string();
+        from_agent.machine_id = Some("machine-abc".to_string());
+        from_agent.cloud_instance_id = Some("ins-123".to_string());
+        let first = resolve_host_candidate(&mut catalog, &from_agent, now);
+        catalog.hosts.push(first.host.clone());
+
+        let mut cloud_only = host_candidate(tenant_id);
+        cloud_only.host_name = "order-api-01".to_string();
+        cloud_only.machine_id = None;
+        cloud_only.cloud_instance_id = Some("ins-123".to_string());
+        let second = resolve_host_candidate(&mut catalog, &cloud_only, now);
+
+        assert!(matches!(
+            second.resolution.status,
+            ResolutionStatus::Matched
+        ));
+        assert_eq!(second.host.host_id, first.host.host_id);
     }
 
     #[test]

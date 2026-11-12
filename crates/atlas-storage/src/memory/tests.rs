@@ -13,6 +13,7 @@ fn in_memory_store_persists_host_network_and_ingest_job() {
         environment_id: Some(EnvironmentId(Uuid::new_v4())),
         host_name: "node-01".to_string(),
         machine_id: Some("machine-01".to_string()),
+        cloud_instance_id: None,
         os_name: Some("linux".to_string()),
         os_version: Some("6.8".to_string()),
         arch: Some("x86_64".to_string()),

@@ -171,6 +171,13 @@ pub struct Host {
     pub external_ref: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub machine_id: Option<String>,
+    /// 云实例 ID：来自 agentd 从**云元数据服务**读到的 `cloud.instance_id`。
+    ///
+    /// 双来源归并的确定性键 —— 云 API（harvest）报的 `InstanceId` 与它相等即同一台机器。
+    /// 注意属性名是点分的 `cloud.instance_id`，而 atlas 输入里叫 `cloud_instance_id`，
+    /// **映射就在这一层**；两边写混不会报错，只会让归并静默失效。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cloud_instance_id: Option<String>,
     /// 产品名（`macOS` / `Ubuntu`）。来自快照的 `os.name`。
     ///
     /// agentd 在 macOS 上特意发产品名而不是 sysinfo 的内核名（`Darwin`）—— 资产卡片
@@ -582,11 +589,14 @@ fn build_host(
     let os_name = attr(&resource.attributes, "os.name");
     let os_version = attr(&resource.attributes, "os.version");
     let arch = attr(&resource.attributes, "host.arch");
+    // 只有装了新版本 agentd 且在云上才有；老快照/IDC 机器是 None。
+    let cloud_instance_id = attr(&resource.attributes, "cloud.instance_id");
 
     let host = Host {
         hostname: host_name.clone(),
         external_ref: host_id,
         machine_id: machine_id.clone(),
+        cloud_instance_id,
         os_name,
         os_version,
         arch,

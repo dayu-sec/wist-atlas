@@ -20,6 +20,10 @@ pub const CONTAINER_RUNTIME_SQL: &str = include_str!("../migrations/0005_contain
 pub const SOFTWARE_FINGERPRINT_SQL: &str =
     include_str!("../migrations/0006_software_fingerprint.sql");
 pub const TENANT_REGISTRY_SQL: &str = include_str!("../migrations/0007_tenant_registry.sql");
+/// 主机补 `cloud_instance_id`：双来源归并键（agentd 的元数据 vs 云 API 的 `InstanceId`）。
+pub const HOST_CLOUD_INSTANCE_ID_VERSION: &str = "0008_host_cloud_instance_id";
+pub const HOST_CLOUD_INSTANCE_ID_SQL: &str =
+    include_str!("../migrations/0008_host_cloud_instance_id.sql");
 
 pub const MIGRATIONS: &[Migration] = &[
     Migration {
@@ -50,11 +54,34 @@ pub const MIGRATIONS: &[Migration] = &[
         version: TENANT_REGISTRY_VERSION,
         sql: TENANT_REGISTRY_SQL,
     },
+    Migration {
+        version: HOST_CLOUD_INSTANCE_ID_VERSION,
+        sql: HOST_CLOUD_INSTANCE_ID_SQL,
+    },
 ];
 
 #[cfg(test)]
 mod tests {
     use super::INITIAL_SCHEMA_SQL;
+
+    #[test]
+    fn cloud_instance_id_migration_is_idempotent_and_tenant_scoped() {
+        let sql = super::HOST_CLOUD_INSTANCE_ID_SQL;
+        assert!(sql.contains("ADD COLUMN IF NOT EXISTS cloud_instance_id"));
+        // 唯一索引必须按租户限定：不同租户各自的云账号下，实例 ID 可能撞。
+        assert!(
+            sql.contains("ON host_inventory(tenant_id, cloud_instance_id)"),
+            "cloud_instance_id 的唯一索引必须带 tenant_id"
+        );
+        // 迁移要能被重复执行。
+        assert!(sql.contains("ON CONFLICT (version) DO NOTHING"));
+        // 注册进了迁移表，否则新库建好也没有这一列。
+        assert!(
+            super::MIGRATIONS
+                .iter()
+                .any(|migration| migration.version == super::HOST_CLOUD_INSTANCE_ID_VERSION)
+        );
+    }
 
     #[test]
     fn initial_schema_contains_p0_tables() {

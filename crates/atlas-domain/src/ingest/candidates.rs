@@ -28,6 +28,10 @@ pub struct HostCandidate {
     pub external_ref: Option<String>,
     pub host_name: String,
     pub machine_id: Option<String>,
+    /// 云实例 ID。与 `machine_id` 并列：前者是云平台给的，后者是机器自证的。
+    /// resolver 用它把"云 API 报的主机"和"agentd 报的同一台主机"并成一个对象。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cloud_instance_id: Option<String>,
     pub os_name: Option<String>,
     pub os_version: Option<String>,
     pub arch: Option<String>,

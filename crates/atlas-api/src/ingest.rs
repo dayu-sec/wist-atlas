@@ -91,6 +91,9 @@ fn host_candidate_from_row(
         external_ref: optional_string(row, "external_ref")?,
         host_name,
         machine_id: optional_string(row, "machine_id")?,
+        // 云实例 ID：写入口可能来自云 API（`external_ref` 就是它），也可能来自
+        // agentd 从元数据服务读到的 `cloud.instance_id`。两个来源都落到这一个字段。
+        cloud_instance_id: optional_string(row, "cloud_instance_id")?,
         os_name: optional_string(row, "os_name")?
             .or_else(|| os.and_then(|os| optional_string_lossy(os, "name"))),
         os_version: optional_string(row, "os_version")?

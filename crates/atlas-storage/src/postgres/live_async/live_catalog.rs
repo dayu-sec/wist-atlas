@@ -127,6 +127,7 @@ impl AsyncCatalogStore for PostgresTopologyStore<LivePostgresExecutor> {
                         .unwrap_or_default(),
                     host.ingest_scope.clone().unwrap_or_default(),
                     host.miss_count.to_string(),
+                    host.cloud_instance_id.clone().unwrap_or_default(),
                 ],
             )
             .await?;

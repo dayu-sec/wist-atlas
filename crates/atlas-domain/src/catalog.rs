@@ -159,6 +159,16 @@ pub struct HostInventory {
     pub environment_id: Option<EnvironmentId>,
     pub host_name: String,
     pub machine_id: Option<String>,
+    /// 云实例 ID（`InstanceId`）：**跨来源归并键**。
+    ///
+    /// agentd 从云元数据服务读到自己的 `instance-id`，云 API（wist-harvest）直接给
+    /// `InstanceId`。两者相等即同一台机器 —— 这是双来源合并里唯一确定性的证据。
+    ///
+    /// 与 `machine_id` 分开存：`machine_id` 是**机器自证**（`/etc/machine-id`），
+    /// 一台云主机两个都有，用哪个都能对上；混成一个字段会让"云上改了实例"与
+    /// "机器重装系统"看起来是同一件事。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cloud_instance_id: Option<String>,
     pub os_name: Option<String>,
     pub os_version: Option<String>,
     /// CPU 架构（`aarch64` / `x86_64`）。与事实摘要的 `arch` 同一取值（`std::env::consts::ARCH`）。
