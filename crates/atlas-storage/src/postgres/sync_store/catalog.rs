@@ -1,7 +1,7 @@
 use atlas_domain::{
     ElasticIp, HostInventory, HostNetAssoc, HostRuntimeState, NetworkDomain, NetworkSegment,
-    ObjectKind, ProcessRuntimeState, ResponsibilityAssignment, RuntimeBinding, RuntimeObjectType,
-    ServiceEntity, ServiceInstance, Subject, TenantId,
+    ObjectKind, ProcessRuntimeState, ResponsibilityAssignment, RetirementOwner, RuntimeBinding,
+    RuntimeObjectType, ServiceEntity, ServiceInstance, Subject, TenantId,
 };
 use uuid::Uuid;
 
@@ -268,6 +268,35 @@ where
         rows.into_iter()
             .map(|row| decode_network_domain(&row))
             .collect()
+    }
+
+    fn get_retirement_owner(
+        &self,
+        tenant_id: TenantId,
+        cloud_account: &str,
+    ) -> StorageResult<Option<RetirementOwner>> {
+        let rows = self.executor.query_rows(
+            sql::GET_RETIREMENT_OWNER,
+            &[tenant_id.0.to_string(), cloud_account.to_string()],
+        )?;
+        Ok(rows
+            .into_iter()
+            .next()
+            .map(|row| decode_retirement_owner(&row))
+            .transpose()?)
+    }
+
+    fn upsert_retirement_owner(&self, owner: &RetirementOwner) -> StorageResult<()> {
+        self.executor.exec(
+            sql::UPSERT_RETIREMENT_OWNER,
+            &[
+                owner.tenant_id.0.to_string(),
+                owner.cloud_account.clone(),
+                owner.producer.clone(),
+                owner.claimed_at.to_rfc3339(),
+            ],
+        )?;
+        Ok(())
     }
 
     fn upsert_network_segment(&self, segment: &NetworkSegment) -> StorageResult<()> {

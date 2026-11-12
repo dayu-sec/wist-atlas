@@ -54,6 +54,11 @@ pub struct PipelineRunSummary {
     /// 本次判定已删除的子网数（域会跟着「一个活段都不剩」一起退役，不单独计数）。
     #[serde(default)]
     pub stale_network_segment_count: u64,
+    /// 本帧本可退役，但该账号的退役权在别的生产者手里（值是那个生产者）。
+    ///
+    /// 同一账号多个生产者时报出来，运维才能发现「两个采集器抢同一个账号」这件错事。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retirement_held_by: Option<String>,
 }
 
 pub struct TopologyIngestService<S> {
@@ -108,6 +113,8 @@ where
             .map(|candidate| container_uuid(candidate.tenant_id, &candidate.container_key))
             .collect();
         materialize_business_catalog(&self.store, business_catalog, accepted_at).conv_err()?;
+        // 退役权每帧只登记一次（三组清扫共用）：同一账号多个生产者时不双倍推进。
+        let retirement = retirement_gate(&self.store, &envelope, accepted_at)?;
         // 域必须在段之前：段靠域的稳定 ID 挂进去。
         materialize_network_domains(
             &self.store,
@@ -126,8 +133,14 @@ where
             &scope,
         )
         .conv_err()?;
-        let host_stale_count =
-            sweep_stale_hosts(&self.store, &envelope, &materialized, accepted_at).conv_err()?;
+        let host_stale_count = sweep_stale_hosts(
+            &self.store,
+            &envelope,
+            &materialized,
+            &retirement,
+            accepted_at,
+        )
+        .conv_err()?;
         // EIP 必须在主机之后：绑定目标要按刚落地的主机解析。
         let materialized_ips = materialize_elastic_ips(
             &self.store,
@@ -142,6 +155,7 @@ where
             &envelope,
             &materialized_ips,
             elastic_ips.reported,
+            &retirement,
             accepted_at,
         )
         .conv_err()?;
@@ -150,6 +164,7 @@ where
             &envelope,
             &materialized,
             networks_reported,
+            &retirement,
             accepted_at,
         )
         .conv_err()?;
@@ -219,6 +234,7 @@ where
                 elastic_ip_count: materialized_ips.count,
                 stale_elastic_ip_count,
                 stale_network_segment_count: stale_network_count,
+                retirement_held_by: retirement.held_by.clone(),
             },
         ))
     }
@@ -282,6 +298,7 @@ where
         materialize_business_catalog_async(&self.store, business_catalog, accepted_at)
             .await
             .conv_err()?;
+        let retirement = retirement_gate_async(&self.store, &envelope, accepted_at).await?;
         materialize_network_domains_async(
             &self.store,
             &mut catalog,
@@ -301,10 +318,15 @@ where
         )
         .await
         .conv_err()?;
-        let host_stale_count =
-            sweep_stale_hosts_async(&self.store, &envelope, &materialized, accepted_at)
-                .await
-                .conv_err()?;
+        let host_stale_count = sweep_stale_hosts_async(
+            &self.store,
+            &envelope,
+            &materialized,
+            &retirement,
+            accepted_at,
+        )
+        .await
+        .conv_err()?;
         let materialized_ips = materialize_elastic_ips_async(
             &self.store,
             &catalog,
@@ -319,6 +341,7 @@ where
             &envelope,
             &materialized_ips,
             elastic_ips.reported,
+            &retirement,
             accepted_at,
         )
         .await
@@ -328,6 +351,7 @@ where
             &envelope,
             &materialized,
             networks_reported,
+            &retirement,
             accepted_at,
         )
         .await
@@ -414,6 +438,7 @@ where
                 elastic_ip_count: materialized_ips.count,
                 stale_elastic_ip_count,
                 stale_network_segment_count: stale_network_count,
+                retirement_held_by: retirement.held_by.clone(),
             },
         ))
     }
@@ -466,12 +491,13 @@ fn sweep_stale_hosts<S>(
     store: &S,
     envelope: &IngestEnvelope,
     materialized: &MaterializedHosts,
+    gate: &RetirementGate,
     at: DateTime<Utc>,
 ) -> ApiResult<u64>
 where
     S: CatalogStore,
 {
-    let Some(account) = retirement_account(envelope) else {
+    let Some(account) = gate.account.as_deref() else {
         return Ok(0);
     };
     Ok(mark_stale_hosts(
@@ -489,12 +515,13 @@ async fn sweep_stale_hosts_async<S>(
     store: &S,
     envelope: &IngestEnvelope,
     materialized: &MaterializedHosts,
+    gate: &RetirementGate,
     at: DateTime<Utc>,
 ) -> ApiResult<u64>
 where
     S: AsyncCatalogStore,
 {
-    let Some(account) = retirement_account(envelope) else {
+    let Some(account) = gate.account.as_deref() else {
         return Ok(0);
     };
     Ok(mark_stale_hosts_async(
@@ -520,6 +547,7 @@ fn sweep_stale_elastic_ips<S>(
     envelope: &IngestEnvelope,
     materialized: &MaterializedElasticIps,
     reported: bool,
+    gate: &RetirementGate,
     at: DateTime<Utc>,
 ) -> ApiResult<u64>
 where
@@ -528,7 +556,7 @@ where
     if !reported {
         return Ok(0);
     }
-    let Some(account) = retirement_account(envelope) else {
+    let Some(account) = gate.account.as_deref() else {
         return Ok(0);
     };
     mark_stale_elastic_ips(
@@ -546,6 +574,7 @@ async fn sweep_stale_elastic_ips_async<S>(
     envelope: &IngestEnvelope,
     materialized: &MaterializedElasticIps,
     reported: bool,
+    gate: &RetirementGate,
     at: DateTime<Utc>,
 ) -> ApiResult<u64>
 where
@@ -554,7 +583,7 @@ where
     if !reported {
         return Ok(0);
     }
-    let Some(account) = retirement_account(envelope) else {
+    let Some(account) = gate.account.as_deref() else {
         return Ok(0);
     };
     mark_stale_elastic_ips_async(
@@ -575,6 +604,7 @@ fn sweep_stale_networks<S>(
     envelope: &IngestEnvelope,
     materialized: &MaterializedHosts,
     reported: bool,
+    gate: &RetirementGate,
     at: DateTime<Utc>,
 ) -> ApiResult<u64>
 where
@@ -583,7 +613,7 @@ where
     if !reported {
         return Ok(0);
     }
-    let Some(account) = retirement_account(envelope) else {
+    let Some(account) = gate.account.as_deref() else {
         return Ok(0);
     };
     mark_stale_network_segments(
@@ -601,6 +631,7 @@ async fn sweep_stale_networks_async<S>(
     envelope: &IngestEnvelope,
     materialized: &MaterializedHosts,
     reported: bool,
+    gate: &RetirementGate,
     at: DateTime<Utc>,
 ) -> ApiResult<u64>
 where
@@ -609,7 +640,7 @@ where
     if !reported {
         return Ok(0);
     }
-    let Some(account) = retirement_account(envelope) else {
+    let Some(account) = gate.account.as_deref() else {
         return Ok(0);
     };
     mark_stale_network_segments_async(
@@ -634,6 +665,102 @@ fn retirement_account(envelope: &IngestEnvelope) -> Option<&str> {
         return None;
     }
     envelope.covered_account()
+}
+
+/// 本帧能对哪个账号行使退役权，以及不能时的原因。
+#[derive(Debug, Default, Clone)]
+struct RetirementGate {
+    /// 可以退役的账号键。`None` = 本帧不做退役（不完整 / 不是快照 / 端侧）。
+    account: Option<String>,
+    /// 本帧本可退役，但账号的退役权在别的生产者手里 —— 值是那个生产者。
+    held_by: Option<String>,
+}
+
+/// 退役权登记：一个云账号只认一个采集器。
+///
+/// 为什么需要：两个生产者同时声明同一账号的账号级完整覆盖时，每帧都会给缺行
+/// `miss_count + 1`，退役速度直接翻倍（3 轮变 1.5 轮）。方向是错的 —— 采集器抖动
+/// 一次就可能把还在的机器判死。
+///
+/// 处理方式：先到先得，持有者每帧刷新心跳；其他人照常写数据（upsert 幂等），只是不推进
+/// 退役。持有者长期不出声（`RETIREMENT_OWNER_TTL_HOURS`）才允许接管，避免换采集器之后
+/// 永远冻结。
+fn retirement_gate<S>(
+    store: &S,
+    envelope: &IngestEnvelope,
+    at: DateTime<Utc>,
+) -> ApiResult<RetirementGate>
+where
+    S: CatalogStore,
+{
+    let Some(account) = retirement_account(envelope) else {
+        return Ok(RetirementGate::default());
+    };
+    let producer = envelope.source_name.clone();
+    let current = store
+        .get_retirement_owner(envelope.tenant_id, account)
+        .conv_err()?;
+
+    match current {
+        Some(owner) if owner.producer != producer && !owner.is_expired(at) => Ok(RetirementGate {
+            account: None,
+            held_by: Some(owner.producer),
+        }),
+        _ => {
+            store
+                .upsert_retirement_owner(&atlas_domain::RetirementOwner {
+                    tenant_id: envelope.tenant_id,
+                    cloud_account: account.to_string(),
+                    producer,
+                    claimed_at: at,
+                })
+                .conv_err()?;
+            Ok(RetirementGate {
+                account: Some(account.to_string()),
+                held_by: None,
+            })
+        }
+    }
+}
+
+async fn retirement_gate_async<S>(
+    store: &S,
+    envelope: &IngestEnvelope,
+    at: DateTime<Utc>,
+) -> ApiResult<RetirementGate>
+where
+    S: AsyncCatalogStore,
+{
+    let Some(account) = retirement_account(envelope) else {
+        return Ok(RetirementGate::default());
+    };
+    let producer = envelope.source_name.clone();
+    let current = store
+        .get_retirement_owner(envelope.tenant_id, account)
+        .await
+        .conv_err()?;
+
+    match current {
+        Some(owner) if owner.producer != producer && !owner.is_expired(at) => Ok(RetirementGate {
+            account: None,
+            held_by: Some(owner.producer),
+        }),
+        _ => {
+            store
+                .upsert_retirement_owner(&atlas_domain::RetirementOwner {
+                    tenant_id: envelope.tenant_id,
+                    cloud_account: account.to_string(),
+                    producer,
+                    claimed_at: at,
+                })
+                .await
+                .conv_err()?;
+            Ok(RetirementGate {
+                account: Some(account.to_string()),
+                held_by: None,
+            })
+        }
+    }
 }
 
 /// 只在 `snapshot` 模式下做替换清扫。

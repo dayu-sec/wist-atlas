@@ -1,7 +1,7 @@
 use atlas_domain::{
     HostInventory, HostNetAssoc, HostRuntimeState, NetworkDomain, NetworkSegment,
-    ProcessRuntimeState, ResponsibilityAssignment, RuntimeBinding, ServiceEntity, ServiceInstance,
-    Subject, TenantId,
+    ProcessRuntimeState, ResponsibilityAssignment, RetirementOwner, RuntimeBinding, ServiceEntity,
+    ServiceInstance, Subject, TenantId,
 };
 use uuid::Uuid;
 
@@ -224,6 +224,32 @@ impl CatalogStore for InMemoryTopologyStore {
                 .take(page.limit as usize)
                 .cloned()
                 .collect()
+        })
+    }
+
+    fn get_retirement_owner(
+        &self,
+        tenant_id: TenantId,
+        cloud_account: &str,
+    ) -> StorageResult<Option<RetirementOwner>> {
+        self.with_state(|state| {
+            state
+                .retirement_owners
+                .iter()
+                .find(|owner| owner.tenant_id == tenant_id && owner.cloud_account == cloud_account)
+                .cloned()
+        })
+    }
+
+    fn upsert_retirement_owner(&self, owner: &RetirementOwner) -> StorageResult<()> {
+        self.with_state(|state| {
+            if let Some(existing) = state.retirement_owners.iter_mut().find(|item| {
+                item.tenant_id == owner.tenant_id && item.cloud_account == owner.cloud_account
+            }) {
+                *existing = owner.clone();
+            } else {
+                state.retirement_owners.push(owner.clone());
+            }
         })
     }
 

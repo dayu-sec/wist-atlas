@@ -47,6 +47,8 @@ struct MemoryPostgresState {
     subjects: std::collections::BTreeMap<String, Vec<String>>,
     responsibility_assignments: std::collections::BTreeMap<String, Vec<String>>,
     ingest_jobs: std::collections::BTreeMap<String, Vec<String>>,
+    /// key = `tenant_id:cloud_account`（对齐真表的主键）。
+    retirement_owners: std::collections::BTreeMap<String, Vec<String>>,
     software_artifacts: std::collections::BTreeMap<String, Vec<String>>,
     software_instances: std::collections::BTreeMap<String, Vec<String>>,
     software_fingerprints: std::collections::BTreeMap<String, Vec<String>>,
@@ -110,6 +112,11 @@ impl PostgresExecutor for MemoryPostgresExecutor {
                 state
                     .network_segments
                     .insert(params[0].clone(), params.to_vec());
+            }
+            value if value == sql::UPSERT_RETIREMENT_OWNER => {
+                state
+                    .retirement_owners
+                    .insert(format!("{}:{}", params[0], params[1]), params.to_vec());
             }
             value if value == sql::UPSERT_ELASTIC_IP => {
                 state.elastic_ips.insert(params[0].clone(), params.to_vec());
@@ -396,6 +403,12 @@ impl PostgresExecutor for MemoryPostgresExecutor {
                 .collect(),
             // 只匹配前半段：后面是 `= NULLIF($1, '')::uuid` 还是 `= $1` 都该命中。
             // （真库那边必须写 `NULLIF($1,'')::uuid`，否则 `&str` 参数会被当成 uuid 序列化失败。）
+            value if value == sql::GET_RETIREMENT_OWNER => state
+                .retirement_owners
+                .get(&format!("{}:{}", params[0], params[1]))
+                .into_iter()
+                .cloned()
+                .collect(),
             value if value.contains("FROM network_domain WHERE network_domain_id") => state
                 .network_domains
                 .get(&params[0])

@@ -467,6 +467,35 @@ pub struct Subject {
     pub updated_at: DateTime<Utc>,
 }
 
+/// 谁有权替一个云账号判定「云上已不存在」。
+///
+/// 一个云账号只该由一个采集器声称账号级完整覆盖。两个生产者同时报同一账号时，
+/// 每一帧都会给缺行 `miss_count + 1`，退役速度直接翻倍（3 轮变 1.5 轮）—— 方向是错的。
+/// 所以退役权要显式登记：谁先声明谁持有，其他人照常写数据，但不推进退役。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RetirementOwner {
+    pub tenant_id: TenantId,
+    /// 云账号键（`vendor:AccountId`）。
+    pub cloud_account: String,
+    /// 生产者标识，与 `IngestEnvelope::source_name`（`system:producer`）同源。
+    pub producer: String,
+    /// 持有者最近一次行使退役权的时刻（心跳，用于判断能不能接管）。
+    pub claimed_at: DateTime<Utc>,
+}
+
+/// 持有者多久不出声就不再拦着别人接管。
+///
+/// 太长：换采集器之后退役会冻结很久（安全但没用）。太短：两套采集器轮番上线会互相
+/// 抢退役权，又回到「双倍推进」。
+pub const RETIREMENT_OWNER_TTL_HOURS: i64 = 24 * 7;
+
+impl RetirementOwner {
+    /// 这个持有者是不是已经不该再拦着别人了。
+    pub fn is_expired(&self, now: DateTime<Utc>) -> bool {
+        now.signed_duration_since(self.claimed_at).num_hours() >= RETIREMENT_OWNER_TTL_HOURS
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

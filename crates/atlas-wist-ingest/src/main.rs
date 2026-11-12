@@ -139,6 +139,21 @@ impl Report {
     }
 }
 
+/// 同一账号出现第二个采集器时喊一声。
+///
+/// 不喊的话表现为「退役变慢或不动」，没人会往「两个采集器抢一个账号」上想。
+/// 数据仍然照写（upsert 幂等），只是退役权不在本帧这个生产者手上。
+fn warn_if_retirement_is_held(held_by: Option<&str>) {
+    if let Some(owner) = held_by {
+        let ttl = atlas_domain::RETIREMENT_OWNER_TTL_HOURS;
+        eprintln!(
+            "warn: 本帧不推进退役 —— 该云账号的退役权在 {owner} 手上\
+             （同一账号只该有一个采集器；换采集器请等 {ttl} 小时接管，\
+             或清理 retirement_owner 表）"
+        );
+    }
+}
+
 fn log_report(report: &Report, offset: u64) {
     println!(
         "poll done: lines={} ingested={} skipped={} stale_processes={} stale_hosts={} stale_elastic_ips={} stale_network_segments={} offset={offset}{}",
@@ -176,6 +191,7 @@ async fn poll_once(
                 report.hosts_marked_stale += outcome.stale_host_count;
                 report.elastic_ips_marked_stale += outcome.stale_elastic_ip_count;
                 report.network_segments_marked_stale += outcome.stale_network_segment_count;
+                warn_if_retirement_is_held(outcome.retirement_held_by.as_deref());
                 tail.commit(line.next_offset)
                     .map_err(|err| CliError::Message(format!("commit: {err}")))?;
             }
@@ -240,6 +256,7 @@ where
                 report.hosts_marked_stale += summary.stale_host_count;
                 report.elastic_ips_marked_stale += summary.stale_elastic_ip_count;
                 report.network_segments_marked_stale += summary.stale_network_segment_count;
+                warn_if_retirement_is_held(summary.retirement_held_by.as_deref());
                 tail.commit(line.next_offset)
                     .map_err(|err| CliError::Message(format!("commit: {err}")))?;
             }

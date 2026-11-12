@@ -1,7 +1,7 @@
 use atlas_domain::{
     ElasticIp, HostInventory, HostNetAssoc, HostRuntimeState, InstanceEndpoint, NetworkDomain,
-    NetworkSegment, ObjectKind, ProcessRuntimeState, ResponsibilityAssignment, RuntimeBinding,
-    RuntimeObjectType, ServiceEntity, ServiceInstance, Subject, TenantId,
+    NetworkSegment, ObjectKind, ProcessRuntimeState, ResponsibilityAssignment, RetirementOwner,
+    RuntimeBinding, RuntimeObjectType, ServiceEntity, ServiceInstance, Subject, TenantId,
 };
 use chrono::{DateTime, Utc};
 use orion_error::prelude::SourceRawErr;
@@ -134,6 +134,15 @@ pub(super) fn decode_network_segment(row: &[String]) -> StorageResult<NetworkSeg
         ingest_scope: empty_to_none(&row[14]),
         created_at: parse_datetime(&row[8])?,
         updated_at: parse_datetime(&row[9])?,
+    })
+}
+
+pub(super) fn decode_retirement_owner(row: &[String]) -> StorageResult<RetirementOwner> {
+    Ok(RetirementOwner {
+        tenant_id: TenantId(parse_uuid(&row[0])?),
+        cloud_account: row[1].clone(),
+        producer: row[2].clone(),
+        claimed_at: parse_datetime(&row[3])?,
     })
 }
 

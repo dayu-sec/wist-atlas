@@ -2,9 +2,9 @@ use std::sync::{Arc, Mutex};
 
 use atlas_domain::{
     ContainerRuntime, ElasticIp, HostInventory, HostNetAssoc, HostRuntimeState, InstanceEndpoint,
-    NetworkDomain, NetworkSegment, ProcessRuntimeState, ResponsibilityAssignment, RuntimeBinding,
-    ServiceEntity, ServiceInstance, SoftwareArtifact, SoftwareArtifactPath, SoftwareFingerprint,
-    SoftwareInstance, SoftwareInstanceObservation, Subject, TenantId,
+    NetworkDomain, NetworkSegment, ProcessRuntimeState, ResponsibilityAssignment, RetirementOwner,
+    RuntimeBinding, ServiceEntity, ServiceInstance, SoftwareArtifact, SoftwareArtifactPath,
+    SoftwareFingerprint, SoftwareInstance, SoftwareInstanceObservation, Subject, TenantId,
 };
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
@@ -42,6 +42,7 @@ struct MemoryState {
     elastic_ips: Vec<ElasticIp>,
     network_domains: Vec<NetworkDomain>,
     network_segments: Vec<NetworkSegment>,
+    retirement_owners: Vec<RetirementOwner>,
     host_net_assocs: Vec<HostNetAssoc>,
     host_runtime_states: Vec<HostRuntimeState>,
     process_runtime_states: Vec<ProcessRuntimeState>,

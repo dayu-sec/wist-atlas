@@ -46,6 +46,10 @@ pub const NETWORK_DOMAIN_CIDR_SQL: &str =
 pub const NETWORK_PRESENCE_VERSION: &str = "0013_network_presence";
 pub const NETWORK_PRESENCE_SQL: &str = include_str!("../migrations/0013_network_presence.sql");
 
+/// 云账号的退役权归属（同一账号多个生产者时不重复推进）。
+pub const RETIREMENT_OWNER_VERSION: &str = "0014_retirement_owner";
+pub const RETIREMENT_OWNER_SQL: &str = include_str!("../migrations/0014_retirement_owner.sql");
+
 pub const MIGRATIONS: &[Migration] = &[
     Migration {
         version: INITIAL_SCHEMA_VERSION,
@@ -98,6 +102,10 @@ pub const MIGRATIONS: &[Migration] = &[
     Migration {
         version: NETWORK_PRESENCE_VERSION,
         sql: NETWORK_PRESENCE_SQL,
+    },
+    Migration {
+        version: RETIREMENT_OWNER_VERSION,
+        sql: RETIREMENT_OWNER_SQL,
     },
 ];
 

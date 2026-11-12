@@ -2,8 +2,8 @@ use atlas_domain::{
     AnchorKey, BusinessDomain, ClusterInventory, ContainerRuntime, ElasticIp, ExternalIdentityLink,
     ExternalSyncCursor, HostInventory, HostNetAssoc, HostRuntimeState, InstanceEndpoint,
     NamespaceInventory, NetworkDomain, NetworkSegment, ObjectKind, PodInventory, PodPlacement,
-    ProcessRuntimeState, ResponsibilityAssignment, RuntimeBinding, ServiceEntity, ServiceInstance,
-    SoftwareArtifact, SoftwareArtifactPath, SoftwareFingerprint, SoftwareInstance,
+    ProcessRuntimeState, ResponsibilityAssignment, RetirementOwner, RuntimeBinding, ServiceEntity,
+    ServiceInstance, SoftwareArtifact, SoftwareArtifactPath, SoftwareFingerprint, SoftwareInstance,
     SoftwareInstanceObservation, Subject, Subsystem, SystemBoundary, TenantId, WorkloadEntity,
     WorkloadPodMembership,
 };
@@ -71,6 +71,15 @@ pub trait CatalogStore {
         page: Page,
     ) -> StorageResult<Vec<NetworkDomain>>;
 
+    /// 这个云账号的退役权现在归谁。没有登记过就是 `None`。
+    fn get_retirement_owner(
+        &self,
+        tenant_id: TenantId,
+        cloud_account: &str,
+    ) -> StorageResult<Option<RetirementOwner>>;
+    /// 登记 / 刷新退役权持有者。
+    fn upsert_retirement_owner(&self, owner: &RetirementOwner) -> StorageResult<()>;
+
     fn upsert_network_segment(&self, segment: &NetworkSegment) -> StorageResult<()>;
     fn get_network_segment(
         &self,
@@ -137,6 +146,12 @@ pub trait AsyncCatalogStore: Sync {
         tenant_id: TenantId,
         page: Page,
     ) -> StorageResult<Vec<NetworkDomain>>;
+    async fn get_retirement_owner(
+        &self,
+        tenant_id: TenantId,
+        cloud_account: &str,
+    ) -> StorageResult<Option<RetirementOwner>>;
+    async fn upsert_retirement_owner(&self, owner: &RetirementOwner) -> StorageResult<()>;
     async fn upsert_network_segment(&self, segment: &NetworkSegment) -> StorageResult<()>;
     async fn get_network_segment(
         &self,

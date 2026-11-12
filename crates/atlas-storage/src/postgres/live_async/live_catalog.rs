@@ -1,7 +1,7 @@
 use atlas_domain::{
     ElasticIp, HostInventory, HostNetAssoc, HostRuntimeState, NetworkDomain, NetworkSegment,
-    ObjectKind, ProcessRuntimeState, ResponsibilityAssignment, RuntimeBinding, RuntimeObjectType,
-    ServiceEntity, ServiceInstance, Subject, TenantId,
+    ObjectKind, ProcessRuntimeState, ResponsibilityAssignment, RetirementOwner, RuntimeBinding,
+    RuntimeObjectType, ServiceEntity, ServiceInstance, Subject, TenantId,
 };
 use uuid::Uuid;
 
@@ -239,6 +239,40 @@ impl AsyncCatalogStore for PostgresTopologyStore<LivePostgresExecutor> {
         rows.into_iter()
             .map(|row| decode_network_domain(&row))
             .collect()
+    }
+
+    async fn get_retirement_owner(
+        &self,
+        tenant_id: TenantId,
+        cloud_account: &str,
+    ) -> StorageResult<Option<RetirementOwner>> {
+        let rows = self
+            .executor
+            .query_rows_async(
+                sql::GET_RETIREMENT_OWNER,
+                &[tenant_id.0.to_string(), cloud_account.to_string()],
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .next()
+            .map(|row| decode_retirement_owner(&row))
+            .transpose()?)
+    }
+
+    async fn upsert_retirement_owner(&self, owner: &RetirementOwner) -> StorageResult<()> {
+        self.executor
+            .exec_async(
+                sql::UPSERT_RETIREMENT_OWNER,
+                &[
+                    owner.tenant_id.0.to_string(),
+                    owner.cloud_account.clone(),
+                    owner.producer.clone(),
+                    owner.claimed_at.to_rfc3339(),
+                ],
+            )
+            .await?;
+        Ok(())
     }
 
     async fn upsert_network_segment(&self, segment: &NetworkSegment) -> StorageResult<()> {

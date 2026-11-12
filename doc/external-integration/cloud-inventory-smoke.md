@@ -76,6 +76,17 @@ select (select count(*) from host_inventory) hosts,
 再把原始快照灌一轮（新 `snap_id`），所有 `stale_at` 必须被清空、`miss_count` 归零 ——
 **退役必须可逆**，否则一次采集抖动就留下永久错误的目录。
 
+## 退役权：一个账号只认一个采集器
+
+一个云账号只该由一个采集器声称账号级完整覆盖。两个生产者同时报同一账号时，每帧都会给
+缺行 `miss_count + 1`，退役速度直接翻倍（3 轮变 1.5 轮）。
+
+| 检查 | 期望 |
+| --- | --- |
+| `retirement_owner` 行数 | 每个 `(tenant, cloud_account)` **恰好 1 行** |
+| 换一个生产者名重跑同一帧 | ingest 成功入库，但打 warn「本帧不推进退役」且 `miss_count` **不动** |
+| 持有者 `claimed_at` 超过 `RETIREMENT_OWNER_TTL_HOURS` | 新生产者可以接管（不再报 warn） |
+
 ## 不要拿它验的东西
 
 - **用户可见性**：本手册只查库。页面/接口是否能看见这些资产是另一件事（见

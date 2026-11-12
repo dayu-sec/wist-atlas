@@ -149,6 +149,22 @@ ORDER BY name ASC, network_domain_id ASC
 LIMIT NULLIF($2, '')::int4 OFFSET NULLIF($3, '')::int4
 "#;
 
+/// 退役权持有者。参数全用 `NULLIF($n,'')::type`：调用方统一传字符串，
+/// 直接写 `$1::uuid` 会让 tokio-postgres 按列类型推出 `uuid` 然后拒掉 `&str`。
+pub const UPSERT_RETIREMENT_OWNER: &str = r#"
+INSERT INTO retirement_owner (tenant_id, cloud_account, producer, claimed_at)
+VALUES (NULLIF($1, '')::uuid, $2, $3, NULLIF($4, '')::timestamptz)
+ON CONFLICT (tenant_id, cloud_account) DO UPDATE SET
+    producer = EXCLUDED.producer,
+    claimed_at = EXCLUDED.claimed_at
+"#;
+
+pub const GET_RETIREMENT_OWNER: &str = r#"
+SELECT tenant_id, cloud_account, producer, claimed_at
+FROM retirement_owner
+WHERE tenant_id = NULLIF($1, '')::uuid AND cloud_account = $2
+"#;
+
 pub const UPSERT_NETWORK_SEGMENT: &str = r#"
 INSERT INTO network_segment (
     network_segment_id, tenant_id, network_domain_id, environment_id, name, cidr, gateway_ip,

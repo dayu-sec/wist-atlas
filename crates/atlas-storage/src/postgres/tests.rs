@@ -1354,6 +1354,44 @@ fn real_postgres_network_presence_round_trip() {
         assert!(stored.stale_at.is_none(), "复活必须清掉 stale_at");
         assert_eq!(stored.miss_count, 0);
 
+        // 0014：退役权归属。参数都是 `&str`，SQL 必须写 `NULLIF($1,'')::uuid`，
+        // 否则 tokio-postgres 按列类型推成 uuid 会拒掉 `&str`。
+        assert!(
+            AsyncCatalogStore::get_retirement_owner(&store, tenant_id, account)
+                .await
+                .expect("get owner")
+                .is_none(),
+            "没登记过就该是 None"
+        );
+        let owner = atlas_domain::RetirementOwner {
+            tenant_id,
+            cloud_account: account.to_string(),
+            producer: "wist-harvest:harvest-1".to_string(),
+            claimed_at: now,
+        };
+        AsyncCatalogStore::upsert_retirement_owner(&store, &owner)
+            .await
+            .expect("claim owner");
+        let stored_owner = AsyncCatalogStore::get_retirement_owner(&store, tenant_id, account)
+            .await
+            .expect("get owner")
+            .expect("owner row");
+        assert_eq!(stored_owner.producer, "wist-harvest:harvest-1");
+
+        // 换持有者：按 (tenant, account) 冲突更新，不能插出第二行。
+        let taken_over = atlas_domain::RetirementOwner {
+            producer: "wist-harvest:harvest-2".to_string(),
+            ..owner.clone()
+        };
+        AsyncCatalogStore::upsert_retirement_owner(&store, &taken_over)
+            .await
+            .expect("takeover");
+        let stored_owner = AsyncCatalogStore::get_retirement_owner(&store, tenant_id, account)
+            .await
+            .expect("get owner")
+            .expect("owner row");
+        assert_eq!(stored_owner.producer, "wist-harvest:harvest-2");
+
         executor
             .exec_batch_async(&format!("DROP SCHEMA {schema} CASCADE"))
             .await

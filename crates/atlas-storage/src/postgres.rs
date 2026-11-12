@@ -1,9 +1,9 @@
 use atlas_domain::{
     AnchorKey, ContainerRuntime, HostInventory, HostNetAssoc, HostRuntimeState, InstanceEndpoint,
     NetworkDomain, NetworkSegment, ObjectKind, ProcessRuntimeState, ResponsibilityAssignment,
-    RuntimeBinding, RuntimeObjectType, ServiceEntity, ServiceInstance, SoftwareArtifact,
-    SoftwareArtifactPath, SoftwareFingerprint, SoftwareInstance, SoftwareInstanceObservation,
-    Subject, TenantId,
+    RetirementOwner, RuntimeBinding, RuntimeObjectType, ServiceEntity, ServiceInstance,
+    SoftwareArtifact, SoftwareArtifactPath, SoftwareFingerprint, SoftwareInstance,
+    SoftwareInstanceObservation, Subject, TenantId,
 };
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
@@ -211,6 +211,16 @@ impl AsyncCatalogStore for PostgresTopologyStore<MemoryPostgresExecutor> {
         page: Page,
     ) -> StorageResult<Vec<NetworkDomain>> {
         CatalogStore::list_network_domains(self, tenant_id, page)
+    }
+    async fn get_retirement_owner(
+        &self,
+        tenant_id: TenantId,
+        cloud_account: &str,
+    ) -> StorageResult<Option<RetirementOwner>> {
+        CatalogStore::get_retirement_owner(self, tenant_id, cloud_account)
+    }
+    async fn upsert_retirement_owner(&self, owner: &RetirementOwner) -> StorageResult<()> {
+        CatalogStore::upsert_retirement_owner(self, owner)
     }
 
     async fn upsert_network_segment(&self, segment: &NetworkSegment) -> StorageResult<()> {
