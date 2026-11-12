@@ -898,3 +898,109 @@ fn host_upsert_is_arbitered_on_the_primary_key() {
         );
     }
 }
+
+/// 真 PostgreSQL 上的主机身份用例。
+///
+/// 默认 `#[ignore]`：常规 CI 的 PG 用例走内存替身，而「按 machine_id 仲裁会撞主键」
+/// 正是内存替身看不出来的那一类问题。要跑真库：
+///
+/// ```bash
+/// WIST_ATLAS_TEST_DATABASE_URL='postgres://atlas:atlas@127.0.0.1:55432/wist_atlas' \
+///   cargo test -p atlas-storage -- --ignored real_postgres
+/// ```
+///
+/// 在**独立 schema** 里跑完整迁移与写入，结束时删掉；不动库里既有的表。
+#[test]
+#[ignore = "需要真 PostgreSQL；设 WIST_ATLAS_TEST_DATABASE_URL 后加 --ignored"]
+fn real_postgres_host_upsert_keeps_one_row_per_identity() {
+    let Ok(url) =
+        std::env::var("WIST_ATLAS_TEST_DATABASE_URL").or_else(|_| std::env::var("DATABASE_URL"))
+    else {
+        eprintln!("skip: WIST_ATLAS_TEST_DATABASE_URL / DATABASE_URL 未设置");
+        return;
+    };
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+
+    runtime.block_on(async move {
+        let executor = LivePostgresExecutor::new(url)
+            .await
+            .expect("connect postgres");
+        let schema = format!(
+            "atlas_probe_{}",
+            Uuid::new_v4().to_string().replace('-', "")
+        );
+        executor
+            .exec_batch_async(&format!("CREATE SCHEMA {schema}"))
+            .await
+            .expect("create schema");
+        executor
+            .exec_batch_async(&format!("SET search_path TO {schema}"))
+            .await
+            .expect("set search_path");
+
+        let store = PostgresTopologyStore::new(executor.clone());
+        store.run_migrations_async().await.expect("migrations");
+
+        let tenant_id = TenantId(Uuid::new_v4());
+        let now = Utc::now();
+        let host_id = Uuid::new_v4();
+        let mut host = HostInventory {
+            host_id,
+            tenant_id,
+            environment_id: None,
+            host_name: "node-cloud".to_string(),
+            machine_id: None,
+            cloud_instance_id: Some("ins-1".to_string()),
+            cloud_account: Some("tencent:1300000000".to_string()),
+            os_name: None,
+            os_version: None,
+            arch: None,
+            created_at: now,
+            last_inventory_at: now,
+            stale_at: None,
+            miss_count: 0,
+            ingest_scope: Some("atlas.in.inventory.v1:wist-harvest:harvest-1::".to_string()),
+        };
+        // 云侧先建行（machine_id 为空）。
+        AsyncCatalogStore::upsert_host(&store, &host)
+            .await
+            .expect("cloud-first upsert");
+
+        // 端侧后到：同一个 host_id，补上 machine_id / os / arch。
+        host.machine_id = Some("machine-1".to_string());
+        host.os_name = Some("Ubuntu 24.04".to_string());
+        host.arch = Some("x86_64".to_string());
+        host.last_inventory_at = now;
+        AsyncCatalogStore::upsert_host(&store, &host)
+            .await
+            .expect("agent upsert must not violate the primary key");
+
+        let stored = AsyncCatalogStore::get_host(&store, host_id)
+            .await
+            .expect("get host")
+            .expect("host row");
+        assert_eq!(stored.machine_id.as_deref(), Some("machine-1"));
+        assert_eq!(stored.os_name.as_deref(), Some("Ubuntu 24.04"));
+        assert_eq!(stored.arch.as_deref(), Some("x86_64"));
+        assert_eq!(
+            stored.cloud_account.as_deref(),
+            Some("tencent:1300000000"),
+            "COALESCE：端侧不报账号，账号归属不能被抹掉"
+        );
+        assert_eq!(stored.cloud_instance_id.as_deref(), Some("ins-1"));
+
+        let rows = AsyncCatalogStore::list_hosts(&store, tenant_id, Page::default())
+            .await
+            .expect("list hosts");
+        assert_eq!(rows.len(), 1, "同一次身份不能变成两行");
+
+        executor
+            .exec_batch_async(&format!("DROP SCHEMA {schema} CASCADE"))
+            .await
+            .ok();
+    });
+}

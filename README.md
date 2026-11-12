@@ -306,6 +306,20 @@ docker compose up -d
 - `postgres-mock` 已走完整 PostgreSQL repository 路径
 - `atlas-app` 已支持 `postgres-live`，可直接把 replay 数据写入真实 PostgreSQL
 
+### 真库用例
+
+默认 CI 的 PG 用例跑的是**内存替身**，看不出「SQL 写法本身在真库上不成立」这一类问题
+（例如主机 upsert 按 `machine_id` 仲裁时，云侧先建行、端侧后补 `machine_id` 会撞主键）。
+所以真库用例单独放着，默认 `#[ignore]`：
+
+```bash
+WIST_ATLAS_TEST_DATABASE_URL='postgres://atlas:atlas@127.0.0.1:55432/wist_atlas' \
+  cargo test -p atlas-storage -- --ignored real_postgres
+```
+
+它在**独立 schema** 里跑完整迁移（0001→0009）、写完再删掉，不动库里既有的表。
+改 SQL 或迁移之前建议先跑一遍。
+
 一键清库 + 重放 + 查库可直接执行：
 
 ```bash
