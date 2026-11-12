@@ -93,6 +93,8 @@ struct CoverageDecl {
 struct Assets {
     #[serde(default, rename = "CLOUD_HOST")]
     hosts: Vec<HostRow>,
+    #[serde(default, rename = "EIP")]
+    eips: Vec<EipRow>,
     #[serde(default, rename = "VPC")]
     vpcs: Vec<NetRow>,
     #[serde(default, rename = "SUB_NET")]
@@ -113,6 +115,28 @@ struct HostRow {
     ip: Option<String>,
     #[serde(default)]
     arch: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct EipRow {
+    #[serde(default)]
+    source_asset_id: String,
+    #[serde(default)]
+    asset_name: String,
+    #[serde(default)]
+    eip_address_ip: String,
+    #[serde(default)]
+    eip_address_status: String,
+    /// 目标类型（`CVM` / `NAT` / `CLB`）。
+    #[serde(default)]
+    eip_instance_type: String,
+    /// 目标 ID（`InstanceId`）。解绑后为空。
+    #[serde(default)]
+    eip_instance_id: String,
+    #[serde(default)]
+    eip_bandwidth: i64,
+    #[serde(default)]
+    eip_charge_type: String,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -227,6 +251,29 @@ pub fn envelope_from_sink_line(
         })
         .collect();
 
+    // EIP：独立资产。地址 ID 是稳定键，公网地址是它的属性，绑定目标另存。
+    let elastic_ips: Vec<Value> = snapshot
+        .assets
+        .eips
+        .iter()
+        .filter(|row| {
+            !row.source_asset_id.trim().is_empty() && !row.eip_address_ip.trim().is_empty()
+        })
+        .map(|row| {
+            let bound_ref = row.eip_instance_id.trim();
+            json!({
+                "external_ref": row.source_asset_id,
+                "address": row.eip_address_ip,
+                "status": row.eip_address_status,
+                "charge_type": row.eip_charge_type,
+                "bandwidth_mbps": row.eip_bandwidth,
+                "cloud_account": account,
+                "bound_instance_ref": if bound_ref.is_empty() { None } else { Some(bound_ref) },
+                "bound_instance_type": row.eip_instance_type,
+            })
+        })
+        .collect();
+
     let mut segments: Vec<Value> = Vec::new();
     for row in snapshot
         .assets
@@ -251,7 +298,7 @@ pub fn envelope_from_sink_line(
         }));
     }
 
-    if hosts.is_empty() && segments.is_empty() {
+    if hosts.is_empty() && segments.is_empty() && elastic_ips.is_empty() {
         return Err("inventory snapshot carries neither hosts nor network segments".to_string());
     }
 
@@ -274,6 +321,9 @@ pub fn envelope_from_sink_line(
         },
         "payload": {
             "hosts": hosts,
+            // 键必须在：`reported` 决定能不能拿「没有它」去退役 EIP。
+            // 采集器把 EIP 关掉时这里是空数组，下游据此跳过退役比对。
+            "elastic_ips": elastic_ips,
             "network_segments": segments,
         },
     }))
@@ -397,6 +447,68 @@ mod tests {
         assert_eq!(
             value["collect"]["coverage"]["scope"], "partial",
             "认不出来的 scope 一律降级：少退役，不误删"
+        );
+    }
+
+    #[test]
+    fn maps_eips_as_independent_assets() {
+        // EIP 不是主机的字段：地址 ID 是身份，绑定目标是快照态。
+        let mut snapshot: Value = serde_json::from_str(&snapshot()).unwrap();
+        snapshot["coverage"] = json!({
+            "scope": "account",
+            "complete": true,
+            "account": "tencent:1300000000"
+        });
+        snapshot["assets"]["EIP"] = json!([
+            {
+                "source_asset_id": "eip-1",
+                "asset_name": "prod-eip",
+                "eip_address_ip": "203.0.113.10",
+                "eip_address_status": "BIND",
+                "eip_instance_type": "CVM",
+                "eip_instance_id": "ins-1",
+                "eip_bandwidth": 10,
+                "eip_charge_type": "TRAFFIC_POSTPAID_BY_HOUR"
+            },
+            {
+                "source_asset_id": "eip-2",
+                "asset_name": "",
+                "eip_address_ip": "203.0.113.11",
+                "eip_address_status": "UNBIND",
+                "eip_instance_type": "",
+                "eip_instance_id": "",
+                "eip_bandwidth": 5,
+                "eip_charge_type": "BANDWIDTH_PREPAID"
+            }
+        ]);
+
+        let value =
+            envelope_from_sink_line(&sink_line(&snapshot.to_string()), "DEV-X4", None).unwrap();
+        let ips = value["payload"]["elastic_ips"].as_array().unwrap();
+        assert_eq!(ips.len(), 2);
+        assert_eq!(ips[0]["external_ref"], "eip-1");
+        assert_eq!(ips[0]["address"], "203.0.113.10");
+        assert_eq!(ips[0]["status"], "BIND");
+        assert_eq!(ips[0]["bound_instance_ref"], "ins-1");
+        assert_eq!(ips[0]["bound_instance_type"], "CVM");
+        assert_eq!(
+            ips[0]["cloud_account"], "tencent:1300000000",
+            "账号键同时写进 EIP：退役判定靠它圈定目标"
+        );
+        assert!(
+            ips[1]["bound_instance_ref"].is_null(),
+            "解绑的 EIP 不能带目标"
+        );
+    }
+
+    #[test]
+    fn the_elastic_ips_key_is_present_even_when_empty() {
+        // 键必须在：下游据此判断「本帧观测了 EIP」，缺席与空数组语义不同。
+        let value = envelope_from_sink_line(&sink_line(&snapshot()), "DEV-X4", None).unwrap();
+        assert_eq!(
+            value["payload"]["elastic_ips"],
+            json!([]),
+            "采集器没采到 EIP 时也要给空数组"
         );
     }
 

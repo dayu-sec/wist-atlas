@@ -300,6 +300,131 @@ pub struct HostNetAssoc {
     pub updated_at: DateTime<Utc>,
 }
 
+/// 弹性公网 IP（Elastic IP）。
+///
+/// **它是一类资产，不是主机的一个字段**：云上可以先申请、后绑定、解绑后仍保留，
+/// 甚至换一台机器绑同一个地址；反过来机器下线了 EIP 还在。所以它有独立的生命周期、
+/// 独立的计费（闲置也计费）和独立的归集（属于账号/项目，不属于某台机）。
+///
+/// 与实例自带公网 IP 的区别：后者没有独立地址 ID，跟实例同生共死，不在这个对象里 ——
+/// 那是主机侧的观测属性（`CLOUD_HOST.public_ips`）。把两者摞成一个"公网地址"类型会让
+/// 生命周期语义失效（而生命周期正是成本与暴露面分析要的东西）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ElasticIp {
+    pub elastic_ip_id: Uuid,
+    pub tenant_id: TenantId,
+    pub environment_id: Option<EnvironmentId>,
+    /// 云侧地址 ID（腾讯云 `AddressId`）：重新绑定/换机器都不变，是稳定键。
+    pub external_ref: String,
+    /// 地址本身（IPv4 字符串）。
+    pub address: String,
+    pub status: ElasticIpStatus,
+    /// 计费方式（`TRAFFIC_POSTPAID_BY_HOUR` 等）。闲置也计费，成本域要用。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub charge_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bandwidth_mbps: Option<i64>,
+    /// 云端账号归属（与主机同一个键）：退役判定的作用域。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cloud_account: Option<String>,
+    /// 当前绑定（没绑 = `None`）。
+    ///
+    /// 只存**当前**绑定：主机下线了 EIP 还在（所以要独立对象），但“上个月绑在谁身上”
+    /// 这类历史要单独建绑定表才能回答 —— 现在没消费方，不提前拆。
+    /// 真要做时：`ElasticIpBinding` 加 `valid_from/valid_to`，这张表变“当前态”。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binding: Option<ElasticIpBinding>,
+    pub created_at: DateTime<Utc>,
+    /// 最近一次被看到的时刻（可达性，与存在性无关）。
+    pub last_inventory_at: DateTime<Utc>,
+    /// 首次判定释放（云上确认不存在）的时刻。**端侧缺席永不写它**。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub miss_count: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ingest_scope: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ElasticIpStatus {
+    /// 已绑定到某个目标（实例 / NAT / 负载均衡）。
+    Bound,
+    /// 已申请但没绑（照样计费，成本治理最关心这个状态）。
+    Unbound,
+    Unknown,
+}
+
+impl ElasticIpStatus {
+    /// 从云侧 `AddressStatus`（`BIND` / `UNBIND` …）归一化。认不出来就 `Unknown`，
+    /// 不要猜成 `Unbound` —— 那会让「闲置 IP」这件事凭空多出几个假信号。
+    pub fn from_reported(value: &str) -> Self {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "BIND" | "BOUND" => Self::Bound,
+            "UNBIND" | "UNBOUND" => Self::Unbound,
+            _ => Self::Unknown,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Bound => "bound",
+            Self::Unbound => "unbound",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// EIP 当前绑在哪。
+///
+/// 为什么把目标 ID 也留着：目标不一定是主机（NAT / CLB 还不是本仓的对象），
+/// 认不出来时至少能说“它绑在 `nat-xxxx` 上”，而不是丢掉这个事实。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ElasticIpBinding {
+    pub target_kind: ElasticIpTarget,
+    /// 目标是主机、且解析得到时才有。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_id: Option<Uuid>,
+    /// 云的原始目标 ID（`InstanceId`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_target_ref: Option<String>,
+    /// 这个绑定是什么时候开始的（首次看到它绑在这个目标上）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bound_since: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ElasticIpTarget {
+    Host,
+    NatGateway,
+    LoadBalancer,
+    /// 云侧报了目标但类型认不出来（新资源、或字段缺失）。
+    Unknown,
+}
+
+impl ElasticIpTarget {
+    /// 从云侧 `InstanceType` 归一化（`CVM` / `NAT` / `CLB` …）。
+    pub fn from_reported(value: &str) -> Self {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "CVM" | "HOST" | "INSTANCE" => Self::Host,
+            "NAT" | "NAT_GATEWAY" | "NATINSTANCE" => Self::NatGateway,
+            "CLB" | "LOADBALANCER" | "LB" => Self::LoadBalancer,
+            _ => Self::Unknown,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Host => "host",
+            Self::NatGateway => "nat_gateway",
+            Self::LoadBalancer => "load_balancer",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Subject {
     pub subject_id: Uuid,

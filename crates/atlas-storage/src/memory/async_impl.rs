@@ -1,7 +1,7 @@
 use atlas_domain::{
-    HostInventory, HostNetAssoc, HostRuntimeState, InstanceEndpoint, NetworkDomain, NetworkSegment,
-    ProcessRuntimeState, ResponsibilityAssignment, RuntimeBinding, ServiceEntity, ServiceInstance,
-    SoftwareArtifact, SoftwareArtifactPath, SoftwareFingerprint, SoftwareInstance,
+    ElasticIp, HostInventory, HostNetAssoc, HostRuntimeState, InstanceEndpoint, NetworkDomain,
+    NetworkSegment, ProcessRuntimeState, ResponsibilityAssignment, RuntimeBinding, ServiceEntity,
+    ServiceInstance, SoftwareArtifact, SoftwareArtifactPath, SoftwareFingerprint, SoftwareInstance,
     SoftwareInstanceObservation, Subject, TenantId,
 };
 use chrono::{DateTime, Utc};
@@ -139,6 +139,18 @@ impl AsyncCatalogStore for InMemoryTopologyStore {
     ) -> StorageResult<Vec<NetworkSegment>> {
         CatalogStore::list_network_segments(self, tenant_id, page)
     }
+    async fn upsert_elastic_ip(&self, ip: &ElasticIp) -> StorageResult<()> {
+        CatalogStore::upsert_elastic_ip(self, ip)
+    }
+
+    async fn list_elastic_ips(
+        &self,
+        tenant_id: TenantId,
+        page: Page,
+    ) -> StorageResult<Vec<ElasticIp>> {
+        CatalogStore::list_elastic_ips(self, tenant_id, page)
+    }
+
     async fn upsert_subject(&self, subject: &Subject) -> StorageResult<()> {
         CatalogStore::upsert_subject(self, subject)
     }

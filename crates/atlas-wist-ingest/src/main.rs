@@ -125,6 +125,8 @@ struct Report {
     /// 必须和进程分开报：主机退役只认账号级完整快照，和「进程这份列表里没了」
     /// 是两套判据。早期只报进程，运维会以为主机退役没生效。
     hosts_marked_stale: u64,
+    /// 本轮判定已释放的 EIP 数（同样只认账号级完整快照）。
+    elastic_ips_marked_stale: u64,
 }
 
 impl Report {
@@ -137,12 +139,13 @@ impl Report {
 
 fn log_report(report: &Report, offset: u64) {
     println!(
-        "poll done: lines={} ingested={} skipped={} stale_processes={} stale_hosts={} offset={offset}{}",
+        "poll done: lines={} ingested={} skipped={} stale_processes={} stale_hosts={} stale_elastic_ips={} offset={offset}{}",
         report.lines,
         report.ingested,
         report.skipped,
         report.processes_marked_stale,
         report.hosts_marked_stale,
+        report.elastic_ips_marked_stale,
         if report.stopped {
             " (stopped early)"
         } else {
@@ -168,6 +171,7 @@ async fn poll_once(
                 report.ingested += 1;
                 report.processes_marked_stale += outcome.stale_process_count;
                 report.hosts_marked_stale += outcome.stale_host_count;
+                report.elastic_ips_marked_stale += outcome.stale_elastic_ip_count;
                 tail.commit(line.next_offset)
                     .map_err(|err| CliError::Message(format!("commit: {err}")))?;
             }
@@ -230,6 +234,7 @@ where
                 report.ingested += 1;
                 report.processes_marked_stale += summary.stale_process_count;
                 report.hosts_marked_stale += summary.stale_host_count;
+                report.elastic_ips_marked_stale += summary.stale_elastic_ip_count;
                 tail.commit(line.next_offset)
                     .map_err(|err| CliError::Message(format!("commit: {err}")))?;
             }

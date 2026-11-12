@@ -197,6 +197,53 @@ ORDER BY created_at ASC, assoc_id ASC
 LIMIT NULLIF($2, '')::int4 OFFSET NULLIF($3, '')::int4
 "#;
 
+pub const UPSERT_ELASTIC_IP: &str = r#"
+INSERT INTO elastic_ip (
+    elastic_ip_id, tenant_id, environment_id, external_ref, address, status,
+    charge_type, bandwidth_mbps, cloud_account,
+    bound_target_kind, bound_host_id, bound_external_target_ref, bound_since,
+    created_at, last_inventory_at, stale_at, miss_count, ingest_scope
+) VALUES (
+    NULLIF($1, '')::uuid, NULLIF($2, '')::uuid, NULLIF($3, '')::uuid,
+    $4, $5, $6, NULLIF($7, ''), NULLIF($8, '')::bigint, NULLIF($9, ''),
+    NULLIF($10, ''), NULLIF($11, '')::uuid, NULLIF($12, ''),
+    NULLIF($13, '')::timestamptz,
+    NULLIF($14, '')::timestamptz, NULLIF($15, '')::timestamptz,
+    NULLIF($16, '')::timestamptz, COALESCE(NULLIF($17, '')::bigint, 0),
+    NULLIF($18, '')
+)
+ON CONFLICT (elastic_ip_id) DO UPDATE SET
+    tenant_id = EXCLUDED.tenant_id,
+    environment_id = EXCLUDED.environment_id,
+    external_ref = EXCLUDED.external_ref,
+    address = EXCLUDED.address,
+    status = EXCLUDED.status,
+    charge_type = COALESCE(EXCLUDED.charge_type, elastic_ip.charge_type),
+    bandwidth_mbps = COALESCE(EXCLUDED.bandwidth_mbps, elastic_ip.bandwidth_mbps),
+    cloud_account = COALESCE(EXCLUDED.cloud_account, elastic_ip.cloud_account),
+    -- 解绑时必须能把绑定字段清空，所以这里不能用 COALESCE。
+    bound_target_kind = EXCLUDED.bound_target_kind,
+    bound_host_id = EXCLUDED.bound_host_id,
+    bound_external_target_ref = EXCLUDED.bound_external_target_ref,
+    bound_since = EXCLUDED.bound_since,
+    last_inventory_at = EXCLUDED.last_inventory_at,
+    -- 看到了就复活（与主机的 stale_at 同一语义）。
+    stale_at = EXCLUDED.stale_at,
+    miss_count = EXCLUDED.miss_count,
+    ingest_scope = COALESCE(EXCLUDED.ingest_scope, elastic_ip.ingest_scope)
+"#;
+
+pub const LIST_ELASTIC_IPS: &str = r#"
+SELECT elastic_ip_id, tenant_id, environment_id, external_ref, address, status,
+       charge_type, bandwidth_mbps, cloud_account,
+       bound_target_kind, bound_host_id, bound_external_target_ref, bound_since,
+       created_at, last_inventory_at, stale_at, miss_count, ingest_scope
+FROM elastic_ip
+WHERE tenant_id = NULLIF($1, '')::uuid
+ORDER BY address ASC, elastic_ip_id ASC
+LIMIT NULLIF($2, '')::int4 OFFSET NULLIF($3, '')::int4
+"#;
+
 pub const UPSERT_SUBJECT: &str = r#"
 INSERT INTO subject (
     subject_id, tenant_id, subject_type, display_name, external_ref, email, is_active,

@@ -1,13 +1,22 @@
 use atlas_domain::{
-    BusinessCatalogCandidate, ContainerRuntimeCandidate, HostCandidate, HostTelemetryCandidate,
-    NetworkSegmentCandidate, ProcessRuntimeCandidate, ProcessTelemetryCandidate,
-    ResponsibilityAssignmentCandidate, ServiceEndpointCandidate, SubjectCandidate,
+    BusinessCatalogCandidate, ContainerRuntimeCandidate, ElasticIpCandidate, HostCandidate,
+    HostTelemetryCandidate, NetworkSegmentCandidate, ProcessRuntimeCandidate,
+    ProcessTelemetryCandidate, ResponsibilityAssignmentCandidate, ServiceEndpointCandidate,
+    SubjectCandidate,
 };
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExtractedBusinessCatalog {
     pub candidates: Vec<BusinessCatalogCandidate>,
+}
+
+/// EIP 提取结果。`reported` 决定能不能做退役比对：payload 里根本没有
+/// `elastic_ips` 键时（比如采集器把 EIP 关了），「没有它」什么也不证明。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExtractedElasticIps {
+    pub candidates: Vec<ElasticIpCandidate>,
+    pub reported: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

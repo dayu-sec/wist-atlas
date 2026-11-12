@@ -36,6 +36,7 @@ struct MemoryPostgresState {
     services: std::collections::BTreeMap<String, Vec<String>>,
     network_domains: std::collections::BTreeMap<String, Vec<String>>,
     network_segments: std::collections::BTreeMap<String, Vec<String>>,
+    elastic_ips: std::collections::BTreeMap<String, Vec<String>>,
     host_net_assocs: std::collections::BTreeMap<String, Vec<String>>,
     host_runtime_states: std::collections::BTreeMap<String, Vec<String>>,
     process_runtime_states: std::collections::BTreeMap<String, Vec<String>>,
@@ -109,6 +110,9 @@ impl PostgresExecutor for MemoryPostgresExecutor {
                 state
                     .network_segments
                     .insert(params[0].clone(), params.to_vec());
+            }
+            value if value == sql::UPSERT_ELASTIC_IP => {
+                state.elastic_ips.insert(params[0].clone(), params.to_vec());
             }
             value if value == sql::UPSERT_HOST_NET_ASSOC => {
                 state
@@ -250,6 +254,12 @@ impl PostgresExecutor for MemoryPostgresExecutor {
                 .network_segments
                 .get(&params[0])
                 .into_iter()
+                .cloned()
+                .collect(),
+            value if value == sql::LIST_ELASTIC_IPS => state
+                .elastic_ips
+                .values()
+                .filter(|row| row[1] == params[0])
                 .cloned()
                 .collect(),
             value if value == sql::LIST_NETWORK_SEGMENTS => state

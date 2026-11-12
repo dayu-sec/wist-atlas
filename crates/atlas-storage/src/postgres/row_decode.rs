@@ -1,7 +1,7 @@
 use atlas_domain::{
-    HostInventory, HostNetAssoc, HostRuntimeState, InstanceEndpoint, NetworkDomain, NetworkSegment,
-    ObjectKind, ProcessRuntimeState, ResponsibilityAssignment, RuntimeBinding, RuntimeObjectType,
-    ServiceEntity, ServiceInstance, Subject, TenantId,
+    ElasticIp, HostInventory, HostNetAssoc, HostRuntimeState, InstanceEndpoint, NetworkDomain,
+    NetworkSegment, ObjectKind, ProcessRuntimeState, ResponsibilityAssignment, RuntimeBinding,
+    RuntimeObjectType, ServiceEntity, ServiceInstance, Subject, TenantId,
 };
 use chrono::{DateTime, Utc};
 use orion_error::prelude::SourceRawErr;
@@ -31,6 +31,67 @@ pub(super) fn decode_host(row: &[String]) -> StorageResult<HostInventory> {
         cloud_instance_id: empty_to_none(&row[13]),
         cloud_account: empty_to_none(&row[14]),
     })
+}
+
+pub(super) fn decode_elastic_ip(row: &[String]) -> StorageResult<ElasticIp> {
+    // 绑定三件套要么都在、要么都不在：`bound_target_kind` 是判据。
+    let bound_target_kind = empty_to_none(&row[9])
+        .map(|value| parse_elastic_ip_target(&value))
+        .transpose()?;
+    let binding = match bound_target_kind {
+        None => None,
+        Some(target_kind) => Some(atlas_domain::ElasticIpBinding {
+            target_kind,
+            host_id: parse_optional_uuid(&row[10])?,
+            external_target_ref: empty_to_none(&row[11]),
+            bound_since: empty_to_none(&row[12])
+                .map(|value| parse_datetime(&value))
+                .transpose()?,
+        }),
+    };
+
+    Ok(ElasticIp {
+        elastic_ip_id: parse_uuid(&row[0])?,
+        tenant_id: TenantId(parse_uuid(&row[1])?),
+        environment_id: parse_optional_uuid(&row[2])?.map(atlas_domain::EnvironmentId),
+        external_ref: row[3].clone(),
+        address: row[4].clone(),
+        status: parse_elastic_ip_status(&row[5])?,
+        charge_type: empty_to_none(&row[6]),
+        bandwidth_mbps: parse_optional_i64(&row[7])?,
+        cloud_account: empty_to_none(&row[8]),
+        binding,
+        created_at: parse_datetime(&row[13])?,
+        last_inventory_at: parse_datetime(&row[14])?,
+        stale_at: empty_to_none(&row[15])
+            .map(|value| parse_datetime(&value))
+            .transpose()?,
+        miss_count: parse_optional_i64(&row[16])?.unwrap_or(0),
+        ingest_scope: empty_to_none(&row[17]),
+    })
+}
+
+fn parse_elastic_ip_status(value: &str) -> StorageResult<atlas_domain::ElasticIpStatus> {
+    match value {
+        "bound" => Ok(atlas_domain::ElasticIpStatus::Bound),
+        "unbound" => Ok(atlas_domain::ElasticIpStatus::Unbound),
+        "unknown" => Ok(atlas_domain::ElasticIpStatus::Unknown),
+        other => Err(operation_failed(format!(
+            "unknown elastic ip status `{other}`"
+        ))),
+    }
+}
+
+fn parse_elastic_ip_target(value: &str) -> StorageResult<atlas_domain::ElasticIpTarget> {
+    match value {
+        "host" => Ok(atlas_domain::ElasticIpTarget::Host),
+        "nat_gateway" => Ok(atlas_domain::ElasticIpTarget::NatGateway),
+        "load_balancer" => Ok(atlas_domain::ElasticIpTarget::LoadBalancer),
+        "unknown" => Ok(atlas_domain::ElasticIpTarget::Unknown),
+        other => Err(operation_failed(format!(
+            "unknown elastic ip target `{other}`"
+        ))),
+    }
 }
 
 pub(super) fn decode_network_domain(row: &[String]) -> StorageResult<NetworkDomain> {

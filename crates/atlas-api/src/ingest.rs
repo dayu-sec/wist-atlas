@@ -1,7 +1,8 @@
 use atlas_domain::{
-    BusinessCatalogCandidate, ContainerRuntimeCandidate, HostCandidate, HostTelemetryCandidate,
-    IngestEnvelope, NetworkSegmentCandidate, ProcessRuntimeCandidate, ProcessTelemetryCandidate,
-    ResponsibilityAssignmentCandidate, ServiceEndpointCandidate, SubjectType,
+    BusinessCatalogCandidate, ContainerRuntimeCandidate, ElasticIpCandidate, HostCandidate,
+    HostTelemetryCandidate, IngestEnvelope, NetworkSegmentCandidate, ProcessRuntimeCandidate,
+    ProcessTelemetryCandidate, ResponsibilityAssignmentCandidate, ServiceEndpointCandidate,
+    SubjectType,
 };
 use serde_json::Value;
 
@@ -102,6 +103,44 @@ fn host_candidate_from_row(
             .or_else(|| os.and_then(|os| optional_string_lossy(os, "version"))),
         // `arch` 扁平写（`hosts[].arch`）为主；`host.arch` 是 agentd 属性名的源形式。
         arch: optional_string(row, "arch")?.or_else(|| optional_string_lossy(row, "host.arch")),
+    })
+}
+
+/// 弹性公网 IP。`payload.elastic_ips[]` 是**本帧对 EIP 的完整观测**。
+///
+/// 没有这个键 = 这份观测不表态（采集器没开 EIP）。两者必须分清：后者不能拿去退役，
+/// 否则「关掉 EIP 采集」会把账号下所有 EIP 判死。
+pub fn extract_elastic_ip_candidates(envelope: &IngestEnvelope) -> ApiResult<ExtractedElasticIps> {
+    let payload = object_payload(envelope)?;
+    let Some(rows) = optional_array(payload, "elastic_ips")? else {
+        return Ok(ExtractedElasticIps::default());
+    };
+
+    let mut candidates = Vec::with_capacity(rows.len());
+    for row in rows {
+        let row = row.as_object().ok_or(invalid_field_type("elastic_ips[]"))?;
+        candidates.push(ElasticIpCandidate {
+            tenant_id: envelope.tenant_id,
+            environment_id: envelope.environment_id,
+            source_kind: envelope.source_kind,
+            // 地址 ID 是稳定键（重新绑定不变）；没有它就无法把「同一个地址换机器」对上。
+            external_ref: required_string_any(row, &["external_ref", "address_id"])?,
+            address: required_string_any(row, &["address", "ip_addr", "ip"])?,
+            status: optional_string(row, "status")?,
+            charge_type: optional_string(row, "charge_type")?,
+            // 带宽是整数（Mbps）；云侧偶尔给字符串，交给 `optional_u64` 报错而不是静默丢掉。
+            bandwidth_mbps: optional_u64(row, "bandwidth_mbps")?.map(|value| value as i64),
+            cloud_account: optional_string(row, "cloud_account")?,
+            bound_instance_ref: optional_string(row, "bound_instance_ref")?
+                .or(optional_string(row, "instance_id")?),
+            bound_instance_type: optional_string(row, "bound_instance_type")?
+                .or(optional_string_lossy(row, "instance_type")),
+        });
+    }
+
+    Ok(ExtractedElasticIps {
+        candidates,
+        reported: true,
     })
 }
 

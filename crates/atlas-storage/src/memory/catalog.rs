@@ -254,6 +254,45 @@ impl CatalogStore for InMemoryTopologyStore {
         })
     }
 
+    fn upsert_elastic_ip(&self, ip: &atlas_domain::ElasticIp) -> StorageResult<()> {
+        self.with_state(|state| {
+            if let Some(existing) = state
+                .elastic_ips
+                .iter_mut()
+                .find(|item| item.elastic_ip_id == ip.elastic_ip_id)
+            {
+                *existing = ip.clone();
+            } else {
+                state.elastic_ips.push(ip.clone());
+            }
+        })
+    }
+
+    fn list_elastic_ips(
+        &self,
+        tenant_id: TenantId,
+        page: Page,
+    ) -> StorageResult<Vec<atlas_domain::ElasticIp>> {
+        self.with_state(|state| {
+            let mut items: Vec<atlas_domain::ElasticIp> = state
+                .elastic_ips
+                .iter()
+                .filter(|item| item.tenant_id == tenant_id)
+                .cloned()
+                .collect();
+            items.sort_by(|left, right| {
+                left.address
+                    .cmp(&right.address)
+                    .then(left.elastic_ip_id.cmp(&right.elastic_ip_id))
+            });
+            items
+                .into_iter()
+                .skip(page.offset as usize)
+                .take(page.limit as usize)
+                .collect()
+        })
+    }
+
     fn upsert_subject(&self, subject: &Subject) -> StorageResult<()> {
         self.with_state(|state| {
             if let Some(existing) = state

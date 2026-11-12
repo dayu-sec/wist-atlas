@@ -29,6 +29,10 @@ pub const HOST_CLOUD_INSTANCE_ID_SQL: &str =
 pub const HOST_CLOUD_ACCOUNT_VERSION: &str = "0009_host_cloud_account";
 pub const HOST_CLOUD_ACCOUNT_SQL: &str = include_str!("../migrations/0009_host_cloud_account.sql");
 
+/// 弹性公网 IP：独立资产（生命周期不跟主机）。
+pub const ELASTIC_IP_VERSION: &str = "0010_elastic_ip";
+pub const ELASTIC_IP_SQL: &str = include_str!("../migrations/0010_elastic_ip.sql");
+
 pub const MIGRATIONS: &[Migration] = &[
     Migration {
         version: INITIAL_SCHEMA_VERSION,
@@ -65,6 +69,10 @@ pub const MIGRATIONS: &[Migration] = &[
     Migration {
         version: HOST_CLOUD_ACCOUNT_VERSION,
         sql: HOST_CLOUD_ACCOUNT_SQL,
+    },
+    Migration {
+        version: ELASTIC_IP_VERSION,
+        sql: ELASTIC_IP_SQL,
     },
 ];
 
@@ -107,6 +115,23 @@ mod tests {
             super::MIGRATIONS
                 .iter()
                 .any(|migration| migration.version == super::HOST_CLOUD_ACCOUNT_VERSION)
+        );
+    }
+
+    #[test]
+    fn elastic_ip_migration_is_idempotent_and_tenant_scoped() {
+        let sql = super::ELASTIC_IP_SQL;
+        assert!(sql.contains("CREATE TABLE IF NOT EXISTS elastic_ip"));
+        // 同一个账号下 AddressId 唯一；不同租户各自的云账号可能撞号。
+        assert!(
+            sql.contains("UNIQUE (tenant_id, external_ref)"),
+            "地址 ID 的唯一约束必须带 tenant_id"
+        );
+        assert!(sql.contains("ON CONFLICT (version) DO NOTHING"));
+        assert!(
+            super::MIGRATIONS
+                .iter()
+                .any(|migration| migration.version == super::ELASTIC_IP_VERSION)
         );
     }
 

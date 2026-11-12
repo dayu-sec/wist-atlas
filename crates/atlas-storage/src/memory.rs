@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use atlas_domain::{
-    ContainerRuntime, HostInventory, HostNetAssoc, HostRuntimeState, InstanceEndpoint,
+    ContainerRuntime, ElasticIp, HostInventory, HostNetAssoc, HostRuntimeState, InstanceEndpoint,
     NetworkDomain, NetworkSegment, ProcessRuntimeState, ResponsibilityAssignment, RuntimeBinding,
     ServiceEntity, ServiceInstance, SoftwareArtifact, SoftwareArtifactPath, SoftwareFingerprint,
     SoftwareInstance, SoftwareInstanceObservation, Subject, TenantId,
@@ -39,6 +39,7 @@ pub trait AsyncIngestStore: Sync {
 #[derive(Debug, Default)]
 struct MemoryState {
     hosts: Vec<HostInventory>,
+    elastic_ips: Vec<ElasticIp>,
     network_domains: Vec<NetworkDomain>,
     network_segments: Vec<NetworkSegment>,
     host_net_assocs: Vec<HostNetAssoc>,

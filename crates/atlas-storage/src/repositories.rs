@@ -1,5 +1,5 @@
 use atlas_domain::{
-    AnchorKey, BusinessDomain, ClusterInventory, ContainerRuntime, ExternalIdentityLink,
+    AnchorKey, BusinessDomain, ClusterInventory, ContainerRuntime, ElasticIp, ExternalIdentityLink,
     ExternalSyncCursor, HostInventory, HostNetAssoc, HostRuntimeState, InstanceEndpoint,
     NamespaceInventory, NetworkDomain, NetworkSegment, ObjectKind, PodInventory, PodPlacement,
     ProcessRuntimeState, ResponsibilityAssignment, RuntimeBinding, ServiceEntity, ServiceInstance,
@@ -80,6 +80,10 @@ pub trait CatalogStore {
     fn upsert_subject(&self, subject: &Subject) -> StorageResult<()>;
     fn get_subject(&self, subject_id: Uuid) -> StorageResult<Option<Subject>>;
     fn list_subjects(&self, tenant_id: TenantId, page: Page) -> StorageResult<Vec<Subject>>;
+
+    /// 弹性公网 IP：**独立资产**，生命周期不跟主机（机器下线 EIP 还在）。
+    fn upsert_elastic_ip(&self, ip: &ElasticIp) -> StorageResult<()>;
+    fn list_elastic_ips(&self, tenant_id: TenantId, page: Page) -> StorageResult<Vec<ElasticIp>>;
 }
 
 #[allow(async_fn_in_trait)]
@@ -136,6 +140,12 @@ pub trait AsyncCatalogStore: Sync {
     async fn upsert_subject(&self, subject: &Subject) -> StorageResult<()>;
     async fn get_subject(&self, subject_id: Uuid) -> StorageResult<Option<Subject>>;
     async fn list_subjects(&self, tenant_id: TenantId, page: Page) -> StorageResult<Vec<Subject>>;
+    async fn upsert_elastic_ip(&self, ip: &ElasticIp) -> StorageResult<()>;
+    async fn list_elastic_ips(
+        &self,
+        tenant_id: TenantId,
+        page: Page,
+    ) -> StorageResult<Vec<ElasticIp>>;
 }
 
 pub trait RuntimeStore {

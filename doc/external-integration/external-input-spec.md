@@ -242,6 +242,31 @@ atlas.in.<family>.v<major>
 - 必须是 JSON object。
 - 不能包含二进制大对象；大对象用 URI 或 object storage ref 表达。
 - 数组行必须保留外部 ID 或可组合成外部 ID 的字段。
+
+#### 3.4.1 `payload.elastic_ips[]`（弹性公网 IP）
+
+EIP 是**独立资产**，不是主机的字段：可先申请后绑定、解绑后保留、换机器绑同一个地址，
+机器下线了 EIP 还在。所以它有自己的行、自己的 JSON 地址 ID，绑定是快照态：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `external_ref` | string | 是 | 云侧地址 ID（`AddressId`）。**重新绑定不变**，是身份 |
+| `address` | string | 是 | 公网地址 |
+| `status` | string | 否 | `BIND` / `UNBIND` …（归一化成 `bound` / `unbound` / `unknown`） |
+| `charge_type` | string | 否 | 计费方式（闲置也计费，成本域要用） |
+| `bandwidth_mbps` | number | 否 | 带宽（Mbps） |
+| `cloud_account` | string | 否 | 账号归属（与主机同一个键，退役判定靠它） |
+| `bound_instance_ref` | string | 否 | 当前绑定目标的 `InstanceId`；没绑就不给 |
+| `bound_instance_type` | string | 否 | `CVM` / `NAT` / `CLB` … |
+
+规则：
+
+1. **目标不一定是主机**。`CVM` 会解析成主机对象；`NAT` / `CLB` 还没建对象，但**必须保留**
+   原始目标 ID（`bound_target_kind = nat_gateway`）——「这个地址挂在 NAT 上」本身就是线索，
+   丢掉会让一个在场的 EIP 看起来像个孤儿。
+2. **键必须在**。即使一个 EIP 都没采到，也要给空数组：下游靠「有没有这个键」区分
+   「本帧观测了 EIP、它就是没有」和「没观测 EIP、不要拿来退役」。
+3. 退役规则与主机一样（账号级完整快照 + 连续 3 轮），见 3.3.2。
 - 金额、容量、耗时等数值必须带单位或使用规范字段名说明单位。
 
 ---

@@ -385,6 +385,7 @@ where
 
 mod business;
 mod container;
+mod elastic_ip;
 mod endpoint;
 mod governance;
 mod host;
@@ -395,6 +396,10 @@ pub(super) use business::{materialize_business_catalog, materialize_business_cat
 pub(super) use container::{
     ContainerSweep, container_uuid, mark_stale_containers, mark_stale_containers_async,
     materialize_containers, materialize_containers_async,
+};
+pub(super) use elastic_ip::{
+    ELASTIC_IP_RETIRE_AFTER_COMPLETE_SNAPSHOTS, MaterializedElasticIps, mark_stale_elastic_ips,
+    mark_stale_elastic_ips_async, materialize_elastic_ips, materialize_elastic_ips_async,
 };
 pub(super) use endpoint::{
     EndpointSweep, materialize_service_endpoints, materialize_service_endpoints_async,

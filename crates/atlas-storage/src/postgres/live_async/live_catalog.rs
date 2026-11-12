@@ -1,6 +1,6 @@
 use atlas_domain::{
-    HostInventory, HostNetAssoc, HostRuntimeState, NetworkDomain, NetworkSegment, ObjectKind,
-    ProcessRuntimeState, ResponsibilityAssignment, RuntimeBinding, RuntimeObjectType,
+    ElasticIp, HostInventory, HostNetAssoc, HostRuntimeState, NetworkDomain, NetworkSegment,
+    ObjectKind, ProcessRuntimeState, ResponsibilityAssignment, RuntimeBinding, RuntimeObjectType,
     ServiceEntity, ServiceInstance, Subject, TenantId,
 };
 use uuid::Uuid;
@@ -256,6 +256,71 @@ impl AsyncCatalogStore for PostgresTopologyStore<LivePostgresExecutor> {
             .await?;
         rows.into_iter()
             .map(|row| decode_network_segment(&row))
+            .collect()
+    }
+
+    async fn upsert_elastic_ip(&self, ip: &ElasticIp) -> StorageResult<()> {
+        let binding = ip.binding.as_ref();
+        self.executor
+            .exec_async(
+                sql::UPSERT_ELASTIC_IP,
+                &[
+                    ip.elastic_ip_id.to_string(),
+                    ip.tenant_id.0.to_string(),
+                    ip.environment_id
+                        .map(|id| id.0.to_string())
+                        .unwrap_or_default(),
+                    ip.external_ref.clone(),
+                    ip.address.clone(),
+                    ip.status.as_str().to_string(),
+                    ip.charge_type.clone().unwrap_or_default(),
+                    ip.bandwidth_mbps
+                        .map(|value| value.to_string())
+                        .unwrap_or_default(),
+                    ip.cloud_account.clone().unwrap_or_default(),
+                    binding
+                        .map(|b| b.target_kind.as_str().to_string())
+                        .unwrap_or_default(),
+                    binding
+                        .and_then(|b| b.host_id)
+                        .map(|id| id.to_string())
+                        .unwrap_or_default(),
+                    binding
+                        .and_then(|b| b.external_target_ref.clone())
+                        .unwrap_or_default(),
+                    binding
+                        .and_then(|b| b.bound_since)
+                        .map(|at| at.to_rfc3339())
+                        .unwrap_or_default(),
+                    ip.created_at.to_rfc3339(),
+                    ip.last_inventory_at.to_rfc3339(),
+                    ip.stale_at.map(|at| at.to_rfc3339()).unwrap_or_default(),
+                    ip.miss_count.to_string(),
+                    ip.ingest_scope.clone().unwrap_or_default(),
+                ],
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn list_elastic_ips(
+        &self,
+        tenant_id: TenantId,
+        page: Page,
+    ) -> StorageResult<Vec<ElasticIp>> {
+        let rows = self
+            .executor
+            .query_rows_async(
+                sql::LIST_ELASTIC_IPS,
+                &[
+                    tenant_id.0.to_string(),
+                    page.limit.to_string(),
+                    page.offset.to_string(),
+                ],
+            )
+            .await?;
+        rows.into_iter()
+            .map(|row| decode_elastic_ip(&row))
             .collect()
     }
 

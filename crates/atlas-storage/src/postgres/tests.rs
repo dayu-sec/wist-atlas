@@ -1,3 +1,4 @@
+use atlas_domain::ElasticIp;
 use chrono::Utc;
 
 use super::{sql, *};
@@ -997,6 +998,168 @@ fn real_postgres_host_upsert_keeps_one_row_per_identity() {
             .await
             .expect("list hosts");
         assert_eq!(rows.len(), 1, "同一次身份不能变成两行");
+
+        executor
+            .exec_batch_async(&format!("DROP SCHEMA {schema} CASCADE"))
+            .await
+            .ok();
+    });
+}
+
+#[test]
+fn elastic_ip_round_trips_with_its_binding() {
+    // EIP 是独立资产：地址 ID 是身份，绑定是快照态（解绑必须能把绑定额清空）。
+    let store = PostgresTopologyStore::new(MemoryPostgresExecutor::default());
+    let tenant_id = TenantId(Uuid::new_v4());
+    let now = Utc::now();
+    let host_id = Uuid::new_v4();
+    let mut ip = ElasticIp {
+        elastic_ip_id: Uuid::new_v4(),
+        tenant_id,
+        environment_id: None,
+        external_ref: "eip-1".to_string(),
+        address: "203.0.113.10".to_string(),
+        status: atlas_domain::ElasticIpStatus::Bound,
+        charge_type: Some("TRAFFIC_POSTPAID_BY_HOUR".to_string()),
+        bandwidth_mbps: Some(10),
+        cloud_account: Some("tencent:1300000000".to_string()),
+        binding: Some(atlas_domain::ElasticIpBinding {
+            target_kind: atlas_domain::ElasticIpTarget::Host,
+            host_id: Some(host_id),
+            external_target_ref: Some("ins-1".to_string()),
+            bound_since: Some(now),
+        }),
+        created_at: now,
+        last_inventory_at: now,
+        stale_at: None,
+        miss_count: 0,
+        ingest_scope: Some("atlas.in.inventory.v1:wist-harvest:harvest-1::".to_string()),
+    };
+    CatalogStore::upsert_elastic_ip(&store, &ip).unwrap();
+
+    let stored = CatalogStore::list_elastic_ips(&store, tenant_id, Page::default())
+        .unwrap()
+        .pop()
+        .expect("eip row");
+    assert_eq!(stored.address, "203.0.113.10");
+    assert_eq!(stored.status, atlas_domain::ElasticIpStatus::Bound);
+    assert_eq!(stored.bandwidth_mbps, Some(10));
+    assert_eq!(
+        stored.cloud_account.as_deref(),
+        Some("tencent:1300000000"),
+        "读路径必须带回账号键，否则退役目标永远是空的"
+    );
+    let binding = stored.binding.expect("binding");
+    assert_eq!(binding.host_id, Some(host_id));
+    assert_eq!(binding.external_target_ref.as_deref(), Some("ins-1"));
+
+    // 解绑：绑定额要能被清空（SQL 里这几个字段刻意不用 COALESCE）。
+    ip.status = atlas_domain::ElasticIpStatus::Unbound;
+    ip.binding = None;
+    CatalogStore::upsert_elastic_ip(&store, &ip).unwrap();
+    let stored = CatalogStore::list_elastic_ips(&store, tenant_id, Page::default())
+        .unwrap()
+        .pop()
+        .expect("eip row");
+    assert_eq!(stored.status, atlas_domain::ElasticIpStatus::Unbound);
+    assert!(stored.binding.is_none());
+}
+
+/// 真库上的 EIP 往返：验证 0010 迁移、18 个参数位次、绑定清空、唯一约束。
+#[test]
+#[ignore = "需要真 PostgreSQL；设 WIST_ATLAS_TEST_DATABASE_URL 后加 --ignored"]
+fn real_postgres_elastic_ip_round_trip() {
+    let Ok(url) =
+        std::env::var("WIST_ATLAS_TEST_DATABASE_URL").or_else(|_| std::env::var("DATABASE_URL"))
+    else {
+        eprintln!("skip: WIST_ATLAS_TEST_DATABASE_URL / DATABASE_URL 未设置");
+        return;
+    };
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+
+    runtime.block_on(async move {
+        let executor = LivePostgresExecutor::new(url)
+            .await
+            .expect("connect postgres");
+        let schema = format!(
+            "atlas_probe_{}",
+            Uuid::new_v4().to_string().replace('-', "")
+        );
+        executor
+            .exec_batch_async(&format!("CREATE SCHEMA {schema}"))
+            .await
+            .expect("create schema");
+        executor
+            .exec_batch_async(&format!("SET search_path TO {schema}"))
+            .await
+            .expect("set search_path");
+
+        let store = PostgresTopologyStore::new(executor.clone());
+        store.run_migrations_async().await.expect("migrations");
+
+        let tenant_id = TenantId(Uuid::new_v4());
+        let now = Utc::now();
+        let host_id = Uuid::new_v4();
+        let ip = ElasticIp {
+            elastic_ip_id: Uuid::new_v4(),
+            tenant_id,
+            environment_id: None,
+            external_ref: "eip-1".to_string(),
+            address: "203.0.113.10".to_string(),
+            status: atlas_domain::ElasticIpStatus::Bound,
+            charge_type: Some("TRAFFIC_POSTPAID_BY_HOUR".to_string()),
+            bandwidth_mbps: Some(10),
+            cloud_account: Some("tencent:1300000000".to_string()),
+            binding: Some(atlas_domain::ElasticIpBinding {
+                target_kind: atlas_domain::ElasticIpTarget::Host,
+                host_id: Some(host_id),
+                external_target_ref: Some("ins-1".to_string()),
+                bound_since: Some(now),
+            }),
+            created_at: now,
+            last_inventory_at: now,
+            stale_at: None,
+            miss_count: 0,
+            ingest_scope: Some("atlas.in.inventory.v1:wist-harvest:harvest-1::".to_string()),
+        };
+        AsyncCatalogStore::upsert_elastic_ip(&store, &ip)
+            .await
+            .expect("insert eip");
+
+        let stored = AsyncCatalogStore::list_elastic_ips(&store, tenant_id, Page::default())
+            .await
+            .expect("list eips")
+            .pop()
+            .expect("eip row");
+        assert_eq!(stored.address, "203.0.113.10");
+        assert_eq!(stored.status, atlas_domain::ElasticIpStatus::Bound);
+        assert_eq!(stored.bandwidth_mbps, Some(10));
+        assert_eq!(stored.cloud_account.as_deref(), Some("tencent:1300000000"));
+        let binding = stored.binding.as_ref().expect("binding");
+        assert_eq!(binding.host_id, Some(host_id));
+        assert_eq!(binding.external_target_ref.as_deref(), Some("ins-1"));
+
+        // 解绑：`bound_*` 刻意不用 COALESCE，必须能被清空。
+        let mut unbound = stored;
+        unbound.status = atlas_domain::ElasticIpStatus::Unbound;
+        unbound.binding = None;
+        AsyncCatalogStore::upsert_elastic_ip(&store, &unbound)
+            .await
+            .expect("update eip");
+        let stored = AsyncCatalogStore::list_elastic_ips(&store, tenant_id, Page::default())
+            .await
+            .expect("list eips")
+            .pop()
+            .expect("eip row");
+        assert!(stored.binding.is_none(), "解绑后绑定额必须清空");
+        assert_eq!(
+            stored.charge_type.as_deref(),
+            Some("TRAFFIC_POSTPAID_BY_HOUR")
+        );
 
         executor
             .exec_batch_async(&format!("DROP SCHEMA {schema} CASCADE"))

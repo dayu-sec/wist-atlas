@@ -21,6 +21,33 @@ pub struct BusinessCatalogCandidate {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ElasticIpCandidate {
+    pub tenant_id: TenantId,
+    pub environment_id: Option<EnvironmentId>,
+    pub source_kind: SourceKind,
+    /// 云侧地址 ID（腾讯云 `AddressId`）。**重新绑定时不变**，是稳定键。
+    pub external_ref: String,
+    /// 地址本身。
+    pub address: String,
+    /// 云侧原始状态（`BIND` / `UNBIND` …），归一化在物料化层做。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub charge_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bandwidth_mbps: Option<i64>,
+    /// 账号归属（与主机同一个键）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cloud_account: Option<String>,
+    /// 当前绑定的目标（`InstanceId`）。没绑就是 `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bound_instance_ref: Option<String>,
+    /// 目标类型（`CVM` / `NAT` / `CLB` …）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bound_instance_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HostCandidate {
     pub tenant_id: TenantId,
     pub environment_id: Option<EnvironmentId>,
