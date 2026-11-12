@@ -115,6 +115,9 @@ struct HostRow {
     ip: Option<String>,
     #[serde(default)]
     arch: Option<String>,
+    /// 所属子网 ID（兼容字段名）。
+    #[serde(default)]
+    subvpcid: String,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -147,6 +150,9 @@ struct NetRow {
     asset_name: String,
     #[serde(default)]
     cidr: Option<String>,
+    /// 子网所属 VPC（兼容字段名 `parent_source_asset_id`）。
+    #[serde(default)]
+    parent_source_asset_id: String,
 }
 
 /// 一行 sink 记录 → `atlas.in.inventory.v1` 信封（`Value` 形态，调用方再转类型）。
@@ -246,6 +252,9 @@ pub fn envelope_from_sink_line(
                 "cloud_account": account,
                 "os_name": host.os_name,
                 "ip": host.ip,
+                // 私网 IP 与所属子网：拓扑里「这台机在哪个子网」靠这两个。
+                "ip_addr": host.ip,
+                "subnet_external_ref": host.subvpcid,
                 "arch": host.arch,
             })
         })
@@ -274,13 +283,22 @@ pub fn envelope_from_sink_line(
         })
         .collect();
 
-    let mut segments: Vec<Value> = Vec::new();
-    for row in snapshot
+    // VPC 是**地址空间**（域），不是网段：塞进 network_segments 会只能靠 CIDR 猜归属。
+    let domains: Vec<Value> = snapshot
         .assets
         .vpcs
         .iter()
-        .chain(snapshot.assets.subnets.iter())
-    {
+        .filter(|row| !row.source_asset_id.trim().is_empty())
+        .map(|row| {
+            json!({
+                "external_ref": row.source_asset_id,
+                "name": row.asset_name,
+            })
+        })
+        .collect();
+
+    let mut segments: Vec<Value> = Vec::new();
+    for row in &snapshot.assets.subnets {
         // 抽取器要求 `cidr` 或 `ip_addr` 至少有一个，两者都空的行会被整批打回。
         let Some(cidr) = row.cidr.as_deref().map(str::trim).filter(|c| !c.is_empty()) else {
             continue;
@@ -290,15 +308,17 @@ pub fn envelope_from_sink_line(
         } else {
             row.asset_name.as_str()
         };
+        let parent = row.parent_source_asset_id.trim();
         segments.push(json!({
             "segment_name": name,
             "cidr": cidr,
-            // 云侧网络 ID：后续做 VPC→NetworkDomain 时要用。
+            // 子网 ID 是段的稳定键；所属 VPC ID 让它稳定挂进对应的域。
             "external_ref": row.source_asset_id,
+            "parent_external_ref": if parent.is_empty() { Value::Null } else { json!(parent) },
         }));
     }
 
-    if hosts.is_empty() && segments.is_empty() && elastic_ips.is_empty() {
+    if hosts.is_empty() && domains.is_empty() && segments.is_empty() && elastic_ips.is_empty() {
         return Err("inventory snapshot carries neither hosts nor network segments".to_string());
     }
 
@@ -321,6 +341,7 @@ pub fn envelope_from_sink_line(
         },
         "payload": {
             "hosts": hosts,
+            "network_domains": domains,
             // 键必须在：`reported` 决定能不能拿「没有它」去退役 EIP。
             // 采集器把 EIP 关掉时这里是空数组，下游据此跳过退役比对。
             "elastic_ips": elastic_ips,
@@ -369,12 +390,13 @@ mod tests {
             "source_code": "tencent-cloud-prod",
             "assets": {
                 "CLOUD_HOST": [
-                    {"source_asset_id":"ins-1","asset_name":"order-api-01","os_name":"Ubuntu 22.04 LTS","ip":"10.0.1.10","arch":null},
+                    {"source_asset_id":"ins-1","asset_name":"order-api-01","os_name":"Ubuntu 22.04 LTS","ip":"10.0.1.10","arch":null,"subvpcid":"subnet-1"},
                     {"source_asset_id":"ins-2","asset_name":"","host_id":"ins-2","os_name":null}
                 ],
                 "VPC": [{"source_asset_id":"vpc-1","asset_name":"prod-vpc","cidr":"10.0.0.0/16"}],
                 "SUB_NET": [
-                    {"source_asset_id":"subnet-1","asset_name":"prod-a","cidr":"10.0.1.0/24"},
+                    {"source_asset_id":"subnet-1","asset_name":"prod-a","cidr":"10.0.1.0/24",
+                     "parent_source_asset_id":"vpc-1"},
                     {"source_asset_id":"subnet-2","asset_name":"无网段","cidr":""}
                 ]
             }
@@ -399,10 +421,23 @@ mod tests {
         // 名称为空时回退 host_id —— 不能送一个空 hostname（抽取器会拒）
         assert_eq!(hosts[1]["host_name"], "ins-2");
 
+        // VPC 是地址空间（域），子网才是网段，两者分开送。
+        let domains = value["payload"]["network_domains"].as_array().unwrap();
+        assert_eq!(domains.len(), 1, "一个 VPC 一个域");
+        assert_eq!(domains[0]["external_ref"], "vpc-1");
+        assert_eq!(domains[0]["name"], "prod-vpc");
+
         let segments = value["payload"]["network_segments"].as_array().unwrap();
-        assert_eq!(segments.len(), 2, "cidr 为空的段要丢掉，否则整批被拒");
-        assert_eq!(segments[0]["cidr"], "10.0.0.0/16");
-        assert_eq!(segments[1]["cidr"], "10.0.1.0/24");
+        assert_eq!(segments.len(), 1, "cidr 为空的段要丢掉，否则整批被拒");
+        assert_eq!(segments[0]["cidr"], "10.0.1.0/24");
+        assert_eq!(
+            segments[0]["external_ref"], "subnet-1",
+            "子网 ID 是段的稳定键"
+        );
+        assert_eq!(
+            segments[0]["parent_external_ref"], "vpc-1",
+            "子网要能稳定挂进对应的域"
+        );
     }
 
     #[test]

@@ -117,10 +117,12 @@ LIMIT NULLIF($2, '')::int4 OFFSET NULLIF($3, '')::int4
 
 pub const UPSERT_NETWORK_DOMAIN: &str = r#"
 INSERT INTO network_domain (
-    network_domain_id, tenant_id, environment_id, name, kind, description, created_at, updated_at
+    network_domain_id, tenant_id, environment_id, name, kind, description, created_at, updated_at,
+    external_ref
 ) VALUES (
     NULLIF($1, '')::uuid, NULLIF($2, '')::uuid, NULLIF($3, '')::uuid, $4, $5,
-    NULLIF($6, ''), NULLIF($7, '')::timestamptz, NULLIF($8, '')::timestamptz
+    NULLIF($6, ''), NULLIF($7, '')::timestamptz, NULLIF($8, '')::timestamptz,
+    NULLIF($9, '')
 )
 ON CONFLICT (network_domain_id) DO UPDATE SET
     tenant_id = EXCLUDED.tenant_id,
@@ -128,17 +130,19 @@ ON CONFLICT (network_domain_id) DO UPDATE SET
     name = EXCLUDED.name,
     kind = EXCLUDED.kind,
     description = EXCLUDED.description,
-    updated_at = EXCLUDED.updated_at
+    updated_at = EXCLUDED.updated_at,
+    external_ref = COALESCE(EXCLUDED.external_ref, network_domain.external_ref)
 "#;
 
 pub const UPSERT_NETWORK_SEGMENT: &str = r#"
 INSERT INTO network_segment (
     network_segment_id, tenant_id, network_domain_id, environment_id, name, cidr, gateway_ip,
-    address_family, created_at, updated_at
+    address_family, created_at, updated_at, external_ref
 ) VALUES (
     NULLIF($1, '')::uuid, NULLIF($2, '')::uuid, NULLIF($3, '')::uuid,
     NULLIF($4, '')::uuid, $5, NULLIF($6, ''), NULLIF($7, ''), $8,
-    NULLIF($9, '')::timestamptz, NULLIF($10, '')::timestamptz
+    NULLIF($9, '')::timestamptz, NULLIF($10, '')::timestamptz,
+    NULLIF($11, '')
 )
 ON CONFLICT (network_segment_id) DO UPDATE SET
     tenant_id = EXCLUDED.tenant_id,
@@ -148,19 +152,20 @@ ON CONFLICT (network_segment_id) DO UPDATE SET
     cidr = EXCLUDED.cidr,
     gateway_ip = EXCLUDED.gateway_ip,
     address_family = EXCLUDED.address_family,
-    updated_at = EXCLUDED.updated_at
+    updated_at = EXCLUDED.updated_at,
+    external_ref = COALESCE(EXCLUDED.external_ref, network_segment.external_ref)
 "#;
 
 pub const GET_NETWORK_SEGMENT: &str = r#"
 SELECT network_segment_id, tenant_id, network_domain_id, environment_id, name, cidr, gateway_ip,
-       address_family, created_at, updated_at
+       address_family, created_at, updated_at, external_ref
 FROM network_segment
 WHERE network_segment_id = NULLIF($1, '')::uuid
 "#;
 
 pub const LIST_NETWORK_SEGMENTS: &str = r#"
 SELECT network_segment_id, tenant_id, network_domain_id, environment_id, name, cidr, gateway_ip,
-       address_family, created_at, updated_at
+       address_family, created_at, updated_at, external_ref
 FROM network_segment
 WHERE tenant_id = NULLIF($1, '')::uuid
 ORDER BY name ASC, network_segment_id ASC

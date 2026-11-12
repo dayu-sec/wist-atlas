@@ -266,6 +266,9 @@ pub struct NetworkDomain {
     pub network_domain_id: Uuid,
     pub tenant_id: TenantId,
     pub environment_id: Option<EnvironmentId>,
+    /// 云侧 ID（`VpcId`）。**名字不是身份**：腾讯云每个地域都送建 `Default-VPC`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_ref: Option<String>,
     pub name: String,
     pub kind: NetworkDomainKind,
     pub description: Option<String>,
@@ -279,6 +282,9 @@ pub struct NetworkSegment {
     pub tenant_id: TenantId,
     pub network_domain_id: Option<Uuid>,
     pub environment_id: Option<EnvironmentId>,
+    /// 云侧 ID（`SubnetId`）。子网名在不同 VPC 之间可以重复。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_ref: Option<String>,
     pub name: String,
     pub cidr: Option<String>,
     pub gateway_ip: Option<String>,

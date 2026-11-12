@@ -192,6 +192,9 @@ pub(super) fn extract_network_segments_from_interfaces(
                 host_name: row_host_ref.clone().or_else(|| host_name.clone()),
                 machine_id: row_machine_id.clone().or_else(|| machine_id.clone()),
                 iface_name: iface_name.clone(),
+                // 端侧不认识云侧的 VPC/Subnet ID。
+                external_ref: None,
+                parent_external_ref: None,
             });
         }
     }

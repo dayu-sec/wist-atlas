@@ -15,7 +15,10 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use super::{find_service_by_ref, find_service_by_ref_async, stable_uuid};
-use crate::pipeline::{InMemoryCatalog, materialize_host_network, resolve_host_candidate};
+use crate::pipeline::{
+    InMemoryCatalog, host_net_assoc_for, materialize_host_network, resolve_host_candidate,
+    resolve_network_candidate, upsert_segment,
+};
 
 /// 一次主机/网段物化的结果。
 ///
@@ -27,6 +30,57 @@ pub(crate) struct MaterializedHosts {
     pub host_count: usize,
     pub network_count: usize,
     pub assoc_count: usize,
+}
+
+/// 网络域（云侧 VPC）落地。**必须在网段之前**：段靠域的稳定 ID 挂进去。
+pub(crate) fn materialize_network_domains<S>(
+    store: &S,
+    catalog: &mut InMemoryCatalog,
+    candidates: Vec<atlas_domain::NetworkDomainCandidate>,
+    now: DateTime<Utc>,
+) -> StorageResult<usize>
+where
+    S: CatalogStore,
+{
+    let count = candidates.len();
+    for candidate in candidates {
+        crate::pipeline::ensure_cloud_network_domain(
+            catalog,
+            candidate.tenant_id,
+            &candidate.external_ref,
+            candidate.name.as_deref(),
+            now,
+        );
+    }
+    for domain in &catalog.network_domains {
+        store.upsert_network_domain(domain)?;
+    }
+    Ok(count)
+}
+
+pub(crate) async fn materialize_network_domains_async<S>(
+    store: &S,
+    catalog: &mut InMemoryCatalog,
+    candidates: Vec<atlas_domain::NetworkDomainCandidate>,
+    now: DateTime<Utc>,
+) -> StorageResult<usize>
+where
+    S: AsyncCatalogStore,
+{
+    let count = candidates.len();
+    for candidate in candidates {
+        crate::pipeline::ensure_cloud_network_domain(
+            catalog,
+            candidate.tenant_id,
+            &candidate.external_ref,
+            candidate.name.as_deref(),
+            now,
+        );
+    }
+    for domain in &catalog.network_domains {
+        atlas_storage::AsyncCatalogStore::upsert_network_domain(store, domain).await?;
+    }
+    Ok(count)
 }
 
 pub(crate) fn materialize_candidates<S>(
@@ -43,28 +97,39 @@ where
     let mut result = MaterializedHosts::default();
 
     for network_candidate in networks {
-        let host_candidate =
-            resolve_host_candidate_for_network(&hosts, catalog, &network_candidate);
-        if let Some(host_candidate) = host_candidate {
-            let materialized =
-                materialize_host_network(catalog, &host_candidate, &network_candidate, now);
-
-            for domain in &catalog.network_domains {
-                store.upsert_network_domain(domain)?;
-            }
-            let mut host = materialized.host;
-            mark_seen(&mut host, &host_candidate, scope, now);
-            upsert_catalog_host(catalog, host.clone());
-            store.upsert_host(&host)?;
-            store.upsert_network_segment(&materialized.segment)?;
-            if let Some(assoc) = &materialized.assoc {
-                store.upsert_host_net_assoc(assoc)?;
-                result.assoc_count += 1;
-            }
-            result.host_ids.insert(host.host_id);
-            result.host_count += 1;
-            result.network_count += 1;
+        // 段与域**独立落地**：云侧的 VPC / 子网没有 machine_id / host_name，
+        // 解析不到主机。以前这种情况整段被跳过，等于云上网络结构一行都没入库。
+        let network_resolution = resolve_network_candidate(catalog, &network_candidate, now);
+        upsert_segment(catalog, network_resolution.segment.clone());
+        for domain in &catalog.network_domains {
+            store.upsert_network_domain(domain)?;
         }
+        store.upsert_network_segment(&network_resolution.segment)?;
+        result.network_count += 1;
+
+        // 有地址、且能对上主机，才建「主机 ↔ 网段」关联。
+        if network_candidate.ip_addr.is_none() {
+            continue;
+        }
+        let Some(host_candidate) =
+            resolve_host_candidate_for_network(&hosts, catalog, &network_candidate)
+        else {
+            continue;
+        };
+
+        let materialized =
+            materialize_host_network(catalog, &host_candidate, &network_candidate, now);
+        let mut host = materialized.host;
+        mark_seen(&mut host, &host_candidate, scope, now);
+        upsert_catalog_host(catalog, host.clone());
+        store.upsert_host(&host)?;
+        store.upsert_network_segment(&materialized.segment)?;
+        if let Some(assoc) = &materialized.assoc {
+            store.upsert_host_net_assoc(assoc)?;
+            result.assoc_count += 1;
+        }
+        result.host_ids.insert(host.host_id);
+        result.host_count += 1;
     }
 
     for host_candidate in hosts {
@@ -77,6 +142,12 @@ where
         mark_seen(&mut host, &host_candidate, scope, now);
         upsert_catalog_host(catalog, host.clone());
         store.upsert_host(&host)?;
+        // 云侧主机带了私网 IP：把「它在哪个子网」建成关联。
+        // 优先用 SubnetId，没有就按 CIDR 包含（最长前缀）兜底。
+        if let Some(assoc) = host_net_assoc_for(catalog, &host_candidate, host.host_id, now) {
+            store.upsert_host_net_assoc(&assoc)?;
+            result.assoc_count += 1;
+        }
         result.host_ids.insert(host.host_id);
         result.host_count += 1;
     }
@@ -98,29 +169,39 @@ where
     let mut result = MaterializedHosts::default();
 
     for network_candidate in networks {
-        let host_candidate =
-            resolve_host_candidate_for_network(&hosts, catalog, &network_candidate);
-        if let Some(host_candidate) = host_candidate {
-            let materialized =
-                materialize_host_network(catalog, &host_candidate, &network_candidate, now);
-
-            for domain in &catalog.network_domains {
-                atlas_storage::AsyncCatalogStore::upsert_network_domain(store, domain).await?;
-            }
-            let mut host = materialized.host;
-            mark_seen(&mut host, &host_candidate, scope, now);
-            upsert_catalog_host(catalog, host.clone());
-            atlas_storage::AsyncCatalogStore::upsert_host(store, &host).await?;
-            atlas_storage::AsyncCatalogStore::upsert_network_segment(store, &materialized.segment)
-                .await?;
-            if let Some(assoc) = &materialized.assoc {
-                atlas_storage::AsyncRuntimeStore::upsert_host_net_assoc(store, assoc).await?;
-                result.assoc_count += 1;
-            }
-            result.host_ids.insert(host.host_id);
-            result.host_count += 1;
-            result.network_count += 1;
+        let network_resolution = resolve_network_candidate(catalog, &network_candidate, now);
+        upsert_segment(catalog, network_resolution.segment.clone());
+        for domain in &catalog.network_domains {
+            atlas_storage::AsyncCatalogStore::upsert_network_domain(store, domain).await?;
         }
+        atlas_storage::AsyncCatalogStore::upsert_network_segment(
+            store,
+            &network_resolution.segment,
+        )
+        .await?;
+        result.network_count += 1;
+
+        if network_candidate.ip_addr.is_none() {
+            continue;
+        }
+        let Some(host_candidate) =
+            resolve_host_candidate_for_network(&hosts, catalog, &network_candidate)
+        else {
+            continue;
+        };
+
+        let materialized =
+            materialize_host_network(catalog, &host_candidate, &network_candidate, now);
+        let mut host = materialized.host;
+        mark_seen(&mut host, &host_candidate, scope, now);
+        upsert_catalog_host(catalog, host.clone());
+        atlas_storage::AsyncCatalogStore::upsert_host(store, &host).await?;
+        if let Some(assoc) = &materialized.assoc {
+            atlas_storage::AsyncRuntimeStore::upsert_host_net_assoc(store, assoc).await?;
+            result.assoc_count += 1;
+        }
+        result.host_ids.insert(host.host_id);
+        result.host_count += 1;
     }
 
     for host_candidate in hosts {
@@ -133,6 +214,10 @@ where
         mark_seen(&mut host, &host_candidate, scope, now);
         upsert_catalog_host(catalog, host.clone());
         atlas_storage::AsyncCatalogStore::upsert_host(store, &host).await?;
+        if let Some(assoc) = host_net_assoc_for(catalog, &host_candidate, host.host_id, now) {
+            atlas_storage::AsyncRuntimeStore::upsert_host_net_assoc(store, &assoc).await?;
+            result.assoc_count += 1;
+        }
         result.host_ids.insert(host.host_id);
         result.host_count += 1;
     }
@@ -170,6 +255,8 @@ pub(crate) fn resolve_host_candidate_for_network(
                 os_name: host.os_name.clone(),
                 os_version: host.os_version.clone(),
                 arch: host.arch.clone(),
+                ip_addr: None,
+                subnet_external_ref: None,
             });
         }
     }
@@ -196,6 +283,8 @@ pub(crate) fn resolve_host_candidate_for_network(
                 os_name: host.os_name.clone(),
                 os_version: host.os_version.clone(),
                 arch: host.arch.clone(),
+                ip_addr: None,
+                subnet_external_ref: None,
             });
         }
     }
@@ -225,6 +314,8 @@ pub(crate) fn resolve_host_candidate_for_process(
                 os_name: host.os_name.clone(),
                 os_version: host.os_version.clone(),
                 arch: host.arch.clone(),
+                ip_addr: None,
+                subnet_external_ref: None,
             });
         }
     }
@@ -247,6 +338,8 @@ pub(crate) fn resolve_host_candidate_for_process(
                 os_name: host.os_name.clone(),
                 os_version: host.os_version.clone(),
                 arch: host.arch.clone(),
+                ip_addr: None,
+                subnet_external_ref: None,
             });
         }
     }

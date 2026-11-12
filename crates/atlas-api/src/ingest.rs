@@ -1,8 +1,8 @@
 use atlas_domain::{
     BusinessCatalogCandidate, ContainerRuntimeCandidate, ElasticIpCandidate, HostCandidate,
-    HostTelemetryCandidate, IngestEnvelope, NetworkSegmentCandidate, ProcessRuntimeCandidate,
-    ProcessTelemetryCandidate, ResponsibilityAssignmentCandidate, ServiceEndpointCandidate,
-    SubjectType,
+    HostTelemetryCandidate, IngestEnvelope, NetworkDomainCandidate, NetworkSegmentCandidate,
+    ProcessRuntimeCandidate, ProcessTelemetryCandidate, ResponsibilityAssignmentCandidate,
+    ServiceEndpointCandidate, SubjectType,
 };
 use serde_json::Value;
 
@@ -103,6 +103,10 @@ fn host_candidate_from_row(
             .or_else(|| os.and_then(|os| optional_string_lossy(os, "version"))),
         // `arch` 扁平写（`hosts[].arch`）为主；`host.arch` 是 agentd 属性名的源形式。
         arch: optional_string(row, "arch")?.or_else(|| optional_string_lossy(row, "host.arch")),
+        // 云侧私网 IP 与所属子网：拓扑里「这台机在哪个子网」靠的就是这两个。
+        ip_addr: optional_string(row, "ip_addr")?.or(optional_string(row, "ip")?),
+        subnet_external_ref: optional_string(row, "subnet_external_ref")?
+            .or(optional_string(row, "subnet_id")?),
     })
 }
 
@@ -142,6 +146,33 @@ pub fn extract_elastic_ip_candidates(envelope: &IngestEnvelope) -> ApiResult<Ext
         candidates,
         reported: true,
     })
+}
+
+/// 网络域（VPC）。**必须比网段先物料化**：段要靠它的 ID 挂到对应的域里。
+pub fn extract_network_domain_candidates(
+    envelope: &IngestEnvelope,
+) -> ApiResult<ExtractedNetworkDomains> {
+    let payload = object_payload(envelope)?;
+    let Some(rows) = optional_array(payload, "network_domains")? else {
+        return Ok(ExtractedNetworkDomains::default());
+    };
+
+    let mut candidates = Vec::with_capacity(rows.len());
+    for row in rows {
+        let row = row
+            .as_object()
+            .ok_or(invalid_field_type("network_domains[]"))?;
+        candidates.push(NetworkDomainCandidate {
+            tenant_id: envelope.tenant_id,
+            environment_id: envelope.environment_id,
+            source_kind: envelope.source_kind,
+            // VPC ID 是域的稳定键：改名不换身份。
+            external_ref: required_string_any(row, &["external_ref", "vpc_id"])?,
+            name: optional_string(row, "name")?.or(optional_string(row, "domain_name")?),
+        });
+    }
+
+    Ok(ExtractedNetworkDomains { candidates })
 }
 
 pub fn extract_network_segment_candidates(
@@ -196,6 +227,11 @@ pub fn extract_network_segment_candidates(
             host_name: optional_string(row, "host_name")?,
             machine_id: optional_string(row, "machine_id")?,
             iface_name: optional_string(row, "iface_name")?,
+            // 云侧才有这两个：子网 ID 与所属 VPC ID。
+            external_ref: optional_string(row, "external_ref")?
+                .or(optional_string(row, "subnet_id")?),
+            parent_external_ref: optional_string(row, "parent_external_ref")?
+                .or(optional_string(row, "vpc_id")?),
         });
     }
 
@@ -422,6 +458,8 @@ fn network_candidate_from_row(
         iface_name: optional_string(row, "iface_name")?
             .or_else(|| optional_string_lossy(row, "interface_name"))
             .or_else(|| optional_string_lossy(row, "name")),
+        external_ref: None,
+        parent_external_ref: None,
     })
 }
 

@@ -207,31 +207,14 @@ pub fn resolve_network_candidate(
     candidate: &NetworkSegmentCandidate,
     now: DateTime<Utc>,
 ) -> NetworkResolution {
-    if let Some(segment) = catalog.network_segments.iter().find(|segment| {
-        candidate
-            .cidr
-            .as_ref()
-            .zip(segment.cidr.as_ref())
-            .is_some_and(|(candidate_cidr, segment_cidr)| candidate_cidr == segment_cidr)
-    }) {
-        return NetworkResolution {
-            segment: segment.clone(),
-            resolution: ResolutionResult {
-                object_kind: ObjectKind::NetworkSegment,
-                status: ResolutionStatus::Matched,
-                matched_id: Some(segment.network_segment_id),
-                confidence: Confidence::High,
-                rule_name: "network_segment.cidr".to_string(),
-                matched_identifiers: vec![IdentifierMatch {
-                    key: "cidr".to_string(),
-                    value: segment.cidr.clone().unwrap_or_default(),
-                }],
-                conflicting_ids: Vec::new(),
-            },
-        };
-    }
+    // 归属先算：命中已有段时也要把归属刷新（VPC 换了就是换了）。
+    let domain_id = match candidate.parent_external_ref.as_deref() {
+        Some(vpc_ref) => {
+            ensure_cloud_network_domain(catalog, candidate.tenant_id, vpc_ref, None, now)
+        }
+        None => ensure_default_network_domain(catalog, candidate.tenant_id, now),
+    };
 
-    let domain_id = ensure_default_network_domain(catalog, candidate.tenant_id, now);
     let segment_name = candidate
         .segment_name
         .clone()
@@ -244,24 +227,93 @@ pub fn resolve_network_candidate(
         })
         .unwrap_or_else(|| "unresolved".to_string());
 
+    // 先按云侧 SubnetId 找（改名 / 改 CIDR 都不该分裂成两个段），再退回 CIDR。
+    let stable_id = candidate
+        .external_ref
+        .as_deref()
+        .map(|external_ref| segment_uuid(candidate.tenant_id, Some(external_ref), "", ""));
+    let matched = stable_id
+        .and_then(|id| {
+            catalog
+                .network_segments
+                .iter()
+                .find(|segment| segment.network_segment_id == id)
+        })
+        .map(|segment| (segment.clone(), "network_segment.external_ref"))
+        .or_else(|| {
+            catalog
+                .network_segments
+                .iter()
+                .find(|segment| {
+                    candidate
+                        .cidr
+                        .as_ref()
+                        .zip(segment.cidr.as_ref())
+                        .is_some_and(|(candidate_cidr, segment_cidr)| {
+                            candidate_cidr == segment_cidr
+                        })
+                })
+                .map(|segment| (segment.clone(), "network_segment.cidr"))
+        });
+
+    if let Some((existing, rule_name)) = matched {
+        // 命中不等于什么都不做：云侧对名称 / CIDR / 网关 / 归属是权威，
+        // 不刷新的话段会永远停在第一次被看到时的样子（改名、换 VPC 都进不来）。
+        let mut refreshed = existing.clone();
+        if let Some(name) = candidate
+            .segment_name
+            .as_ref()
+            .filter(|name| !name.trim().is_empty())
+        {
+            refreshed.name = name.clone();
+        }
+        if candidate.cidr.is_some() {
+            refreshed.cidr = candidate.cidr.clone();
+        }
+        if candidate.gateway_ip.is_some() {
+            refreshed.gateway_ip = candidate.gateway_ip.clone();
+        }
+        refreshed.network_domain_id = Some(domain_id);
+        if candidate.external_ref.is_some() {
+            refreshed.external_ref = candidate.external_ref.clone();
+        }
+        refreshed.updated_at = now;
+        upsert_segment(catalog, refreshed.clone());
+
+        let matched_id = refreshed.network_segment_id;
+        return NetworkResolution {
+            segment: refreshed,
+            resolution: ResolutionResult {
+                object_kind: ObjectKind::NetworkSegment,
+                status: ResolutionStatus::Matched,
+                matched_id: Some(matched_id),
+                confidence: Confidence::High,
+                rule_name: rule_name.to_string(),
+                matched_identifiers: collect_identifiers([
+                    ("cidr", existing.cidr.clone()),
+                    ("external_ref", candidate.external_ref.clone()),
+                ]),
+                conflicting_ids: Vec::new(),
+            },
+        };
+    }
+
     let segment = NetworkSegment {
-        network_segment_id: stable_uuid(
-            "network_segment",
-            &format!(
-                "{}:{}:{}",
-                candidate.tenant_id.0,
-                candidate
-                    .cidr
-                    .clone()
-                    .or_else(|| candidate.segment_name.clone())
-                    .or_else(|| candidate.ip_addr.clone())
-                    .unwrap_or_else(|| "unresolved".to_string()),
-                segment_name
-            ),
+        network_segment_id: segment_uuid(
+            candidate.tenant_id,
+            candidate.external_ref.as_deref(),
+            &candidate
+                .cidr
+                .clone()
+                .or_else(|| candidate.segment_name.clone())
+                .or_else(|| candidate.ip_addr.clone())
+                .unwrap_or_else(|| "unresolved".to_string()),
+            &segment_name,
         ),
         tenant_id: candidate.tenant_id,
         network_domain_id: Some(domain_id),
         environment_id: candidate.environment_id,
+        external_ref: candidate.external_ref.clone(),
         name: segment_name,
         cidr: candidate.cidr.clone(),
         gateway_ip: candidate.gateway_ip.clone(),
@@ -354,6 +406,63 @@ pub fn materialize_host_network(
     }
 }
 
+/// 云侧 VPC → `NetworkDomain`。身份是 **VpcId**（改名不换域）。
+///
+/// 为什么 VPC 不挂在 `default` 域下：域是「地址空间」，VPC 就是它的定义；
+/// 全塞进 default 会让「这台机在哪个网络里」这个问题永远只剩一个答案。
+pub(crate) fn ensure_cloud_network_domain(
+    catalog: &mut InMemoryCatalog,
+    tenant_id: TenantId,
+    external_ref: &str,
+    name: Option<&str>,
+    now: DateTime<Utc>,
+) -> Uuid {
+    let id = stable_uuid("network_domain", &format!("{}:{external_ref}", tenant_id.0));
+    if let Some(domain) = catalog
+        .network_domains
+        .iter()
+        .find(|domain| domain.network_domain_id == id)
+    {
+        return domain.network_domain_id;
+    }
+
+    catalog.network_domains.push(NetworkDomain {
+        network_domain_id: id,
+        tenant_id,
+        environment_id: None,
+        external_ref: Some(external_ref.to_string()),
+        name: name
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .unwrap_or(external_ref)
+            .to_string(),
+        kind: NetworkDomainKind::Vpc,
+        description: Some(format!("cloud vpc {external_ref}")),
+        created_at: now,
+        updated_at: now,
+    });
+    id
+}
+
+/// 段的稳定键：有云侧 `SubnetId` 就用它，没有就退回老的口径（端侧没有云 ID）。
+fn segment_uuid(
+    tenant_id: TenantId,
+    external_ref: Option<&str>,
+    fallback_key: &str,
+    segment_name: &str,
+) -> Uuid {
+    match external_ref {
+        Some(external_ref) => stable_uuid(
+            "network_segment",
+            &format!("{}:{external_ref}", tenant_id.0),
+        ),
+        None => stable_uuid(
+            "network_segment",
+            &format!("{}:{}:{}", tenant_id.0, fallback_key, segment_name),
+        ),
+    }
+}
+
 fn ensure_default_network_domain(
     catalog: &mut InMemoryCatalog,
     tenant_id: TenantId,
@@ -371,6 +480,7 @@ fn ensure_default_network_domain(
         network_domain_id: stable_uuid("network_domain", &format!("{}:default", tenant_id.0)),
         tenant_id,
         environment_id: None,
+        external_ref: None,
         name: "default".to_string(),
         kind: NetworkDomainKind::Unknown,
         description: Some("auto-created default network domain".to_string()),
@@ -380,6 +490,85 @@ fn ensure_default_network_domain(
     let id = domain.network_domain_id;
     catalog.network_domains.push(domain);
     id
+}
+
+/// `cidr` 是否包含 `ip`；是则返回前缀长度（最长前缀匹配用）。只处理 IPv4。
+///
+/// 为什么要它：云侧不一定给主机的 `SubnetId`（`subvpcid` 为空或没采），
+/// 但私网 IP 一定在某个子网的 CIDR 里。用包含关系兜底，比「主机没地址」强得多。
+pub(crate) fn cidr_contains(cidr: &str, ip: &str) -> Option<u8> {
+    use std::net::Ipv4Addr;
+    let (network, prefix) = cidr.trim().split_once('/')?;
+    let prefix: u8 = prefix.trim().parse().ok()?;
+    if prefix > 32 {
+        return None;
+    }
+    let network: Ipv4Addr = network.trim().parse().ok()?;
+    let ip: Ipv4Addr = ip.trim().parse().ok()?;
+    let mask = if prefix == 0 {
+        0
+    } else {
+        u32::MAX << (32 - prefix)
+    };
+    (u32::from(network) & mask == u32::from(ip) & mask).then_some(prefix)
+}
+
+/// 这台主机属于哪个网段：优先云侧的 `SubnetId`，否则按 CIDR 包含（最长前缀）兜底。
+pub(crate) fn find_segment_for_host(
+    catalog: &InMemoryCatalog,
+    candidate: &HostCandidate,
+) -> Option<Uuid> {
+    if let Some(subnet_ref) = candidate.subnet_external_ref.as_deref() {
+        let id = segment_uuid(candidate.tenant_id, Some(subnet_ref), "", "");
+        if catalog
+            .network_segments
+            .iter()
+            .any(|segment| segment.network_segment_id == id)
+        {
+            return Some(id);
+        }
+    }
+
+    let ip = candidate.ip_addr.as_deref()?;
+    catalog
+        .network_segments
+        .iter()
+        .filter(|segment| segment.tenant_id == candidate.tenant_id)
+        .filter_map(|segment| {
+            let cidr = segment.cidr.as_deref()?;
+            cidr_contains(cidr, ip).map(|prefix| (prefix, segment.network_segment_id))
+        })
+        // 最长前缀胜出：10.0.0.0/8 与 10.1.0.0/16 同时命中时，选后者。
+        .max_by_key(|(prefix, _)| *prefix)
+        .map(|(_, id)| id)
+}
+
+/// 主机 ↔ 网段的关联（带地址）。没有 `ip_addr` 就没有关联。
+pub(crate) fn host_net_assoc_for(
+    catalog: &InMemoryCatalog,
+    candidate: &HostCandidate,
+    host_id: Uuid,
+    now: DateTime<Utc>,
+) -> Option<HostNetAssoc> {
+    let ip_addr = candidate.ip_addr.as_deref()?;
+    let segment_id = find_segment_for_host(catalog, candidate)?;
+    Some(HostNetAssoc {
+        assoc_id: stable_uuid(
+            "host_net_assoc",
+            &format!("{host_id}:{segment_id}:{ip_addr}"),
+        ),
+        tenant_id: candidate.tenant_id,
+        host_id,
+        network_segment_id: segment_id,
+        ip_addr: ip_addr.to_string(),
+        iface_name: None,
+        validity: ValidityWindow {
+            valid_from: now,
+            valid_to: None,
+        },
+        created_at: now,
+        updated_at: now,
+    })
 }
 
 fn upsert_host(catalog: &mut InMemoryCatalog, host: HostInventory) {
@@ -394,7 +583,7 @@ fn upsert_host(catalog: &mut InMemoryCatalog, host: HostInventory) {
     }
 }
 
-fn upsert_segment(catalog: &mut InMemoryCatalog, segment: NetworkSegment) {
+pub(crate) fn upsert_segment(catalog: &mut InMemoryCatalog, segment: NetworkSegment) {
     if let Some(existing) = catalog
         .network_segments
         .iter_mut()
@@ -463,6 +652,8 @@ mod tests {
             os_name: Some("linux".to_string()),
             os_version: Some("6.8".to_string()),
             arch: Some("x86_64".to_string()),
+            ip_addr: None,
+            subnet_external_ref: None,
         }
     }
 
@@ -478,6 +669,8 @@ mod tests {
             host_name: Some("laptop-01".to_string()),
             machine_id: Some("machine-01".to_string()),
             iface_name: Some("wlan0".to_string()),
+            external_ref: None,
+            parent_external_ref: None,
         }
     }
 

@@ -410,6 +410,7 @@ pub(super) use governance::{
 pub(super) use host::{
     HOST_RETIRE_AFTER_COMPLETE_SNAPSHOTS, HostStaleSweep, MaterializedHosts, mark_stale_hosts,
     mark_stale_hosts_async, materialize_candidates, materialize_candidates_async,
+    materialize_network_domains, materialize_network_domains_async,
 };
 pub(super) use process::{
     ProcessSweep, StaleSweep, mark_stale_processes, mark_stale_processes_async,

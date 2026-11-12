@@ -1,14 +1,20 @@
 use atlas_domain::{
     BusinessCatalogCandidate, ContainerRuntimeCandidate, ElasticIpCandidate, HostCandidate,
-    HostTelemetryCandidate, NetworkSegmentCandidate, ProcessRuntimeCandidate,
-    ProcessTelemetryCandidate, ResponsibilityAssignmentCandidate, ServiceEndpointCandidate,
-    SubjectCandidate,
+    HostTelemetryCandidate, NetworkDomainCandidate, NetworkSegmentCandidate,
+    ProcessRuntimeCandidate, ProcessTelemetryCandidate, ResponsibilityAssignmentCandidate,
+    ServiceEndpointCandidate, SubjectCandidate,
 };
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExtractedBusinessCatalog {
     pub candidates: Vec<BusinessCatalogCandidate>,
+}
+
+/// 网络域（云侧 VPC / 机房 LAN）提取结果。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExtractedNetworkDomains {
+    pub candidates: Vec<NetworkDomainCandidate>,
 }
 
 /// EIP 提取结果。`reported` 决定能不能做退役比对：payload 里根本没有

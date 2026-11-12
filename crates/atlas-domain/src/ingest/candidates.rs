@@ -65,6 +65,13 @@ pub struct HostCandidate {
     pub os_name: Option<String>,
     pub os_version: Option<String>,
     pub arch: Option<String>,
+    /// 主网卡的私网地址（云 API 的 `PrivateIpAddresses[0]`）。
+    /// 有了它才能在拓扑里回答「这台机在哪个子网、私网 IP 是多少」。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ip_addr: Option<String>,
+    /// 云侧所属子网 ID。给了就优先用它定位子网，否则按 CIDR 包含匹配。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subnet_external_ref: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -86,6 +93,21 @@ pub struct ProcessRuntimeCandidate {
     pub observed_at: Option<ObservedAt>,
 }
 
+/// 一个网络域候选（云侧 VPC / 机房的 LAN）。
+///
+/// 为什么要有它：VPC 是**域名空间**，不是网段。以前把 VPC 也塞进
+/// `network_segments[]`，只能靠 CIDR 猜归属；有了显式的域，子网才能稳定挂进去。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NetworkDomainCandidate {
+    pub tenant_id: TenantId,
+    pub environment_id: Option<EnvironmentId>,
+    pub source_kind: SourceKind,
+    /// 云侧 VPC ID：域的**稳定键**（改名不换身份）。
+    pub external_ref: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NetworkSegmentCandidate {
     pub tenant_id: TenantId,
@@ -98,6 +120,12 @@ pub struct NetworkSegmentCandidate {
     pub host_name: Option<String>,
     pub machine_id: Option<String>,
     pub iface_name: Option<String>,
+    /// 云侧子网 ID：段的**稳定键**（`SubnetId`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_ref: Option<String>,
+    /// 所属域的云侧 ID（`VpcId`）。有它就能稳定挂进对应的 `NetworkDomain`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_external_ref: Option<String>,
 }
 
 /// 一个观测到的监听地址（模型里的 `InstEp` 候选）。

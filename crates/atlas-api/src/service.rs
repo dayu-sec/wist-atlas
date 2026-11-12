@@ -15,9 +15,10 @@ use crate::error::ApiResult;
 use crate::ingest::{
     IngestJobRecord, extract_business_catalog_candidates, extract_container_runtime_candidates,
     extract_elastic_ip_candidates, extract_host_candidates, extract_host_telemetry_candidates,
-    extract_network_segment_candidates, extract_process_runtime_candidates,
-    extract_process_telemetry_candidates, extract_responsibility_assignment_candidates,
-    extract_service_endpoint_candidates, extract_subject_candidates,
+    extract_network_domain_candidates, extract_network_segment_candidates,
+    extract_process_runtime_candidates, extract_process_telemetry_candidates,
+    extract_responsibility_assignment_candidates, extract_service_endpoint_candidates,
+    extract_subject_candidates,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -74,6 +75,7 @@ where
         let record = validate_and_record(&self.store, &envelope)?;
 
         let hosts = extract_host_candidates(&envelope)?.candidates;
+        let network_domains = extract_network_domain_candidates(&envelope)?.candidates;
         let networks = extract_network_segment_candidates(&envelope)?.candidates;
         let elastic_ips = extract_elastic_ip_candidates(&envelope)?;
         let processes = extract_process_runtime_candidates(&envelope)?.candidates;
@@ -101,6 +103,9 @@ where
             .map(|candidate| container_uuid(candidate.tenant_id, &candidate.container_key))
             .collect();
         materialize_business_catalog(&self.store, business_catalog, accepted_at).conv_err()?;
+        // 域必须在段之前：段靠域的稳定 ID 挂进去。
+        materialize_network_domains(&self.store, &mut catalog, network_domains, accepted_at)
+            .conv_err()?;
         let materialized = materialize_candidates(
             &self.store,
             &mut catalog,
@@ -225,6 +230,7 @@ where
         let record = validate_and_record_async(&self.store, &envelope).await?;
 
         let hosts = extract_host_candidates(&envelope)?.candidates;
+        let network_domains = extract_network_domain_candidates(&envelope)?.candidates;
         let networks = extract_network_segment_candidates(&envelope)?.candidates;
         let elastic_ips = extract_elastic_ip_candidates(&envelope)?;
         let processes = extract_process_runtime_candidates(&envelope)?.candidates;
@@ -252,6 +258,9 @@ where
             .map(|candidate| container_uuid(candidate.tenant_id, &candidate.container_key))
             .collect();
         materialize_business_catalog_async(&self.store, business_catalog, accepted_at)
+            .await
+            .conv_err()?;
+        materialize_network_domains_async(&self.store, &mut catalog, network_domains, accepted_at)
             .await
             .conv_err()?;
         let materialized = materialize_candidates_async(
@@ -396,10 +405,11 @@ use materialize::{
     materialize_business_catalog_async, materialize_candidates, materialize_candidates_async,
     materialize_containers, materialize_containers_async, materialize_elastic_ips,
     materialize_elastic_ips_async, materialize_host_telemetry, materialize_host_telemetry_async,
-    materialize_process_telemetry, materialize_process_telemetry_async, materialize_processes,
-    materialize_processes_async, materialize_service_endpoints,
-    materialize_service_endpoints_async, materialize_subjects_and_assignments,
-    materialize_subjects_and_assignments_async, validate_and_record, validate_and_record_async,
+    materialize_network_domains, materialize_network_domains_async, materialize_process_telemetry,
+    materialize_process_telemetry_async, materialize_processes, materialize_processes_async,
+    materialize_service_endpoints, materialize_service_endpoints_async,
+    materialize_subjects_and_assignments, materialize_subjects_and_assignments_async,
+    validate_and_record, validate_and_record_async,
 };
 
 /// 主机退役清扫。

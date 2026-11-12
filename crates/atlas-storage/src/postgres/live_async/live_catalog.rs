@@ -190,6 +190,7 @@ impl AsyncCatalogStore for PostgresTopologyStore<LivePostgresExecutor> {
                     domain.description.clone().unwrap_or_default(),
                     domain.created_at.to_rfc3339(),
                     domain.updated_at.to_rfc3339(),
+                    domain.external_ref.clone().unwrap_or_default(),
                 ],
             )
             .await?;
@@ -232,6 +233,7 @@ impl AsyncCatalogStore for PostgresTopologyStore<LivePostgresExecutor> {
                     format!("{:?}", segment.address_family),
                     segment.created_at.to_rfc3339(),
                     segment.updated_at.to_rfc3339(),
+                    segment.external_ref.clone().unwrap_or_default(),
                 ],
             )
             .await?;
@@ -441,7 +443,7 @@ impl AsyncCatalogStore for PostgresTopologyStore<LivePostgresExecutor> {
         let rows = self
             .executor
             .query_rows_async(
-                "SELECT network_domain_id, tenant_id, environment_id, name, kind, description, created_at, updated_at FROM network_domain WHERE network_domain_id = $1",
+                "SELECT network_domain_id, tenant_id, environment_id, name, kind, description, created_at, updated_at, external_ref FROM network_domain WHERE network_domain_id = $1",
                 &[network_domain_id.to_string()],
             )
             .await?;

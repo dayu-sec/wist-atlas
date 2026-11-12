@@ -33,6 +33,10 @@ pub const HOST_CLOUD_ACCOUNT_SQL: &str = include_str!("../migrations/0009_host_c
 pub const ELASTIC_IP_VERSION: &str = "0010_elastic_ip";
 pub const ELASTIC_IP_SQL: &str = include_str!("../migrations/0010_elastic_ip.sql");
 
+/// 网络对象身份：云侧名字不唯一、CIDR 可重叠，改按 `external_ref` 认。
+pub const NETWORK_IDENTITY_VERSION: &str = "0011_network_identity";
+pub const NETWORK_IDENTITY_SQL: &str = include_str!("../migrations/0011_network_identity.sql");
+
 pub const MIGRATIONS: &[Migration] = &[
     Migration {
         version: INITIAL_SCHEMA_VERSION,
@@ -73,6 +77,10 @@ pub const MIGRATIONS: &[Migration] = &[
     Migration {
         version: ELASTIC_IP_VERSION,
         sql: ELASTIC_IP_SQL,
+    },
+    Migration {
+        version: NETWORK_IDENTITY_VERSION,
+        sql: NETWORK_IDENTITY_SQL,
     },
 ];
 

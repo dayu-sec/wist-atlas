@@ -277,6 +277,8 @@ pub(crate) fn resolve_host_candidate_for_host_telemetry(
                 os_name: host.os_name.clone(),
                 os_version: host.os_version.clone(),
                 arch: host.arch.clone(),
+                ip_addr: None,
+                subnet_external_ref: None,
             });
         }
     }
@@ -299,6 +301,8 @@ pub(crate) fn resolve_host_candidate_for_host_telemetry(
                 os_name: host.os_name.clone(),
                 os_version: host.os_version.clone(),
                 arch: host.arch.clone(),
+                ip_addr: None,
+                subnet_external_ref: None,
             });
         }
     }
@@ -328,6 +332,8 @@ pub(crate) fn resolve_host_candidate_for_process_telemetry(
                 os_name: host.os_name.clone(),
                 os_version: host.os_version.clone(),
                 arch: host.arch.clone(),
+                ip_addr: None,
+                subnet_external_ref: None,
             });
         }
     }
@@ -350,6 +356,8 @@ pub(crate) fn resolve_host_candidate_for_process_telemetry(
                 os_name: host.os_name.clone(),
                 os_version: host.os_version.clone(),
                 arch: host.arch.clone(),
+                ip_addr: None,
+                subnet_external_ref: None,
             });
         }
     }

@@ -243,7 +243,27 @@ atlas.in.<family>.v<major>
 - 不能包含二进制大对象；大对象用 URI 或 object storage ref 表达。
 - 数组行必须保留外部 ID 或可组合成外部 ID 的字段。
 
-#### 3.4.1 `payload.elastic_ips[]`（弹性公网 IP）
+#### 3.4.2 网络结构：`network_domains[]` / `network_segments[]`
+
+云侧的网络是一条链：**VPC（地址空间）→ 子网（网段）→ 主机**。三者身份不同：
+
+| payload 位置 | 云对象 | 身份 |
+| --- | --- | --- |
+| `network_domains[]` | VPC | `external_ref` = `VpcId` |
+| `network_segments[]` | 子网 | `external_ref` = `SubnetId`；`parent_external_ref` = `VpcId` |
+| `hosts[].subnet_external_ref` | 主机所属子网 | `SubnetId`（可选） |
+
+两条必须知道的：
+
+1. **名字不是身份**。腾讯云每个地域都自动送建一个 `Default-VPC`，子网名也能跨 VPC 重名；
+   不同 VPC 的 CIDR 还可以重叠。所以匹配只看 `external_ref`，名字只用于展示。
+2. **段必须能不要主机就落地**。云侧子网没有 `machine_id` / `host_name`，
+   依赖「解析到主机才写」的实现会把整个网络结构丢掉。
+
+主机挂子网的规则（atlas 侧）：先认 `hosts[].subnet_external_ref`；没有就按
+`hosts[].ip_addr` 与子网 CIDR 做**最长前缀包含**匹配；都对不上就不建关联（不编）。
+
+#### 3.4.3 `payload.elastic_ips[]`（弹性公网 IP）
 
 EIP 是**独立资产**，不是主机的字段：可先申请后绑定、解绑后保留、换机器绑同一个地址，
 机器下线了 EIP 还在。所以它有自己的行、自己的 JSON 地址 ID，绑定是快照态：
