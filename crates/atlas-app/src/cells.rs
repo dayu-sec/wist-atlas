@@ -11,8 +11,9 @@
 //! 3. **未登记一律拒绝**：ingest 收到清单外的 `cust_id` 直接 400 —— 不静默派生、
 //!    不落默认库，否则就是「客户 B 的拓扑写进了默认库」。
 //!
-//! 清单为空 / 没配 `WIST_ATLAS_CELLS_FILE` = **单库老行为**（零迁移）：读接口照旧，
-//! 写入口接受一个 UUID 形式的 `cust_id`。
+//! 清单为空 / 没配 `WIST_ATLAS_CELLS_FILE` = **不能再启动**（0.5.0 起）：
+//! 默认库已经去掉 —— 每个客户一个库，没有「先落进来再说」的地方。
+//! 单客户站点也要登记一条 cell（与 `wist-evidence` 同一条纪律）。
 
 use std::collections::{HashMap, HashSet};
 
@@ -175,7 +176,11 @@ pub(crate) struct CellRouter {
 }
 
 impl CellRouter {
-    /// 按环境变量装配。没配清单 / 清单为空 → `None`（单库老行为）。
+    /// 按环境变量装配。
+    ///
+    /// `Ok(None)` = 没配清单 / 清单为空。**生产入口（`serve`）把它当错误**：
+    /// 0.5.0 起没有默认库，一个客户都没有的 atlas 没有可服务的数据。
+    /// 保留 `Option` 是为了让「客户清单 → 路由」这一步本身可单测（不依赖进程启动）。
     pub(crate) async fn from_env() -> AppResult<Option<Self>> {
         let Some(path) = std::env::var(CELLS_FILE_ENV)
             .ok()
@@ -202,7 +207,7 @@ impl CellRouter {
         })?;
 
         if file.cells.is_empty() {
-            // 没有客户：不是错误 —— 单客户站点、或者还没 `add-customer.sh`。
+            // 没有客户：不在这里报错，交给调用方决定（`serve` 会拒绝启动）。
             return Ok(None);
         }
 

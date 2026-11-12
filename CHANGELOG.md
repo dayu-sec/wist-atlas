@@ -3,6 +3,26 @@
 本文件记录 `wist-atlas` 的所有重要变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.5.0] · 2026-11-12
+
+### 变更（去掉默认库：一个客户都没有就不启动）
+
+以前 `serve` 允许「没有客户清单」：那是单库（默认库）形态，靠 `DATABASE_URL` 连一个库，
+写入口接受 UUID 形式的 `cust_id`。在多客户 data-field 栈里那个库**没有任何客户在用**，
+只是死重量，而且会让「客户拓扑写进默认库」这件事有机可乘。
+
+- **`serve` 启动时必须有客户清单**（`WIST_ATLAS_CELLS_FILE` 至少一条 cell），
+  否则直接报错退出（错误里给出现场的修法：`sys/scripts/add-customer.sh <cust_id>`
+  + `gops sys localize`）。单客户站点也登记一条 cell。
+- **不向后兼容**：以前只配了 `DATABASE_URL` + 没配清单的部署升上来会启不来，
+  需要先用 `add-customer.sh` 把现有库登记成一个 cell（`cust_id` = 那个默认租户的客户号）。
+- `/healthz` 始终回显启动时读到的客户清单（`cells[].cust_id` / `tenant_id`，
+  **不含连接串与口令**）—— 现场靠它确认「这个客户有没有连上」。
+
+### 其他
+
+- `wist-field-stack` 同步删掉默认的 `atlas-postgres` 容器与 `DATABASE_URL`。
+
 ## [0.4.1] · 2026-11-11
 
 ### 变更（镜像构建对齐生态做法）

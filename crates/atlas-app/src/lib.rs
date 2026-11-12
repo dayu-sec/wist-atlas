@@ -323,11 +323,19 @@ impl TopologyMonolith {
             })?;
         state = state.with_token(token);
 
-        // 多客户：按客户清单连库（没配 = 单库老行为）。
+        // 多客户：按客户清单连库。**没有清单就不启动**（0.5.0 去掉了默认库 ——
+        // 以前那条「没配清单就落 `DATABASE_URL` 指向的库」已经删了：它会遮住
+        // 「客户没登记」这种现场问题，把客户拓扑写进一个没人看的库）。
         // 放在 token 之后、`build_http_router` 之前：路由一旦建好，状态就冻结了。
-        if let Some(router) = cells::CellRouter::from_env().await? {
-            state = state.with_cells(router);
-        }
+        let router = cells::CellRouter::from_env().await?.ok_or_else(|| {
+            AppReason::InvalidArgs.to_err().with_detail(format!(
+                "no customer cells configured: the default database was removed in 0.5.0 — \
+                 register at least one customer ({} must list them; on a wist-field \
+                 stack: sys/scripts/add-customer.sh <cust_id> && gops sys localize)",
+                cells::CELLS_FILE_ENV
+            ))
+        })?;
+        state = state.with_cells(router);
         if let Some(default) = cells::default_tenant() {
             state = state.with_default_tenant(default);
         }
