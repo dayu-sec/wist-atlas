@@ -108,6 +108,7 @@
 | `P2-08` | `P2` | 增加 software normalization 基础模型 | `atlas-domain`,`atlas-storage` | `todo` | `TBD` | `P0-07` | `software_product/version/artifact` 落地 |
 | `P2-09` | `P2` | 增加 vulnerability finding 基础链路 | `atlas-sync`,`atlas-storage`,`atlas-api` | `todo` | `TBD` | `P2-08,P2-01` | 漏洞情报可同步并形成 finding |
 | `P2-10` | `P2` | 增加 read-model 物化或缓存策略 | `atlas-storage`,`atlas-api` | `todo` | `TBD` | `P1-02,P2-09` | 热点视图有明确加速方案 |
+| `P2-11` | `P2` | Postgres 错误文案保留 SQLSTATE / detail | `atlas-storage` | `todo` | `TBD` | - | 真库失败时错误 `detail` 带 `as_db_error()` 的 `code()/message()/detail()`，不再只有 `execute postgres sql: db error` |
 
 ---
 

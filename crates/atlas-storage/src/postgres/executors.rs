@@ -467,6 +467,10 @@ impl PostgresExecutor for MemoryPostgresExecutor {
     }
 }
 
+// TODO(P2-11): 这里的错误文案只保留了 `tokio_postgres::Error` 的 `Display`（"db error"），
+// 真正的 SQLSTATE / 约束名 / detail 都在 `source()` 里。真库出错时（例如唯一索引冲突）
+// 现在只能看到 `execute postgres sql: db error`，定位不到是哪条约束。
+// 改法：用 `err.as_db_error()` 把 `code()` / `message()` / `detail()` 拼进 detail。
 impl LivePostgresExecutor {
     pub async fn new(connection_string: impl Into<String>) -> StorageResult<Self> {
         let connection_string = connection_string.into();
