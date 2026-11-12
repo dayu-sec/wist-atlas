@@ -35,6 +35,36 @@ pub struct HostNetworkMaterialization {
     pub segment_resolution: ResolutionResult,
 }
 
+/// 命中已有对象时，把候选里**有值、而对象里为空**的字段补上。
+///
+/// 为什么只补空位、不覆盖：两个来源对同一字段常常各有说法（云报镜像名
+/// `Ubuntu Server 24.04 LTS 64bit`，agent 报真实发行版 `Ubuntu`），覆盖会让结果
+/// **随到达顺序漂移** —— 同一份数据重放两次得到不同拓扑，这是最不该有的不确定性。
+/// 冲突仲裁属于来源置信度评估那一层，不在这里做。
+///
+/// `host_name` 刻意不在回填范围内：它是身份的一部分（同名不同机的误合并代价最大），
+/// 而且云侧改名与本地改名的语义本来就不同，两个值都应该保留（后续拆 `cloud_name`）。
+fn backfill_host(target: &mut HostInventory, candidate: &HostCandidate) {
+    if target.machine_id.is_none() {
+        target.machine_id = candidate.machine_id.clone();
+    }
+    if target.cloud_instance_id.is_none() {
+        target.cloud_instance_id = candidate.cloud_instance_id.clone();
+    }
+    if target.os_name.is_none() {
+        target.os_name = candidate.os_name.clone();
+    }
+    if target.os_version.is_none() {
+        target.os_version = candidate.os_version.clone();
+    }
+    if target.arch.is_none() {
+        target.arch = candidate.arch.clone();
+    }
+    if target.environment_id.is_none() {
+        target.environment_id = candidate.environment_id;
+    }
+}
+
 pub fn resolve_host_candidate(
     catalog: &InMemoryCatalog,
     candidate: &HostCandidate,
@@ -47,8 +77,10 @@ pub fn resolve_host_candidate(
             .zip(host.machine_id.as_ref())
             .is_some_and(|(candidate_id, host_id)| candidate_id == host_id)
     }) {
+        let mut matched = host.clone();
+        backfill_host(&mut matched, candidate);
         return HostResolution {
-            host: host.clone(),
+            host: matched,
             resolution: ResolutionResult {
                 object_kind: ObjectKind::Host,
                 status: ResolutionStatus::Matched,
@@ -78,12 +110,10 @@ pub fn resolve_host_candidate(
                 && host.cloud_instance_id.as_deref() == Some(cloud_id)
         })
     {
-        // 顺手把这次看到的实例 ID 补进已存在的对象：先由 agentd 建的对象当时可能
-        // 还没读到元数据，不补的话下一次匹配又会走 host_name。
+        // 回填空位（含把这次看到的实例 ID 补进去）：先由 agentd 建的对象当时可能
+        // 还没读到元数据，不补的话下一次匹配又会退回 host_name。
         let mut matched = host.clone();
-        if matched.cloud_instance_id.is_none() {
-            matched.cloud_instance_id = Some(cloud_id.to_string());
-        }
+        backfill_host(&mut matched, candidate);
         return HostResolution {
             host: matched,
             resolution: ResolutionResult {
@@ -106,8 +136,11 @@ pub fn resolve_host_candidate(
         .iter()
         .find(|host| host.tenant_id == candidate.tenant_id && host.host_name == candidate.host_name)
     {
+        // 按名字命中也要回填：这条路径恰恰是"agent 先建、云侧后到"的常见形态。
+        let mut matched = host.clone();
+        backfill_host(&mut matched, candidate);
         return HostResolution {
-            host: host.clone(),
+            host: matched,
             resolution: ResolutionResult {
                 object_kind: ObjectKind::Host,
                 status: ResolutionStatus::Matched,
@@ -441,6 +474,117 @@ mod tests {
             machine_id: Some("machine-01".to_string()),
             iface_name: Some("wlan0".to_string()),
         }
+    }
+
+    /// 回填要真的落进 catalog（否则下一轮又回到空值）。
+    #[test]
+    fn materialize_persists_backfilled_attributes() {
+        let tenant_id = tenant_id();
+        let mut catalog = InMemoryCatalog::default();
+        let now = Utc::now();
+
+        let mut from_agent = host_candidate(tenant_id);
+        from_agent.machine_id = Some("machine-abc".to_string());
+        from_agent.cloud_instance_id = Some("ins-123".to_string());
+        from_agent.os_name = None;
+        from_agent.arch = None;
+        materialize_host_network(
+            &mut catalog,
+            &from_agent,
+            &network_candidate(tenant_id),
+            now,
+        );
+        assert!(catalog.hosts[0].os_name.is_none(), "起点应为空");
+
+        let mut cloud_only = host_candidate(tenant_id);
+        cloud_only.machine_id = None;
+        cloud_only.cloud_instance_id = Some("ins-123".to_string());
+        cloud_only.os_name = Some("Ubuntu Server 24.04 LTS 64bit".to_string());
+        cloud_only.arch = Some("x86_64".to_string());
+        materialize_host_network(
+            &mut catalog,
+            &cloud_only,
+            &network_candidate(tenant_id),
+            now,
+        );
+
+        assert_eq!(catalog.hosts.len(), 1, "不能多出一个节点");
+        assert_eq!(
+            catalog.hosts[0].os_name.as_deref(),
+            Some("Ubuntu Server 24.04 LTS 64bit")
+        );
+        assert_eq!(catalog.hosts[0].arch.as_deref(), Some("x86_64"));
+    }
+
+    /// 命中时只补空位：云侧带来 os/arch，agentd 先建的对象里这些是空的。
+    #[test]
+    fn matched_host_backfills_empty_attributes() {
+        let tenant_id = tenant_id();
+        let mut catalog = InMemoryCatalog::default();
+        let now = Utc::now();
+
+        let mut from_agent = host_candidate(tenant_id);
+        from_agent.machine_id = Some("machine-abc".to_string());
+        from_agent.cloud_instance_id = Some("ins-123".to_string());
+        from_agent.os_name = None;
+        from_agent.arch = None;
+        let first = resolve_host_candidate(&catalog, &from_agent, now);
+        catalog.hosts.push(first.host.clone());
+
+        let mut cloud_only = host_candidate(tenant_id);
+        cloud_only.host_name = "order-api-01".to_string();
+        cloud_only.machine_id = None;
+        cloud_only.cloud_instance_id = Some("ins-123".to_string());
+        cloud_only.os_name = Some("Ubuntu Server 24.04 LTS 64bit".to_string());
+        cloud_only.arch = Some("x86_64".to_string());
+        let second = resolve_host_candidate(&catalog, &cloud_only, now);
+
+        assert!(matches!(
+            second.resolution.status,
+            ResolutionStatus::Matched
+        ));
+        assert_eq!(
+            second.host.os_name.as_deref(),
+            Some("Ubuntu Server 24.04 LTS 64bit"),
+            "空位要补上"
+        );
+        assert_eq!(second.host.arch.as_deref(), Some("x86_64"));
+        assert_eq!(
+            second.host.machine_id.as_deref(),
+            Some("machine-abc"),
+            "已有值不能被覆盖"
+        );
+        assert_eq!(
+            second.host.host_name, "laptop-01",
+            "host_name 不回填 —— 改名不是补空位"
+        );
+    }
+
+    /// 两个来源都给了值时**不覆盖**：否则结果随到达顺序漂移。
+    #[test]
+    fn matched_host_never_overwrites_an_existing_value() {
+        let tenant_id = tenant_id();
+        let mut catalog = InMemoryCatalog::default();
+        let now = Utc::now();
+
+        let mut from_agent = host_candidate(tenant_id);
+        from_agent.machine_id = Some("machine-abc".to_string());
+        from_agent.cloud_instance_id = Some("ins-123".to_string());
+        from_agent.os_name = Some("Ubuntu".to_string());
+        let first = resolve_host_candidate(&catalog, &from_agent, now);
+        catalog.hosts.push(first.host.clone());
+
+        let mut cloud_only = host_candidate(tenant_id);
+        cloud_only.machine_id = None;
+        cloud_only.cloud_instance_id = Some("ins-123".to_string());
+        cloud_only.os_name = Some("Ubuntu Server 24.04 LTS 64bit".to_string());
+        let second = resolve_host_candidate(&catalog, &cloud_only, now);
+
+        assert_eq!(
+            second.host.os_name.as_deref(),
+            Some("Ubuntu"),
+            "冲突留给置信度评估，这一层不覆盖"
+        );
     }
 
     /// 云实例 ID 是双来源归并的确定性键：云 API 先到、agentd 后到，必须并成一台。
