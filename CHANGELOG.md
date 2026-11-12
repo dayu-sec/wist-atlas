@@ -3,6 +3,24 @@
 本文件记录 `wist-atlas` 的所有重要变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.5.1] · 2026-11-12
+
+### 修复（0.5.0 的两处默认库残留）
+
+0.5.0 的目标是「去掉默认库：一个客户清单都没有就不启动」，但两处还在往默认库上靠，
+现场表现为容器无限重启 + 探针误报绿。
+
+- **`serve` 不再连默认库**：`postgres-live serve`（以及 `memory serve` / `postgres-mock serve`）
+  启动时不再先连 `DATABASE_URL` 指向的默认库。以前它在客户清单装配**之前**就建 monolith，
+  而栈里已经删掉 `DATABASE_URL`，于是去连 `localhost:5432` 失败：
+  `wist-atlas monolith failed to initialize: input load failed -> connect postgres`。
+  现在 `serve` 只按客户清单连库（每个客户一个），没有清单照旧报「没有客户清单」退出。
+- **写探针改成每客户一份**：探针原来拿默认 monolith + 一个保留租户写，cells 模式下
+  要么写进已删的默认库、要么写进占位内存库 —— `/healthz` 报 `last_ok: true`，
+  但**什么都没落库**，是最坏的一种绿。现在每拍对**每个客户各写一次**（写进该客户自己的库，
+  租户用该客户的 `tenant_id`），任一客户失败整拍记失败并在日志里点名 `cust_id`。
+  `ProbeStatus` 形状不变（星象台的接口可用性页照旧只认这一份）。
+
 ## [0.5.0] · 2026-11-12
 
 ### 变更（去掉默认库：一个客户都没有就不启动）

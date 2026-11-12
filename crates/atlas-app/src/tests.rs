@@ -1451,7 +1451,9 @@ fn cells_router(
 fn cells_state(
     items: Vec<(String, TopologyMonolith, atlas_domain::TenantId, Uuid)>,
 ) -> HttpAppState {
-    HttpAppState::new(TopologyMonolith::new_in_memory()).with_cells(cells_router(items))
+    // 与 `serve` 一样用 `cells_only`：没有默认 store。多客户测试全都跑在这条形状上，
+    // 一旦 `resolve` / `resolve_write` 落到“默认库”那一行就会 `expect` 炸掉。
+    HttpAppState::cells_only(cells_router(items))
 }
 
 async fn get_json(router: &axum::Router, uri: &str) -> (StatusCode, Value) {
@@ -1462,6 +1464,53 @@ async fn get_json(router: &axum::Router, uri: &str) -> (StatusCode, Value) {
         .unwrap();
     let status = response.status();
     (status, json_body(response).await)
+}
+
+#[tokio::test]
+async fn serve_does_not_need_a_default_database() {
+    // 0.5.0 的现场故障：`postgres-live serve` 在客户清单装配之前先连 `DATABASE_URL`
+    // 指向的默认库，栈里删掉它之后就是无限重启。`Serve` 必须拿到一个不连库的占位。
+    let (mode, input) = parse_monolith_input(&[
+        "postgres-live".to_string(),
+        "serve".to_string(),
+        "--listen".to_string(),
+        "0.0.0.0:8080".to_string(),
+    ])
+    .unwrap();
+    assert_eq!(mode, MonolithMode::PostgresLive);
+
+    let app = TopologyAppBuilder::new()
+        .with_mode(mode)
+        .build_for_input(&input)
+        .await
+        .expect("serve must not require a default database");
+    assert!(
+        matches!(app, TopologyMonolith::Memory(_)),
+        "serve must get the in-memory placeholder, not a database connection"
+    );
+}
+
+#[test]
+fn a_cells_only_state_resolves_per_customer_and_never_falls_back_to_a_default_store() {
+    // 生产入口只有「客户库」这一形状（`app: None`）。这里钉住：
+    // - 解析走 router 分支（能拿到客户自己的租户）；
+    // - 未知客户 / 多客户下不传 tenant 都是错误，不会回落到某个默认 app。
+    let tenant_a = Uuid::new_v4();
+    let tenant_b = Uuid::new_v4();
+    let state = cells_state(vec![
+        memory_cell("c-a", tenant_a, "host-a"),
+        memory_cell("c-b", tenant_b, "host-b"),
+    ]);
+
+    let resolved = state.resolve(Some("c-a")).unwrap();
+    assert_eq!(resolved.tenant, Some(atlas_domain::TenantId(tenant_a)));
+    let written = state.resolve_write("c-b").unwrap();
+    assert_eq!(written.tenant, atlas_domain::TenantId(tenant_b));
+
+    assert!(state.resolve(Some("c-zzz")).is_err());
+    assert!(state.resolve(None).is_err());
+    assert!(state.resolve_write("c-zzz").is_err());
+    assert_eq!(state.cells_summary().len(), 2);
 }
 
 #[tokio::test]

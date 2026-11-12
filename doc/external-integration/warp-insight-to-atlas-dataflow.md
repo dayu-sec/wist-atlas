@@ -97,7 +97,9 @@ atlas-app postgres-live
 
 - `LivePostgresExecutor` 不再自持同步 runtime
 - `atlas-storage` 不在 store 内部 `block_on(...)`
-- `postgres-live` 必须通过 `build_async()` / `run_async()` 进入
+- `postgres-live` 必须走进异步入口（`build_for_input()` / `run_async()`）；
+  其中 `serve` 走 `build_for_input()` **不连默认库**（0.5.1 起客户清单是唯一数据来源），
+  只有 replay / import / demo 这类确实需要单库的输入才取 `DATABASE_URL`
 - `memory` / `postgres-mock` 仍可保留同步调用路径
 
 这条约束的目的，是避免在：

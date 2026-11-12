@@ -11,22 +11,16 @@ async fn main() {
         }
     };
 
+    // `serve` 不在这里连库：客户的库由 `serve_http_async` 按客户清单连。
+    // 入口先连一个“默认库”会在没有 `DATABASE_URL` 的栈里无限重启（0.5.0 的现场故障），
+    // 所以这一步交给 `build_for_input` 判断，不要在这里按模式各写一份。
     let builder = TopologyAppBuilder::new().with_mode(mode);
-    let app = match mode {
-        atlas_app::MonolithMode::PostgresLive => match builder.build_async().await {
-            Ok(app) => app,
-            Err(err) => {
-                eprintln!("wist-atlas monolith failed to initialize: {err}");
-                std::process::exit(1);
-            }
-        },
-        _ => match builder.build() {
-            Ok(app) => app,
-            Err(err) => {
-                eprintln!("wist-atlas monolith failed to initialize: {err}");
-                std::process::exit(1);
-            }
-        },
+    let app = match builder.build_for_input(&input).await {
+        Ok(app) => app,
+        Err(err) => {
+            eprintln!("wist-atlas monolith failed to initialize: {err}");
+            std::process::exit(1);
+        }
     };
 
     let result = app.run_async(input).await;

@@ -118,7 +118,11 @@ struct HostTopologyHostDto {
 
 #[derive(Clone)]
 pub(crate) struct HttpAppState {
-    app: TopologyMonolith,
+    /// 单库部署（历史形态）的默认 store。
+    ///
+    /// **`serve` 形态下恒为 `None`**：0.5.0 去掉了默认库，生产入口只用
+    /// [`HttpAppState::cells_only`] 构造状态 —— 每个客户的库都在 `cells` 里。
+    app: Option<TopologyMonolith>,
     /// `Some` = 写探针已启用（由 serve 启动时开）——`/healthz` 多一个 `probe` 块。
     probe: Option<crate::probe::SharedProbe>,
     /// `Some` = 读接口要 `Authorization: Bearer <token>`（**serve 模式必有**）。
@@ -149,10 +153,26 @@ pub(crate) struct ResolvedWrite {
 impl HttpAppState {
     pub(crate) fn new(app: TopologyMonolith) -> Self {
         Self {
-            app,
+            app: Some(app),
             probe: None,
             token: None,
             cells: None,
+            default_tenant: None,
+        }
+    }
+
+    /// `serve` 专用：只有客户库，没有默认 store。
+    ///
+    /// 故意留空 `app` 而不是塞一个占位 store：`resolve` / `resolve_write` 在 `cells`
+    /// 存在时一定走 router 分支，真走到“没有 cells”那一行就 `expect` 炸掉 ——
+    /// 「客户的数据被写进默认库/占位库」这件事变成开发期就能发现的构造错误，
+    /// 而不是线上一个悄悄变绿的探针。
+    pub(crate) fn cells_only(cells: crate::cells::CellRouter) -> Self {
+        Self {
+            app: None,
+            probe: None,
+            token: None,
+            cells: Some(std::sync::Arc::new(cells)),
             default_tenant: None,
         }
     }
@@ -167,12 +187,6 @@ impl HttpAppState {
     /// 单元测试用 `new()` 不起鉴权 —— 生产入口缺失 token 会直接启动失败。
     pub(crate) fn with_token(mut self, token: impl Into<std::sync::Arc<str>>) -> Self {
         self.token = Some(token.into());
-        self
-    }
-
-    /// 多客户：客户清单已连好库。
-    pub(crate) fn with_cells(mut self, cells: crate::cells::CellRouter) -> Self {
-        self.cells = Some(std::sync::Arc::new(cells));
         self
     }
 
@@ -198,7 +212,16 @@ impl HttpAppState {
             });
         }
         Ok(Resolved {
-            app: self.app.clone(),
+            app: self
+                .app
+                .as_ref()
+                .expect(
+                    "HttpAppState reached the single-store branch without a store: \
+                     `serve` only builds `cells_only` state (app = None, cells = Some), \
+                     so no cell request can land here. Construct the state with `new()` \
+                     for the single-store shape or `cells_only()` for cells.",
+                )
+                .clone(),
             tenant: None,
         })
     }
@@ -245,7 +268,16 @@ impl HttpAppState {
         }
         Uuid::parse_str(cust_id)
             .map(|id| ResolvedWrite {
-                app: self.app.clone(),
+                app: self
+                    .app
+                    .as_ref()
+                    .expect(
+                        "HttpAppState reached the single-store branch without a store: \
+                         `serve` only builds `cells_only` state (app = None, cells = Some), \
+                         so no write can land here. Construct the state with `new()` for the \
+                         single-store shape or `cells_only()` for cells.",
+                    )
+                    .clone(),
                 tenant: atlas_domain::TenantId(id),
             })
             .map_err(|_| {

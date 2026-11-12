@@ -298,6 +298,16 @@ impl CellRouter {
         Err(ResolveError::Required)
     }
 
+    /// 按客户号遍历已连好的库（清单顺序）。
+    ///
+    /// 只读：给写探针用 —— 探针需要「每个客户一个目标」，且它写的库必须与
+    /// HTTP 写路径选中的是同一个，所以只能从路由本身取，不能另编一份。
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&str, &RoutedCell)> {
+        self.order
+            .iter()
+            .filter_map(|cust_id| self.cells.get(cust_id).map(|cell| (cust_id.as_str(), cell)))
+    }
+
     /// `/healthz` 用：**不输出连接串**，只报客户与租户身份。
     pub(crate) fn describe(&self) -> Vec<(String, Uuid)> {
         self.order

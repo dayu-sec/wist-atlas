@@ -11,28 +11,45 @@
 //! 所以探针调用的是**同一个** `convert_sink_line` + `submit_atlas_input_and_materialize_async`，
 //! 与 HTTP / 文件两条入口共用一份逻辑。
 //!
+//! ## 为什么每个客户各写一份
+//!
+//! 0.5.0 去掉了默认库：**没有“公共库”可以放一个保留租户的探针**了。写进一个不存在的库
+//! （已删）或一个占位内存库（探针什么也没落）都是最坏的「绿」——`/healthz` 报 `last_ok: true`
+//! 而现场一张表都没写。所以探针的目标就是**客户清单本身**：每个客户一个
+//! [`Target`]（该客户的库 + 该客户的 `tenant_id`），每拍各投一次，任一客户失败整拍就算失败
+//! 并点名是哪个客户 —— 与 `wist-evidence` 0.3.0 的「每客户一份探针」同一条纪律。
+//!
 //! ## 为什么不会把图谱写脏
 //!
-//! 探针固定写进一个**保留租户**（[`PROBE_TENANT`]）与固定的 `snap_id`（[`PROBE_SNAP_ID`]）：
-//! `ingest_id` 由租户 + snap_id 派生，重复投递是**同一次 upsert**，不会随时间增长。
-//! 星象台的资产页从不查询这个租户，所以它对使用者不可见 —— 与 evidence 的 `_probe` 同一条纪律。
+//! 探针用固定的 `snap_id`（[`PROBE_SNAP_ID`]）：`ingest_id` 由租户 + snap_id 派生，
+//! 重复投递是**同一次 upsert**，不会随时间增长。写入的主机名固定是 [`PROBE_HOST`]，
+//! 星象台的主机列表按这个名字把它过滤掉（见 `http.rs::host_list_response`），
+//! 所以它对使用者不可见，但数据真的在库里 —— 这正是探针要证明的东西。
 
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
+use atlas_domain::TenantId;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
 use crate::TopologyMonolith;
-
-/// 探针的保留租户：任何真实业务都不该用这个 UUID。
-pub const PROBE_TENANT: &str = "00000000-0000-4000-8000-00000000a7a5";
 
 /// 探针固定的快照 id：固定才能让重复投递变成同一个 ingest（表不增长）。
 const PROBE_SNAP_ID: &str = "atlas-probe";
 
 /// 探针写入的主机名：图谱里搜 `wist-atlas-probe` 就知道这条记录的来历。
 pub const PROBE_HOST: &str = "wist-atlas-probe";
+
+/// 一个客户的探针目标：**写进这个客户自己的库**，租户也用这个客户自己的。
+///
+/// 两个字段都来自客户清单（`cells::CellRouter`），不从环境变量再编一份 ——
+/// 探针写的库必须与 HTTP 写路径选中的是同一个，否则它证明不了数据面的写入能力。
+pub struct Target {
+    pub cust_id: String,
+    pub tenant: TenantId,
+    pub app: TopologyMonolith,
+}
 
 /// 探针现状：给 `/healthz` 看，让星象台的「接口可用性」页能区分
 /// 「进程活着」与「真的写得进去」。
@@ -70,25 +87,26 @@ pub fn new_shared() -> SharedProbe {
 }
 
 /// 启动探针循环。第一拍立即执行（进程刚起来就能在页面上看到结果）。
-pub fn spawn(app: TopologyMonolith, status: SharedProbe, interval: Duration) {
+pub fn spawn(targets: Vec<Target>, status: SharedProbe, interval: Duration) {
+    if targets.is_empty() {
+        // 没有客户就没有「写进去」这件事。宁可让 `last_ok` 停在 `null`（“还没探过”），
+        // 也不要把一个空循环记成绿 —— 那正是这次要修掉的误报。
+        log_line("atlas_probe_disabled: no customer cells to write into");
+        return;
+    }
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(interval);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             ticker.tick().await;
-            let started = Instant::now();
-            let outcome = write_probe(&app).await;
-            let latency_ms = started.elapsed().as_millis() as u64;
-            match &outcome {
-                Ok(()) => {
-                    log_line("atlas_probe_ok");
-                }
-                Err(detail) => {
-                    log_line(&format!("atlas_probe_failed: {detail}"));
-                }
+            let (failures, latency_ms) = probe_once(&targets).await;
+            if failures.is_empty() {
+                log_line("atlas_probe_ok");
+            } else {
+                log_line(&format!("atlas_probe_failed: {}", failures.join("; ")));
             }
             if let Ok(mut status) = status.write() {
-                status.record(outcome.is_ok(), latency_ms);
+                status.record(failures.is_empty(), latency_ms);
             }
         }
     });
@@ -98,14 +116,28 @@ fn log_line(message: &str) {
     eprintln!("{message}");
 }
 
-async fn write_probe(app: &TopologyMonolith) -> Result<(), String> {
-    let tenant_id = uuid::Uuid::parse_str(PROBE_TENANT)
-        .map(atlas_domain::TenantId)
-        .map_err(|err| format!("probe tenant is not a UUID: {err}"))?;
+/// 探一拍：每个客户各写一次。返回失败清单（空 = 全部成功）与**最慢那个客户**的延迟。
+///
+/// 「最慢的客户」才是这拍的延迟：最快的那个不代表任何一个客户能按时写完。
+async fn probe_once(targets: &[Target]) -> (Vec<String>, u64) {
+    let mut failures = Vec::new();
+    let mut max_latency_ms = 0u64;
+    for target in targets {
+        let started = Instant::now();
+        let outcome = write_probe(target).await;
+        max_latency_ms = max_latency_ms.max(started.elapsed().as_millis() as u64);
+        if let Err(detail) = outcome {
+            failures.push(format!("{}: {detail}", target.cust_id));
+        }
+    }
+    (failures, max_latency_ms)
+}
+
+async fn write_probe(target: &Target) -> Result<(), String> {
     crate::ingest_http::submit_line_for_monolith(
-        app,
-        tenant_id,
-        PROBE_TENANT,
+        &target.app,
+        target.tenant,
+        &target.cust_id,
         &probe_sink_line(),
         Some("probe"),
     )
@@ -180,6 +212,19 @@ fn probe_sink_line() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use atlas_storage::{CatalogStore, Page};
+
+    fn probe_target(cust_id: &str, tenant: uuid::Uuid) -> (Target, TopologyMonolith) {
+        let app = TopologyMonolith::new_in_memory();
+        (
+            Target {
+                cust_id: cust_id.to_string(),
+                tenant: TenantId(tenant),
+                app: app.clone(),
+            },
+            app,
+        )
+    }
 
     #[test]
     fn probe_line_is_a_parseable_sink_record() {
@@ -187,6 +232,44 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&line).unwrap();
         assert_eq!(value["biz"], "agent-discovery");
         assert!(value["body"].as_str().unwrap().contains(PROBE_SNAP_ID));
+    }
+
+    #[tokio::test]
+    async fn a_probe_tick_writes_into_every_customer_database_with_that_customers_tenant() {
+        let tenant_a = uuid::Uuid::new_v4();
+        let tenant_b = uuid::Uuid::new_v4();
+        let (target_a, app_a) = probe_target("c-a", tenant_a);
+        let (target_b, app_b) = probe_target("c-b", tenant_b);
+
+        let (failures, _latency_ms) = probe_once(&[target_a, target_b]).await;
+        assert!(failures.is_empty(), "{failures:?}");
+
+        // 每个客户自己的库里都有一条探针主机，且挂在该客户自己的租户下。
+        for (app, tenant) in [(app_a.clone(), tenant_a), (app_b.clone(), tenant_b)] {
+            let hosts = app
+                .store()
+                .unwrap()
+                .list_hosts(TenantId(tenant), Page::default())
+                .unwrap();
+            assert_eq!(hosts.len(), 1, "tenant {tenant}");
+            assert_eq!(hosts[0].host_name, PROBE_HOST);
+            assert_eq!(hosts[0].tenant_id, TenantId(tenant));
+        }
+
+        // 重复探同一拍还是同一行 upsert：表不随时间增长。
+        let again = Target {
+            cust_id: "c-a".to_string(),
+            tenant: TenantId(tenant_a),
+            app: app_a.clone(),
+        };
+        let (failures, _) = probe_once(&[again]).await;
+        assert!(failures.is_empty(), "{failures:?}");
+        let hosts = app_a
+            .store()
+            .unwrap()
+            .list_hosts(TenantId(tenant_a), Page::default())
+            .unwrap();
+        assert_eq!(hosts.len(), 1);
     }
 
     #[test]

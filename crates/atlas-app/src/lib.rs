@@ -287,8 +287,25 @@ impl TopologyMonolith {
                 .with_detail(format!("parse listen address {listen}: {err}"))
         })?;
 
+        // 多客户：按客户清单连库。**没有清单就不启动**（0.5.0 去掉了默认库 ——
+        // 以前那条「没配清单就落 `DATABASE_URL` 指向的库」已经删了：它会遮住
+        // 「客户没登记」这种现场问题，把客户拓扑写进一个没人看的库）。
+        //
+        // **必须先做这一步**：`self`（入口构造的 monolith）在 `serve` 下只是个占位，
+        // 真正连库就发生在这里；先连客户库再把状态包成 `cells_only`，就不存在
+        // 「以为是默认库、其实是占位 store」的中间态。
+        let cells = cells::CellRouter::from_env().await?.ok_or_else(|| {
+            AppReason::InvalidArgs.to_err().with_detail(format!(
+                "no customer cells configured: the default database was removed in 0.5.0 — \
+                 register at least one customer ({} must list them; on a wist-field \
+                 stack: sys/scripts/add-customer.sh <cust_id> && gops sys localize)",
+                cells::CELLS_FILE_ENV
+            ))
+        })?;
+
         // 写探针：默认关，`WIST_ATLAS_PROBE=on` 才开（与 evidence 的 `[probe].enabled` 同一条纪律）。
-        // 开启后每 `WIST_ATLAS_PROBE_INTERVAL_SECS`（默认 300）往保留租户写一份最小快照。
+        // 开启后每 `WIST_ATLAS_PROBE_INTERVAL_SECS`（默认 300）**对每个客户各写一份**，
+        // 写进**那个客户自己的库**（0.5.0 之后已经没有可以放“保留租户”的公共库了）。
         let probe = if std::env::var("WIST_ATLAS_PROBE").as_deref() == Ok("on") {
             let interval_ms = std::env::var("WIST_ATLAS_PROBE_INTERVAL_SECS")
                 .ok()
@@ -297,8 +314,9 @@ impl TopologyMonolith {
             // 0 会让探针变成死循环狂打自己的库。
             let interval_secs = interval_ms.max(1);
             let shared = probe::new_shared();
+            // targets 从刚连好的客户路由里取：探针写的库与 HTTP 写路径是同一个。
             probe::spawn(
-                self.clone(),
+                probe_targets(&cells),
                 shared.clone(),
                 std::time::Duration::from_secs(interval_secs),
             );
@@ -307,7 +325,8 @@ impl TopologyMonolith {
             None
         };
 
-        let mut state = HttpAppState::new(self.clone());
+        // `self` 不参与：serve 的库全部来自客户清单，没有“默认库”这一档。
+        let mut state = HttpAppState::cells_only(cells);
         // 读接口要令牌：`serve` 是唯一的生产入口，拿不到就直接失败，不默默降级成“谁都能读”。
         // 与 `wist-field-api` 的“没有不校验这一档”同一条纪律。
         let token = std::env::var("WIST_ATLAS_TOKEN")
@@ -323,19 +342,6 @@ impl TopologyMonolith {
             })?;
         state = state.with_token(token);
 
-        // 多客户：按客户清单连库。**没有清单就不启动**（0.5.0 去掉了默认库 ——
-        // 以前那条「没配清单就落 `DATABASE_URL` 指向的库」已经删了：它会遮住
-        // 「客户没登记」这种现场问题，把客户拓扑写进一个没人看的库）。
-        // 放在 token 之后、`build_http_router` 之前：路由一旦建好，状态就冻结了。
-        let router = cells::CellRouter::from_env().await?.ok_or_else(|| {
-            AppReason::InvalidArgs.to_err().with_detail(format!(
-                "no customer cells configured: the default database was removed in 0.5.0 — \
-                 register at least one customer ({} must list them; on a wist-field \
-                 stack: sys/scripts/add-customer.sh <cust_id> && gops sys localize)",
-                cells::CELLS_FILE_ENV
-            ))
-        })?;
-        state = state.with_cells(router);
         if let Some(default) = cells::default_tenant() {
             state = state.with_default_tenant(default);
         }
@@ -410,6 +416,26 @@ impl TopologyAppBuilder {
         self
     }
 
+    /// 按 CLI 输入构造这次运行的 monolith —— `main` 只用这一个入口。
+    ///
+    /// `Serve` 是唯一**不该碰默认库**的输入：客户的库由 `serve_http_async` 里的
+    /// 客户清单连，进程启动时先连一个“默认库”只会在没有 `DATABASE_URL` 的栈里
+    /// 无限重启（0.5.0 的现场故障）。所以 `Serve` 一律返回内存占位：
+    /// 它只承载 `run_async` 的 `Serve` 分支，`HttpAppState` 在 `serve` 里由
+    /// `cells_only` 构造，占位 app 永远不会被 resolve 到。
+    ///
+    /// 其余输入（`file` / `replay-jsonl` / `import-jsonl` / `demo` …）确实需要
+    /// 一个库，模式照旧决定连哪个。
+    pub async fn build_for_input(self, input: &MonolithInput) -> AppResult<TopologyMonolith> {
+        match input {
+            MonolithInput::Serve { .. } => Ok(TopologyMonolith::new_in_memory()),
+            _ => match self.mode {
+                MonolithMode::PostgresLive => self.build_async().await,
+                MonolithMode::Memory | MonolithMode::PostgresMock => self.build(),
+            },
+        }
+    }
+
     pub fn build(self) -> AppResult<TopologyMonolith> {
         match self.mode {
             MonolithMode::Memory => Ok(TopologyMonolith::new_in_memory()),
@@ -435,6 +461,18 @@ impl Default for TopologyAppBuilder {
     fn default() -> Self {
         Self::new()
     }
+}
+
+// 供 `serve_http_async` 用：把客户路由摊成探针目标（每个客户一个）。
+fn probe_targets(cells: &cells::CellRouter) -> Vec<probe::Target> {
+    cells
+        .iter()
+        .map(|(cust_id, cell)| probe::Target {
+            cust_id: cust_id.to_string(),
+            tenant: cell.tenant,
+            app: cell.app.clone(),
+        })
+        .collect()
 }
 
 mod cli;
