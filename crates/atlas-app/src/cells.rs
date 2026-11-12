@@ -293,16 +293,6 @@ impl CellRouter {
         Err(ResolveError::Required)
     }
 
-    /// **兼容期**用：按内部租户 UUID 反查（老数据面发的 `cust_id` 就是 UUID）。
-    ///
-    /// 只做**精确匹配**：不派生、不模糊。客户切到发客户号之后，这个入口就可以删。
-    pub(crate) fn find_by_tenant(&self, tenant_id: Uuid) -> Option<&RoutedCell> {
-        self.order
-            .iter()
-            .filter_map(|cust| self.cells.get(cust))
-            .find(|cell| cell.tenant.0 == tenant_id)
-    }
-
     /// `/healthz` 用：**不输出连接串**，只报客户与租户身份。
     pub(crate) fn describe(&self) -> Vec<(String, Uuid)> {
         self.order

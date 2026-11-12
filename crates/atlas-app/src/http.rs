@@ -236,18 +236,6 @@ impl HttpAppState {
                     app: cell.app.clone(),
                     tenant: cell.tenant,
                 })
-                .or_else(|err| {
-                    // **兼容期**：老数据面的 `cust_id` 是租户 UUID。只接受“精确等于某个
-                    // 已登记租户”的情况（不派生、不模糊）；客户切到发客户号后可删。
-                    Uuid::parse_str(cust_id)
-                        .ok()
-                        .and_then(|uuid| router.find_by_tenant(uuid))
-                        .map(|cell| ResolvedWrite {
-                            app: cell.app.clone(),
-                            tenant: cell.tenant,
-                        })
-                        .ok_or(err)
-                })
                 .map_err(|_| {
                     format!(
                         "cust_id `{cust_id}` is not registered on this atlas; \
