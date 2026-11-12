@@ -275,6 +275,16 @@ pub struct NetworkDomain {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cidr: Option<String>,
     pub description: Option<String>,
+    /// 云端账号归属（退役判定的作用域）。端侧来源没有它。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cloud_account: Option<String>,
+    /// 首次判定云上已删除的时刻。**缺席永不写它**。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub miss_count: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ingest_scope: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -292,6 +302,16 @@ pub struct NetworkSegment {
     pub cidr: Option<String>,
     pub gateway_ip: Option<String>,
     pub address_family: AddressFamily,
+    /// 云端账号归属（退役判定的作用域）。端侧来源没有它。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cloud_account: Option<String>,
+    /// 首次判定云上已删除的时刻。**缺席永不写它**。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub miss_count: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ingest_scope: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

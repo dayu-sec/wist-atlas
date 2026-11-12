@@ -209,6 +209,24 @@ impl CatalogStore for InMemoryTopologyStore {
         })
     }
 
+    fn list_network_domains(
+        &self,
+        tenant_id: TenantId,
+        page: Page,
+    ) -> StorageResult<Vec<NetworkDomain>> {
+        self.with_state(|state| {
+            let start = page.offset as usize;
+            state
+                .network_domains
+                .iter()
+                .filter(|item| item.tenant_id == tenant_id)
+                .skip(start)
+                .take(page.limit as usize)
+                .cloned()
+                .collect()
+        })
+    }
+
     fn upsert_network_segment(&self, segment: &NetworkSegment) -> StorageResult<()> {
         self.with_state(|state| {
             if let Some(existing) = state

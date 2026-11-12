@@ -441,6 +441,10 @@ fn memory_postgres_executor_round_trips_minimal_p0_records() {
         kind: atlas_domain::NetworkDomainKind::Unknown,
         cidr: None,
         description: None,
+        cloud_account: None,
+        stale_at: None,
+        miss_count: 0,
+        ingest_scope: None,
         created_at: now,
         updated_at: now,
     };
@@ -454,6 +458,10 @@ fn memory_postgres_executor_round_trips_minimal_p0_records() {
         cidr: Some("10.0.0.0/24".to_string()),
         gateway_ip: Some("10.0.0.1".to_string()),
         address_family: atlas_domain::AddressFamily::Ipv4,
+        cloud_account: None,
+        stale_at: None,
+        miss_count: 0,
+        ingest_scope: None,
         created_at: now,
         updated_at: now,
     };
@@ -1189,6 +1197,160 @@ fn real_postgres_elastic_ip_round_trip() {
     });
 }
 
+/// 真库上的网段/域 presence 往返：验证 0013 迁移、15 个参数位次、解码列序、
+/// 以及退役标记写入 / 复活清空。
+#[test]
+#[ignore = "需要真 PostgreSQL；设 WIST_ATLAS_TEST_DATABASE_URL 后加 --ignored"]
+fn real_postgres_network_presence_round_trip() {
+    let Ok(url) =
+        std::env::var("WIST_ATLAS_TEST_DATABASE_URL").or_else(|_| std::env::var("DATABASE_URL"))
+    else {
+        eprintln!("skip: WIST_ATLAS_TEST_DATABASE_URL / DATABASE_URL 未设置");
+        return;
+    };
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+
+    runtime.block_on(async move {
+        let executor = LivePostgresExecutor::new(url)
+            .await
+            .expect("connect postgres");
+        let schema = format!(
+            "atlas_probe_{}",
+            Uuid::new_v4().to_string().replace('-', "")
+        );
+        executor
+            .exec_batch_async(&format!("CREATE SCHEMA {schema}"))
+            .await
+            .expect("create schema");
+        executor
+            .exec_batch_async(&format!("SET search_path TO {schema}"))
+            .await
+            .expect("set search_path");
+
+        let store = PostgresTopologyStore::new(executor.clone());
+        store.run_migrations_async().await.expect("migrations");
+
+        let tenant_id = TenantId(Uuid::new_v4());
+        let now = Utc::now();
+        let account = "tencent:1300000000";
+        let scope = "atlas.in.inventory.v1:wist-harvest:harvest-1::";
+        // 与 atlas-api 的退役阈值保持一致（那个常量是下游 crate 内的，这里复制一份只作探针值）。
+        const RETIRE_AFTER: i64 = 3;
+
+        // 0012/0013：域的 CIDR 与域 presence 列必须落得下去、读得回来。
+        let domain = NetworkDomain {
+            network_domain_id: Uuid::new_v4(),
+            tenant_id,
+            environment_id: None,
+            external_ref: Some("vpc-1".to_string()),
+            name: "Default-VPC".to_string(),
+            kind: atlas_domain::NetworkDomainKind::Vpc,
+            cidr: Some("10.0.0.0/16".to_string()),
+            description: None,
+            cloud_account: Some(account.to_string()),
+            stale_at: None,
+            miss_count: 0,
+            ingest_scope: Some(scope.to_string()),
+            created_at: now,
+            updated_at: now,
+        };
+        AsyncCatalogStore::upsert_network_domain(&store, &domain)
+            .await
+            .expect("insert domain");
+
+        let stored_domain =
+            AsyncCatalogStore::list_network_domains(&store, tenant_id, Page::default())
+                .await
+                .expect("list domains")
+                .pop()
+                .expect("domain row");
+        assert_eq!(stored_domain.external_ref.as_deref(), Some("vpc-1"));
+        assert_eq!(stored_domain.cidr.as_deref(), Some("10.0.0.0/16"));
+        assert_eq!(stored_domain.cloud_account.as_deref(), Some(account));
+        assert_eq!(stored_domain.ingest_scope.as_deref(), Some(scope));
+        assert_eq!(stored_domain.miss_count, 0);
+        assert!(stored_domain.stale_at.is_none());
+
+        // 段：15 个参数位次 + 解码列序（10=external_ref，11..14 是 presence）。
+        let segment = NetworkSegment {
+            network_segment_id: Uuid::new_v4(),
+            tenant_id,
+            network_domain_id: Some(domain.network_domain_id),
+            environment_id: None,
+            external_ref: Some("subnet-1".to_string()),
+            name: "prod-a".to_string(),
+            cidr: Some("10.0.1.0/24".to_string()),
+            gateway_ip: Some("10.0.1.1".to_string()),
+            address_family: atlas_domain::AddressFamily::Ipv4,
+            cloud_account: Some(account.to_string()),
+            stale_at: None,
+            miss_count: 0,
+            ingest_scope: Some(scope.to_string()),
+            created_at: now,
+            updated_at: now,
+        };
+        AsyncCatalogStore::upsert_network_segment(&store, &segment)
+            .await
+            .expect("insert segment");
+
+        let stored = AsyncCatalogStore::list_network_segments(&store, tenant_id, Page::default())
+            .await
+            .expect("list segments")
+            .pop()
+            .expect("segment row");
+        assert_eq!(stored.external_ref.as_deref(), Some("subnet-1"));
+        assert_eq!(stored.cidr.as_deref(), Some("10.0.1.0/24"));
+        assert_eq!(
+            stored.network_domain_id,
+            Some(domain.network_domain_id),
+            "段必须挂在域下，否则域退役推导永远看不到它"
+        );
+        assert_eq!(stored.address_family, atlas_domain::AddressFamily::Ipv4);
+        assert_eq!(
+            stored.cloud_account.as_deref(),
+            Some(account),
+            "读路径必须带回账号键，否则退役目标永远是空的"
+        );
+        assert_eq!(stored.ingest_scope.as_deref(), Some(scope));
+
+        // 清扫标记必须能写进去，也必须能被复活清掉。
+        let mut retired = stored.clone();
+        retired.miss_count = RETIRE_AFTER;
+        retired.stale_at = Some(now);
+        AsyncCatalogStore::upsert_network_segment(&store, &retired)
+            .await
+            .expect("mark stale");
+        let stored = AsyncCatalogStore::get_network_segment(&store, segment.network_segment_id)
+            .await
+            .expect("get segment")
+            .expect("segment row");
+        assert_eq!(stored.miss_count, RETIRE_AFTER);
+        assert!(stored.stale_at.is_some(), "退役标记必须落库");
+
+        let mut revived = stored.clone();
+        revived.miss_count = 0;
+        revived.stale_at = None;
+        AsyncCatalogStore::upsert_network_segment(&store, &revived)
+            .await
+            .expect("revive");
+        let stored = AsyncCatalogStore::get_network_segment(&store, segment.network_segment_id)
+            .await
+            .expect("get segment")
+            .expect("segment row");
+        assert!(stored.stale_at.is_none(), "复活必须清掉 stale_at");
+        assert_eq!(stored.miss_count, 0);
+
+        executor
+            .exec_batch_async(&format!("DROP SCHEMA {schema} CASCADE"))
+            .await
+            .ok();
+    });
+}
+
 #[test]
 fn network_domain_keeps_its_cidr() {
     // VPC 的地址空间是域的核心属性：写不进去 / 读不回来，就只剩下一个名字。
@@ -1205,6 +1367,10 @@ fn network_domain_keeps_its_cidr() {
         kind: atlas_domain::NetworkDomainKind::Vpc,
         cidr: Some("10.0.0.0/16".to_string()),
         description: None,
+        cloud_account: None,
+        stale_at: None,
+        miss_count: 0,
+        ingest_scope: None,
         created_at: now,
         updated_at: now,
     };

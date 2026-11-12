@@ -388,6 +388,12 @@ impl PostgresExecutor for MemoryPostgresExecutor {
                 .filter(|row| row[3] == params[0] && row[4] == params[1])
                 .cloned()
                 .collect(),
+            value if value == sql::LIST_NETWORK_DOMAINS => state
+                .network_domains
+                .values()
+                .filter(|row| row[1] == params[0])
+                .cloned()
+                .collect(),
             value if value.contains("FROM network_domain WHERE network_domain_id = $1") => state
                 .network_domains
                 .get(&params[0])

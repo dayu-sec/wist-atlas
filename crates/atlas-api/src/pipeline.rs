@@ -327,6 +327,10 @@ pub fn resolve_network_candidate(
         } else {
             atlas_domain::AddressFamily::Ipv4
         },
+        cloud_account: None,
+        stale_at: None,
+        miss_count: 0,
+        ingest_scope: None,
         created_at: now,
         updated_at: now,
     };
@@ -448,6 +452,10 @@ pub(crate) fn ensure_cloud_network_domain(
         kind: NetworkDomainKind::Vpc,
         cidr: cidr.map(str::to_string),
         description: Some(format!("cloud vpc {external_ref}")),
+        cloud_account: None,
+        stale_at: None,
+        miss_count: 0,
+        ingest_scope: None,
         created_at: now,
         updated_at: now,
     });
@@ -495,6 +503,10 @@ fn ensure_default_network_domain(
         kind: NetworkDomainKind::Unknown,
         cidr: None,
         description: Some("auto-created default network domain".to_string()),
+        cloud_account: None,
+        stale_at: None,
+        miss_count: 0,
+        ingest_scope: None,
         created_at: now,
         updated_at: now,
     };
@@ -682,6 +694,7 @@ mod tests {
             iface_name: Some("wlan0".to_string()),
             external_ref: None,
             parent_external_ref: None,
+            cloud_account: None,
         }
     }
 

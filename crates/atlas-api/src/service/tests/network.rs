@@ -42,6 +42,19 @@ fn ingest(
         .expect("ingest");
 }
 
+/// 账号级完整快照声明 —— 退役的唯一合法入场券。
+fn declare_full_account_coverage(envelope: &mut IngestEnvelope, account: &str) {
+    envelope
+        .metadata
+        .insert("collect.coverage.scope".to_string(), "account".to_string());
+    envelope
+        .metadata
+        .insert("collect.coverage.complete".to_string(), "true".to_string());
+    envelope
+        .metadata
+        .insert("collect.coverage.account".to_string(), account.to_string());
+}
+
 fn segments(
     service: &TopologyIngestService<atlas_storage::InMemoryTopologyStore>,
     tenant_id: TenantId,
@@ -269,4 +282,99 @@ fn moving_a_host_to_another_subnet_closes_the_old_association() {
         .collect();
     assert_eq!(closed.len(), 1, "旧的关联要封口，不能删（历史要留）");
     assert_eq!(closed[0].ip_addr, "10.0.1.10");
+}
+
+#[test]
+fn a_deleted_subnet_is_retired_after_complete_snapshots() {
+    let service = TopologyIngestService::new_in_memory();
+    let tenant_id = TenantId(Uuid::new_v4());
+
+    let mut first = envelope("ing-1", vpc("prod-a", "10.0.1.0/24"), tenant_id);
+    declare_full_account_coverage(&mut first, "tencent:a");
+    // 候选要带账号，退役目标才圈得住。
+    first.payload_inline = Some({
+        let mut payload = vpc("prod-a", "10.0.1.0/24");
+        payload["network_segments"][0]["cloud_account"] = json!("tencent:a");
+        payload["network_domains"][0]["cloud_account"] = json!("tencent:a");
+        payload["hosts"] = json!([{
+            "hostname": "node-a",
+            "cloud_instance_id": "ins-1",
+            "cloud_account": "tencent:a",
+            "ip_addr": "10.0.1.10",
+            "subnet_external_ref": "subnet-1",
+        }]);
+        payload
+    });
+    service.submit_and_materialize(first).expect("ingest");
+
+    assert_eq!(segments(&service, tenant_id).len(), 1);
+    assert!(segments(&service, tenant_id)[0].stale_at.is_none());
+
+    // 云上删了子网：后续完整快照里没有它（但主机还在，只是没有子网可挂）。
+    let mut per_round = Vec::new();
+    for round in 0..crate::service::materialize::NETWORK_RETIRE_AFTER_COMPLETE_SNAPSHOTS {
+        let mut missing = envelope(
+            &format!("ing-miss-{round}"),
+            json!({ "network_segments": [], "network_domains": [], "hosts": [] }),
+            tenant_id,
+        );
+        declare_full_account_coverage(&mut missing, "tencent:a");
+        let summary = service.submit_and_materialize(missing).expect("ingest").1;
+        per_round.push(summary.stale_network_segment_count);
+    }
+
+    assert_eq!(
+        per_round.iter().sum::<u64>(),
+        1,
+        "只在达到阈值那一轮报一次，不能每轮都报：{per_round:?}"
+    );
+    assert_eq!(
+        per_round.last().copied(),
+        Some(1),
+        "阈值是最后一轮到达的：{per_round:?}"
+    );
+    let rows = segments(&service, tenant_id);
+    assert_eq!(rows.len(), 1, "退役不删行");
+    assert!(rows[0].stale_at.is_some(), "云上没了的子网要标退役");
+
+    // 域跟着「一个活段都不剩」一起退役。
+    let domain_id = rows[0].network_domain_id.expect("domain");
+    let domain = CatalogStore::get_network_domain(service.store(), domain_id)
+        .expect("get domain")
+        .expect("domain row");
+    assert!(domain.stale_at.is_some(), "段都没了，域也该退役");
+}
+
+#[test]
+fn a_frame_that_does_not_report_networks_never_retires_them() {
+    let service = TopologyIngestService::new_in_memory();
+    let tenant_id = TenantId(Uuid::new_v4());
+
+    let mut first = envelope("ing-1", vpc("prod-a", "10.0.1.0/24"), tenant_id);
+    first.payload_inline = Some({
+        let mut payload = vpc("prod-a", "10.0.1.0/24");
+        payload["network_segments"][0]["cloud_account"] = json!("tencent:a");
+        payload["network_domains"][0]["cloud_account"] = json!("tencent:a");
+        payload
+    });
+    declare_full_account_coverage(&mut first, "tencent:a");
+    service.submit_and_materialize(first).expect("ingest");
+
+    for round in 0..crate::service::materialize::NETWORK_RETIRE_AFTER_COMPLETE_SNAPSHOTS + 1 {
+        // 没有 network_segments / ip_addresses / ips 任一键 = 本帧不表态。
+        // coverage 元数据仍齐全，所以这里唯一拦着退役的就是 `reported` 闸。
+        let mut quiet = envelope(
+            &format!("ing-nokeys-{round}"),
+            json!({ "hosts": [] }),
+            tenant_id,
+        );
+        declare_full_account_coverage(&mut quiet, "tencent:a");
+        let summary = service.submit_and_materialize(quiet).expect("ingest").1;
+        assert_eq!(summary.stale_network_segment_count, 0, "没观测 ≠ 删除");
+    }
+
+    let rows = segments(&service, tenant_id);
+    assert_eq!(rows.len(), 1);
+    assert!(rows[0].stale_at.is_none(), "没观测 ≠ 删除");
+    assert_eq!(rows[0].miss_count, 0, "miss_count 一次都不该被推进");
 }

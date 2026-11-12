@@ -118,11 +118,12 @@ LIMIT NULLIF($2, '')::int4 OFFSET NULLIF($3, '')::int4
 pub const UPSERT_NETWORK_DOMAIN: &str = r#"
 INSERT INTO network_domain (
     network_domain_id, tenant_id, environment_id, name, kind, description, created_at, updated_at,
-    external_ref, cidr
+    external_ref, cidr, cloud_account, stale_at, miss_count, ingest_scope
 ) VALUES (
     NULLIF($1, '')::uuid, NULLIF($2, '')::uuid, NULLIF($3, '')::uuid, $4, $5,
     NULLIF($6, ''), NULLIF($7, '')::timestamptz, NULLIF($8, '')::timestamptz,
-    NULLIF($9, ''), NULLIF($10, '')
+    NULLIF($9, ''), NULLIF($10, ''), NULLIF($11, ''),
+    NULLIF($12, '')::timestamptz, COALESCE(NULLIF($13, '')::bigint, 0), NULLIF($14, '')
 )
 ON CONFLICT (network_domain_id) DO UPDATE SET
     tenant_id = EXCLUDED.tenant_id,
@@ -132,18 +133,33 @@ ON CONFLICT (network_domain_id) DO UPDATE SET
     description = EXCLUDED.description,
     updated_at = EXCLUDED.updated_at,
     external_ref = COALESCE(EXCLUDED.external_ref, network_domain.external_ref),
-    cidr = COALESCE(EXCLUDED.cidr, network_domain.cidr)
+    cidr = COALESCE(EXCLUDED.cidr, network_domain.cidr),
+    cloud_account = COALESCE(EXCLUDED.cloud_account, network_domain.cloud_account),
+    stale_at = EXCLUDED.stale_at,
+    miss_count = EXCLUDED.miss_count,
+    ingest_scope = COALESCE(EXCLUDED.ingest_scope, network_domain.ingest_scope)
+"#;
+
+pub const LIST_NETWORK_DOMAINS: &str = r#"
+SELECT network_domain_id, tenant_id, environment_id, name, kind, description, created_at, updated_at,
+       external_ref, cidr, cloud_account, stale_at, miss_count, ingest_scope
+FROM network_domain
+WHERE tenant_id = NULLIF($1, '')::uuid
+ORDER BY name ASC, network_domain_id ASC
+LIMIT NULLIF($2, '')::int4 OFFSET NULLIF($3, '')::int4
 "#;
 
 pub const UPSERT_NETWORK_SEGMENT: &str = r#"
 INSERT INTO network_segment (
     network_segment_id, tenant_id, network_domain_id, environment_id, name, cidr, gateway_ip,
-    address_family, created_at, updated_at, external_ref
+    address_family, created_at, updated_at, external_ref,
+    cloud_account, stale_at, miss_count, ingest_scope
 ) VALUES (
     NULLIF($1, '')::uuid, NULLIF($2, '')::uuid, NULLIF($3, '')::uuid,
     NULLIF($4, '')::uuid, $5, NULLIF($6, ''), NULLIF($7, ''), $8,
     NULLIF($9, '')::timestamptz, NULLIF($10, '')::timestamptz,
-    NULLIF($11, '')
+    NULLIF($11, ''), NULLIF($12, ''),
+    NULLIF($13, '')::timestamptz, COALESCE(NULLIF($14, '')::bigint, 0), NULLIF($15, '')
 )
 ON CONFLICT (network_segment_id) DO UPDATE SET
     tenant_id = EXCLUDED.tenant_id,
@@ -154,19 +170,25 @@ ON CONFLICT (network_segment_id) DO UPDATE SET
     gateway_ip = EXCLUDED.gateway_ip,
     address_family = EXCLUDED.address_family,
     updated_at = EXCLUDED.updated_at,
-    external_ref = COALESCE(EXCLUDED.external_ref, network_segment.external_ref)
+    external_ref = COALESCE(EXCLUDED.external_ref, network_segment.external_ref),
+    cloud_account = COALESCE(EXCLUDED.cloud_account, network_segment.cloud_account),
+    stale_at = EXCLUDED.stale_at,
+    miss_count = EXCLUDED.miss_count,
+    ingest_scope = COALESCE(EXCLUDED.ingest_scope, network_segment.ingest_scope)
 "#;
 
 pub const GET_NETWORK_SEGMENT: &str = r#"
 SELECT network_segment_id, tenant_id, network_domain_id, environment_id, name, cidr, gateway_ip,
-       address_family, created_at, updated_at, external_ref
+       address_family, created_at, updated_at, external_ref,
+       cloud_account, stale_at, miss_count, ingest_scope
 FROM network_segment
 WHERE network_segment_id = NULLIF($1, '')::uuid
 "#;
 
 pub const LIST_NETWORK_SEGMENTS: &str = r#"
 SELECT network_segment_id, tenant_id, network_domain_id, environment_id, name, cidr, gateway_ip,
-       address_family, created_at, updated_at, external_ref
+       address_family, created_at, updated_at, external_ref,
+       cloud_account, stale_at, miss_count, ingest_scope
 FROM network_segment
 WHERE tenant_id = NULLIF($1, '')::uuid
 ORDER BY name ASC, network_segment_id ASC

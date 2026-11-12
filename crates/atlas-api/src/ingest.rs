@@ -170,6 +170,7 @@ pub fn extract_network_domain_candidates(
             external_ref: required_string_any(row, &["external_ref", "vpc_id"])?,
             name: optional_string(row, "name")?.or(optional_string(row, "domain_name")?),
             cidr: optional_string(row, "cidr")?,
+            cloud_account: optional_string(row, "cloud_account")?,
         });
     }
 
@@ -187,9 +188,16 @@ pub fn extract_network_segment_candidates(
     if looks_like_edge_network_fact(payload)? {
         return Ok(ExtractedNetworkSegments {
             candidates: vec![network_candidate_from_row(envelope, payload)?],
+            reported: true,
         });
     }
 
+    // `reported` 是退役的唯一闸门：三个键一个都没出现 = 采集器把网络采集关了 /
+    // 换了别的口径。这时候「没看到它」什么也不证明，不能拿缺席退役。
+    // 键在但数组为空是另一回事 —— 那是「这个账号的子网全没了」，恰恰该退役。
+    let reported = payload.contains_key("network_segments")
+        || payload.contains_key("ip_addresses")
+        || payload.contains_key("ips");
     let rows = if payload.contains_key("network_segments") {
         first_array(payload, "network_segments", "items")?
     } else {
@@ -233,10 +241,14 @@ pub fn extract_network_segment_candidates(
                 .or(optional_string(row, "subnet_id")?),
             parent_external_ref: optional_string(row, "parent_external_ref")?
                 .or(optional_string(row, "vpc_id")?),
+            cloud_account: optional_string(row, "cloud_account")?,
         });
     }
 
-    Ok(ExtractedNetworkSegments { candidates })
+    Ok(ExtractedNetworkSegments {
+        candidates,
+        reported,
+    })
 }
 
 pub fn extract_process_runtime_candidates(
@@ -461,6 +473,7 @@ fn network_candidate_from_row(
             .or_else(|| optional_string_lossy(row, "name")),
         external_ref: None,
         parent_external_ref: None,
+        cloud_account: None,
     })
 }
 

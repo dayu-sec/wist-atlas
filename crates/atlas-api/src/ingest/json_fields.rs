@@ -195,11 +195,15 @@ pub(super) fn extract_network_segments_from_interfaces(
                 // 端侧不认识云侧的 VPC/Subnet ID。
                 external_ref: None,
                 parent_external_ref: None,
+                cloud_account: None,
             });
         }
     }
 
-    Ok(ExtractedNetworkSegments { candidates })
+    Ok(ExtractedNetworkSegments {
+        candidates,
+        reported: true,
+    })
 }
 
 pub(super) fn network_cidr(ip: &str, prefix: u64) -> String {

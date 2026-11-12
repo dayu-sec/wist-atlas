@@ -109,6 +109,9 @@ pub struct NetworkDomainCandidate {
     /// 地址空间（VPC 的 CIDR）。域的核心属性。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cidr: Option<String>,
+    /// 账号归属（退役判定作用域）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cloud_account: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -129,6 +132,9 @@ pub struct NetworkSegmentCandidate {
     /// 所属域的云侧 ID（`VpcId`）。有它就能稳定挂进对应的 `NetworkDomain`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_external_ref: Option<String>,
+    /// 账号归属（退役判定作用域）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cloud_account: Option<String>,
 }
 
 /// 一个观测到的监听地址（模型里的 `InstEp` 候选）。

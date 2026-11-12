@@ -205,6 +205,14 @@ impl AsyncCatalogStore for PostgresTopologyStore<MemoryPostgresExecutor> {
     ) -> StorageResult<Option<NetworkDomain>> {
         CatalogStore::get_network_domain(self, network_domain_id)
     }
+    async fn list_network_domains(
+        &self,
+        tenant_id: TenantId,
+        page: Page,
+    ) -> StorageResult<Vec<NetworkDomain>> {
+        CatalogStore::list_network_domains(self, tenant_id, page)
+    }
+
     async fn upsert_network_segment(&self, segment: &NetworkSegment) -> StorageResult<()> {
         CatalogStore::upsert_network_segment(self, segment)
     }

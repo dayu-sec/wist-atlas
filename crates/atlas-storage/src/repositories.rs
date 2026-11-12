@@ -65,6 +65,11 @@ pub trait CatalogStore {
 
     fn upsert_network_domain(&self, domain: &NetworkDomain) -> StorageResult<()>;
     fn get_network_domain(&self, network_domain_id: Uuid) -> StorageResult<Option<NetworkDomain>>;
+    fn list_network_domains(
+        &self,
+        tenant_id: TenantId,
+        page: Page,
+    ) -> StorageResult<Vec<NetworkDomain>>;
 
     fn upsert_network_segment(&self, segment: &NetworkSegment) -> StorageResult<()>;
     fn get_network_segment(
@@ -127,6 +132,11 @@ pub trait AsyncCatalogStore: Sync {
         &self,
         network_domain_id: Uuid,
     ) -> StorageResult<Option<NetworkDomain>>;
+    async fn list_network_domains(
+        &self,
+        tenant_id: TenantId,
+        page: Page,
+    ) -> StorageResult<Vec<NetworkDomain>>;
     async fn upsert_network_segment(&self, segment: &NetworkSegment) -> StorageResult<()>;
     async fn get_network_segment(
         &self,

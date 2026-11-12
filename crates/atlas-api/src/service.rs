@@ -51,6 +51,9 @@ pub struct PipelineRunSummary {
     /// 本次判定已释放的 EIP 数（非完整快照 / 本帧没观测 EIP 时恒为 0）。
     #[serde(default)]
     pub stale_elastic_ip_count: u64,
+    /// 本次判定已删除的子网数（域会跟着「一个活段都不剩」一起退役，不单独计数）。
+    #[serde(default)]
+    pub stale_network_segment_count: u64,
 }
 
 pub struct TopologyIngestService<S> {
@@ -76,7 +79,9 @@ where
 
         let hosts = extract_host_candidates(&envelope)?.candidates;
         let network_domains = extract_network_domain_candidates(&envelope)?.candidates;
-        let networks = extract_network_segment_candidates(&envelope)?.candidates;
+        let network_extraction = extract_network_segment_candidates(&envelope)?;
+        let networks_reported = network_extraction.reported;
+        let networks = network_extraction.candidates;
         let elastic_ips = extract_elastic_ip_candidates(&envelope)?;
         let processes = extract_process_runtime_candidates(&envelope)?.candidates;
         let container_extraction = extract_container_runtime_candidates(&envelope)?;
@@ -104,8 +109,14 @@ where
             .collect();
         materialize_business_catalog(&self.store, business_catalog, accepted_at).conv_err()?;
         // 域必须在段之前：段靠域的稳定 ID 挂进去。
-        materialize_network_domains(&self.store, &mut catalog, network_domains, accepted_at)
-            .conv_err()?;
+        materialize_network_domains(
+            &self.store,
+            &mut catalog,
+            network_domains,
+            &scope,
+            accepted_at,
+        )
+        .conv_err()?;
         let materialized = materialize_candidates(
             &self.store,
             &mut catalog,
@@ -131,6 +142,14 @@ where
             &envelope,
             &materialized_ips,
             elastic_ips.reported,
+            accepted_at,
+        )
+        .conv_err()?;
+        let stale_network_count = sweep_stale_networks(
+            &self.store,
+            &envelope,
+            &materialized,
+            networks_reported,
             accepted_at,
         )
         .conv_err()?;
@@ -199,6 +218,7 @@ where
                 unresolved_container_count: container_sweep.unresolved,
                 elastic_ip_count: materialized_ips.count,
                 stale_elastic_ip_count,
+                stale_network_segment_count: stale_network_count,
             },
         ))
     }
@@ -231,7 +251,9 @@ where
 
         let hosts = extract_host_candidates(&envelope)?.candidates;
         let network_domains = extract_network_domain_candidates(&envelope)?.candidates;
-        let networks = extract_network_segment_candidates(&envelope)?.candidates;
+        let network_extraction = extract_network_segment_candidates(&envelope)?;
+        let networks_reported = network_extraction.reported;
+        let networks = network_extraction.candidates;
         let elastic_ips = extract_elastic_ip_candidates(&envelope)?;
         let processes = extract_process_runtime_candidates(&envelope)?.candidates;
         let containers = extract_container_runtime_candidates(&envelope)?;
@@ -260,9 +282,15 @@ where
         materialize_business_catalog_async(&self.store, business_catalog, accepted_at)
             .await
             .conv_err()?;
-        materialize_network_domains_async(&self.store, &mut catalog, network_domains, accepted_at)
-            .await
-            .conv_err()?;
+        materialize_network_domains_async(
+            &self.store,
+            &mut catalog,
+            network_domains,
+            &scope,
+            accepted_at,
+        )
+        .await
+        .conv_err()?;
         let materialized = materialize_candidates_async(
             &self.store,
             &mut catalog,
@@ -291,6 +319,15 @@ where
             &envelope,
             &materialized_ips,
             elastic_ips.reported,
+            accepted_at,
+        )
+        .await
+        .conv_err()?;
+        let stale_network_count = sweep_stale_networks_async(
+            &self.store,
+            &envelope,
+            &materialized,
+            networks_reported,
             accepted_at,
         )
         .await
@@ -376,6 +413,7 @@ where
                 unresolved_container_count: container_sweep.unresolved,
                 elastic_ip_count: materialized_ips.count,
                 stale_elastic_ip_count,
+                stale_network_segment_count: stale_network_count,
             },
         ))
     }
@@ -401,11 +439,12 @@ use materialize::{
     ContainerSweep, MaterializedElasticIps, MaterializedHosts, ProcessSweep, container_uuid,
     hydrate_catalog, hydrate_catalog_async, mark_stale_containers, mark_stale_containers_async,
     mark_stale_elastic_ips, mark_stale_elastic_ips_async, mark_stale_hosts, mark_stale_hosts_async,
-    mark_stale_processes, mark_stale_processes_async, materialize_business_catalog,
-    materialize_business_catalog_async, materialize_candidates, materialize_candidates_async,
-    materialize_containers, materialize_containers_async, materialize_elastic_ips,
-    materialize_elastic_ips_async, materialize_host_telemetry, materialize_host_telemetry_async,
-    materialize_network_domains, materialize_network_domains_async, materialize_process_telemetry,
+    mark_stale_network_segments, mark_stale_network_segments_async, mark_stale_processes,
+    mark_stale_processes_async, materialize_business_catalog, materialize_business_catalog_async,
+    materialize_candidates, materialize_candidates_async, materialize_containers,
+    materialize_containers_async, materialize_elastic_ips, materialize_elastic_ips_async,
+    materialize_host_telemetry, materialize_host_telemetry_async, materialize_network_domains,
+    materialize_network_domains_async, materialize_process_telemetry,
     materialize_process_telemetry_async, materialize_processes, materialize_processes_async,
     materialize_service_endpoints, materialize_service_endpoints_async,
     materialize_subjects_and_assignments, materialize_subjects_and_assignments_async,
@@ -522,6 +561,61 @@ where
         store,
         envelope.tenant_id,
         &materialized.elastic_ip_ids,
+        account,
+        at,
+    )
+    .await
+    .conv_err()
+}
+
+/// 子网退役清扫。闸门与主机/EIP 相同，另外要求本帧**观测了网段**
+/// （`network_segments` 键在）：采集器不报网络时，「没有它」什么也不证明。
+fn sweep_stale_networks<S>(
+    store: &S,
+    envelope: &IngestEnvelope,
+    materialized: &MaterializedHosts,
+    reported: bool,
+    at: DateTime<Utc>,
+) -> ApiResult<u64>
+where
+    S: CatalogStore,
+{
+    if !reported {
+        return Ok(0);
+    }
+    let Some(account) = retirement_account(envelope) else {
+        return Ok(0);
+    };
+    mark_stale_network_segments(
+        store,
+        envelope.tenant_id,
+        &materialized.network_segment_ids,
+        account,
+        at,
+    )
+    .conv_err()
+}
+
+async fn sweep_stale_networks_async<S>(
+    store: &S,
+    envelope: &IngestEnvelope,
+    materialized: &MaterializedHosts,
+    reported: bool,
+    at: DateTime<Utc>,
+) -> ApiResult<u64>
+where
+    S: AsyncCatalogStore,
+{
+    if !reported {
+        return Ok(0);
+    }
+    let Some(account) = retirement_account(envelope) else {
+        return Ok(0);
+    };
+    mark_stale_network_segments_async(
+        store,
+        envelope.tenant_id,
+        &materialized.network_segment_ids,
         account,
         at,
     )

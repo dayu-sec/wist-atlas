@@ -27,6 +27,8 @@ use crate::pipeline::{
 #[derive(Debug, Default, Clone)]
 pub(crate) struct MaterializedHosts {
     pub host_ids: BTreeSet<Uuid>,
+    /// 本帧覆盖到的网段（与 host_ids 一样，退役比对要知道「谁出现了」）。
+    pub network_segment_ids: BTreeSet<Uuid>,
     pub host_count: usize,
     pub network_count: usize,
     pub assoc_count: usize,
@@ -105,11 +107,146 @@ fn replace_catalog_assoc(catalog: &mut InMemoryCatalog, assoc: HostNetAssoc) {
     }
 }
 
+/// 连续多少份完整快照都没有这个子网，才判定它已被删除。与主机同一阈值。
+pub(crate) const NETWORK_RETIRE_AFTER_COMPLETE_SNAPSHOTS: i64 = 3;
+
+fn full_page() -> Page {
+    Page {
+        limit: i32::MAX as u32,
+        offset: 0,
+    }
+}
+
+/// 子网退役清扫；顺带把「一个活子网都不剩」的域也标退役。
+///
+/// 域不单独上报（它只随段出现），所以用「域下还有没有活段」推导，避免再引入一套
+/// 「域覆盖集」。代价是**没有子网的 VPC 永远不会退役** —— 少见，且方向安全。
+///
+/// `seen` 可以为空：那是「这个账号的子网全被删了」，正是最该退役的情形。
+/// 「这一帧有没有观测网络」的判断在调用方（`sweep_stale_networks` 的 `reported` 闸）。
+///
+/// 注意与主机的**不对称**：`mark_stale_hosts` 遇到空集会整轮跳过（防采集器抽风），
+/// 子网这里不跳 —— 空集在这里是有意义的事实，不是缺证据。
+pub(crate) fn mark_stale_network_segments<S>(
+    store: &S,
+    tenant_id: TenantId,
+    seen: &BTreeSet<Uuid>,
+    account: &str,
+    at: DateTime<Utc>,
+) -> StorageResult<u64>
+where
+    S: CatalogStore,
+{
+    let mut touched_domains: BTreeSet<Uuid> = BTreeSet::new();
+    let mut retired_now: BTreeSet<Uuid> = BTreeSet::new();
+    let mut newly_stale = 0;
+    let listing = store.list_network_segments(tenant_id, full_page())?;
+    for mut segment in listing.clone() {
+        if segment.cloud_account.as_deref() != Some(account) {
+            continue;
+        }
+        if seen.contains(&segment.network_segment_id) || segment.stale_at.is_some() {
+            continue;
+        }
+
+        segment.miss_count += 1;
+        if segment.miss_count >= NETWORK_RETIRE_AFTER_COMPLETE_SNAPSHOTS {
+            segment.stale_at = Some(at);
+            segment.updated_at = at;
+            newly_stale += 1;
+            retired_now.insert(segment.network_segment_id);
+            if let Some(domain_id) = segment.network_domain_id {
+                touched_domains.insert(domain_id);
+            }
+        }
+        store.upsert_network_segment(&segment)?;
+    }
+
+    // 域不单独上报，只看「域下还有没有活段」。存活判断在**改前的快照**上做：
+    // 本轮刚标记退役的段不算活（`retired_now`），改动前就已经 stale 的也不算。
+    for domain_id in touched_domains {
+        let has_live = listing.iter().any(|segment| {
+            segment.network_domain_id == Some(domain_id)
+                && segment.stale_at.is_none()
+                && !retired_now.contains(&segment.network_segment_id)
+        });
+        if has_live {
+            continue;
+        }
+        if let Some(mut domain) = store.get_network_domain(domain_id)?
+            && domain.stale_at.is_none()
+        {
+            domain.stale_at = Some(at);
+            domain.updated_at = at;
+            store.upsert_network_domain(&domain)?;
+        }
+    }
+
+    Ok(newly_stale)
+}
+
+pub(crate) async fn mark_stale_network_segments_async<S>(
+    store: &S,
+    tenant_id: TenantId,
+    seen: &BTreeSet<Uuid>,
+    account: &str,
+    at: DateTime<Utc>,
+) -> StorageResult<u64>
+where
+    S: AsyncCatalogStore,
+{
+    let mut touched_domains: BTreeSet<Uuid> = BTreeSet::new();
+    let mut retired_now: BTreeSet<Uuid> = BTreeSet::new();
+    let mut newly_stale = 0;
+    let listing = store.list_network_segments(tenant_id, full_page()).await?;
+    for mut segment in listing.clone() {
+        if segment.cloud_account.as_deref() != Some(account) {
+            continue;
+        }
+        if seen.contains(&segment.network_segment_id) || segment.stale_at.is_some() {
+            continue;
+        }
+
+        segment.miss_count += 1;
+        if segment.miss_count >= NETWORK_RETIRE_AFTER_COMPLETE_SNAPSHOTS {
+            segment.stale_at = Some(at);
+            segment.updated_at = at;
+            newly_stale += 1;
+            retired_now.insert(segment.network_segment_id);
+            if let Some(domain_id) = segment.network_domain_id {
+                touched_domains.insert(domain_id);
+            }
+        }
+        store.upsert_network_segment(&segment).await?;
+    }
+
+    for domain_id in touched_domains {
+        let has_live = listing.iter().any(|segment| {
+            segment.network_domain_id == Some(domain_id)
+                && segment.stale_at.is_none()
+                && !retired_now.contains(&segment.network_segment_id)
+        });
+        if has_live {
+            continue;
+        }
+        if let Some(mut domain) = store.get_network_domain(domain_id).await?
+            && domain.stale_at.is_none()
+        {
+            domain.stale_at = Some(at);
+            domain.updated_at = at;
+            store.upsert_network_domain(&domain).await?;
+        }
+    }
+
+    Ok(newly_stale)
+}
+
 /// 网络域（云侧 VPC）落地。**必须在网段之前**：段靠域的稳定 ID 挂进去。
 pub(crate) fn materialize_network_domains<S>(
     store: &S,
     catalog: &mut InMemoryCatalog,
     candidates: Vec<atlas_domain::NetworkDomainCandidate>,
+    scope: &str,
     now: DateTime<Utc>,
 ) -> StorageResult<usize>
 where
@@ -117,7 +254,7 @@ where
 {
     let count = candidates.len();
     for candidate in candidates {
-        crate::pipeline::ensure_cloud_network_domain(
+        let id = crate::pipeline::ensure_cloud_network_domain(
             catalog,
             candidate.tenant_id,
             &candidate.external_ref,
@@ -125,6 +262,21 @@ where
             candidate.cidr.as_deref(),
             now,
         );
+        // 看到了就复活（与主机/段的 stale 语义一致）。
+        if let Some(domain) = catalog
+            .network_domains
+            .iter_mut()
+            .find(|domain| domain.network_domain_id == id)
+        {
+            domain.cloud_account = candidate
+                .cloud_account
+                .clone()
+                .or_else(|| domain.cloud_account.clone());
+            domain.stale_at = None;
+            domain.miss_count = 0;
+            domain.ingest_scope = Some(scope.to_string());
+            domain.updated_at = now;
+        }
     }
     for domain in &catalog.network_domains {
         store.upsert_network_domain(domain)?;
@@ -136,6 +288,7 @@ pub(crate) async fn materialize_network_domains_async<S>(
     store: &S,
     catalog: &mut InMemoryCatalog,
     candidates: Vec<atlas_domain::NetworkDomainCandidate>,
+    scope: &str,
     now: DateTime<Utc>,
 ) -> StorageResult<usize>
 where
@@ -143,7 +296,7 @@ where
 {
     let count = candidates.len();
     for candidate in candidates {
-        crate::pipeline::ensure_cloud_network_domain(
+        let id = crate::pipeline::ensure_cloud_network_domain(
             catalog,
             candidate.tenant_id,
             &candidate.external_ref,
@@ -151,6 +304,20 @@ where
             candidate.cidr.as_deref(),
             now,
         );
+        if let Some(domain) = catalog
+            .network_domains
+            .iter_mut()
+            .find(|domain| domain.network_domain_id == id)
+        {
+            domain.cloud_account = candidate
+                .cloud_account
+                .clone()
+                .or_else(|| domain.cloud_account.clone());
+            domain.stale_at = None;
+            domain.miss_count = 0;
+            domain.ingest_scope = Some(scope.to_string());
+            domain.updated_at = now;
+        }
     }
     for domain in &catalog.network_domains {
         atlas_storage::AsyncCatalogStore::upsert_network_domain(store, domain).await?;
@@ -175,11 +342,24 @@ where
         // 段与域**独立落地**：云侧的 VPC / 子网没有 machine_id / host_name，
         // 解析不到主机。以前这种情况整段被跳过，等于云上网络结构一行都没入库。
         let network_resolution = resolve_network_candidate(catalog, &network_candidate, now);
-        upsert_segment(catalog, network_resolution.segment.clone());
+        let mut segment = network_resolution.segment.clone();
+        // presence 与主机同一套：看到就复活，账号归属由云侧独占写。
+        segment.cloud_account = network_candidate
+            .cloud_account
+            .clone()
+            .or_else(|| segment.cloud_account.clone());
+        segment.stale_at = None;
+        segment.miss_count = 0;
+        segment.ingest_scope = Some(scope.to_string());
+        segment.updated_at = now;
+        upsert_segment(catalog, segment.clone());
         for domain in &catalog.network_domains {
             store.upsert_network_domain(domain)?;
         }
-        store.upsert_network_segment(&network_resolution.segment)?;
+        store.upsert_network_segment(&segment)?;
+        result
+            .network_segment_ids
+            .insert(segment.network_segment_id);
         result.network_count += 1;
 
         // 有地址、且能对上主机，才建「主机 ↔ 网段」关联。

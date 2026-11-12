@@ -33,6 +33,10 @@ pub struct ExtractedHosts {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExtractedNetworkSegments {
     pub candidates: Vec<NetworkSegmentCandidate>,
+    /// 本帧有没有观测网络。`network_segments` / `ip_addresses` / `ips` 一个都没出现 =
+    /// 不表态，不能拿缺席退役；键在但数组为空 = 「全没了」，那恰恰该退役。
+    #[serde(default)]
+    pub reported: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -104,6 +104,12 @@ pub(super) fn decode_network_domain(row: &[String]) -> StorageResult<NetworkDoma
         kind: parse_network_domain_kind(&row[4])?,
         cidr: empty_to_none(&row[9]),
         description: empty_to_none(&row[5]),
+        cloud_account: empty_to_none(&row[10]),
+        stale_at: empty_to_none(&row[11])
+            .map(|value| parse_datetime(&value))
+            .transpose()?,
+        miss_count: parse_optional_i64(&row[12])?.unwrap_or(0),
+        ingest_scope: empty_to_none(&row[13]),
         created_at: parse_datetime(&row[6])?,
         updated_at: parse_datetime(&row[7])?,
     })
@@ -120,6 +126,12 @@ pub(super) fn decode_network_segment(row: &[String]) -> StorageResult<NetworkSeg
         cidr: empty_to_none(&row[5]),
         gateway_ip: empty_to_none(&row[6]),
         address_family: parse_address_family(&row[7])?,
+        cloud_account: empty_to_none(&row[11]),
+        stale_at: empty_to_none(&row[12])
+            .map(|value| parse_datetime(&value))
+            .transpose()?,
+        miss_count: parse_optional_i64(&row[13])?.unwrap_or(0),
+        ingest_scope: empty_to_none(&row[14]),
         created_at: parse_datetime(&row[8])?,
         updated_at: parse_datetime(&row[9])?,
     })

@@ -42,6 +42,10 @@ pub const NETWORK_DOMAIN_CIDR_VERSION: &str = "0012_network_domain_cidr";
 pub const NETWORK_DOMAIN_CIDR_SQL: &str =
     include_str!("../migrations/0012_network_domain_cidr.sql");
 
+/// 网络对象的 presence（子网/VPC 也能退役）。
+pub const NETWORK_PRESENCE_VERSION: &str = "0013_network_presence";
+pub const NETWORK_PRESENCE_SQL: &str = include_str!("../migrations/0013_network_presence.sql");
+
 pub const MIGRATIONS: &[Migration] = &[
     Migration {
         version: INITIAL_SCHEMA_VERSION,
@@ -90,6 +94,10 @@ pub const MIGRATIONS: &[Migration] = &[
     Migration {
         version: NETWORK_DOMAIN_CIDR_VERSION,
         sql: NETWORK_DOMAIN_CIDR_SQL,
+    },
+    Migration {
+        version: NETWORK_PRESENCE_VERSION,
+        sql: NETWORK_PRESENCE_SQL,
     },
 ];
 
