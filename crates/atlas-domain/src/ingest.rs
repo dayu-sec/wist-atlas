@@ -11,6 +11,9 @@ use orion_error::conversion::ToStructError;
 
 const ATLAS_INPUT_SCHEMA_FAMILIES: &[&str] = &[
     "edge",
+    // 外部资产目录（云 API / 客户 CMDB / 导入 共用）：与 edge 同为"资产目录"类输入，
+    // 但不来自端侧。family 描述**数据类别**，厂商差异归 `source.system`。
+    "inventory",
     "cmdb",
     "iam",
     "k8s",

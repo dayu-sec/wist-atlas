@@ -1827,3 +1827,70 @@ async fn a_multi_customer_site_rejects_an_empty_cust_id_instead_of_guessing() {
         .collect();
     assert_eq!(names, vec!["host-only"], "{body}");
 }
+
+/// wparse `cloud-inventory` sink 落下的一行（云账号资产快照）。
+fn inventory_sink_line() -> String {
+    let snapshot = serde_json::json!({
+        "schema_native": "wist.harvest.snapshot.v1",
+        "snap_id": "tencent-cloud-prod-inventory-t1-20261112T103513Z",
+        "collected_at": "2026-11-12T10:35:13Z",
+        "source_code": "tencent-cloud-prod",
+        "assets": {
+            "CLOUD_HOST": [
+                {"source_asset_id": "ins-1", "asset_name": "order-api-01", "os_name": "Ubuntu 22.04 LTS"},
+                {"source_asset_id": "ins-2", "asset_name": "order-api-02"}
+            ],
+            "VPC": [{"source_asset_id": "vpc-1", "asset_name": "prod-vpc", "cidr": "10.0.0.0/16"}],
+            "SUB_NET": [{"source_asset_id": "subnet-1", "asset_name": "prod-a", "cidr": "10.0.1.0/24"}],
+            "EIP": []
+        }
+    });
+    serde_json::json!({
+        "schema": "atlas.in.inventory.v1",
+        "agent": "tencent-cloud-prod",
+        "ts": "2026-11-12T10:35:14Z",
+        "seq": 1,
+        "body": snapshot.to_string(),
+        "biz": "cloud-inventory",
+        "env": "prod",
+        "sink": "json"
+    })
+    .to_string()
+}
+
+/// 云账号资产走的是**同一条入口**，靠 `schema` 分发到 inventory 适配器。
+#[tokio::test]
+async fn http_ingest_accepts_an_inventory_snapshot_and_writes_hosts() {
+    let router = build_http_router(HttpAppState::new(TopologyMonolith::new_in_memory()));
+
+    let content: Value = serde_json::from_str(&inventory_sink_line()).unwrap();
+    let response = router
+        .clone()
+        .oneshot(ingest_request(INGEST_TENANT, content))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload = json_body(response).await;
+    assert_eq!(payload["status"], "accepted");
+    assert_eq!(payload["rejected"], 0, "不应有拒收：{payload}");
+    assert_eq!(payload["hosts"], 2, "两台云主机都要落库");
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/api/hosts")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let payload = json_body(response).await;
+    let hosts = payload["data"]["hosts"].as_array().unwrap();
+    // 读接口是 camelCase（`hostName`），与写入侧 snake_case 不同 —— 两处都别写混。
+    let names: Vec<&str> = hosts
+        .iter()
+        .filter_map(|host| host["hostName"].as_str())
+        .collect();
+    assert!(names.contains(&"order-api-01"), "实际: {names:?}");
+    assert!(names.contains(&"order-api-02"), "实际: {names:?}");
+}

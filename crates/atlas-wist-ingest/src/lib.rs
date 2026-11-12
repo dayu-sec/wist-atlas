@@ -221,6 +221,11 @@ pub fn store_checkpoint(path: &Path, checkpoint: &Checkpoint) -> io::Result<()> 
 
 pub use atlas_wist_adapter::{AdapterError, EdgeEnvelope};
 
+// 云账号资产（`atlas.in.inventory.v1`）：与 agentd 的 edge 快照走**不同适配器**，
+// 由记录的 `schema` 字段分发（见 `convert_sink_line`）。
+mod inventory;
+pub use inventory::INVENTORY_SCHEMA;
+
 /// 把一行 sink 记录转成 atlas 的输入信封。
 ///
 /// 这一层只判**永久性**错误（JSON 坏了 / 没有 `body` / 快照缺 host）：这些行重试一万次
@@ -230,6 +235,15 @@ pub fn convert_sink_line(
     tenant: &str,
     env: Option<&str>,
 ) -> Result<atlas_domain::AtlasInputEnvelope, String> {
+    // 按 schema 分发：同一条入口同时承载 agentd 快照与云账号资产。
+    // 缺 `schema` 或未知值都交回 edge 适配器 —— 它对形状有严格校验，
+    // 会比在这里猜更早报错。
+    if peek_schema(line).as_deref() == Some(inventory::INVENTORY_SCHEMA) {
+        let value = inventory::envelope_from_sink_line(line, tenant, env)?;
+        return serde_json::from_value(value)
+            .map_err(|err| format!("rebuild atlas envelope: {err}"));
+    }
+
     let envelope = envelope_from_sink_line(line, tenant, env).map_err(|err| err.to_string())?;
     // 适配器输出与 `AtlasInputEnvelope` 是同一份 JSON，只是类型不同。
     // 用序列化对一次比手抄字段稳 —— 两边形状一漂就会在这里显形。
@@ -240,3 +254,50 @@ pub fn convert_sink_line(
 
 #[cfg(test)]
 mod tests;
+
+/// 只读记录里的 `schema`，用于分发。解析失败当作"没有 schema"。
+fn peek_schema(line: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(line)
+        .ok()?
+        .get("schema")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+}
+
+#[cfg(test)]
+mod schema_dispatch_tests {
+    use super::*;
+
+    fn inventory_line() -> String {
+        serde_json::json!({
+            "schema": INVENTORY_SCHEMA,
+            "agent": "tencent-cloud-prod",
+            "body": serde_json::json!({
+                "snap_id": "s1",
+                "collected_at": "2026-11-12T10:00:00Z",
+                "assets": {"CLOUD_HOST": [
+                    {"source_asset_id": "ins-1", "asset_name": "h1"}
+                ]}
+            }).to_string(),
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn inventory_schema_routes_to_the_inventory_adapter() {
+        let envelope = convert_sink_line(&inventory_line(), "tenant-demo", None)
+            .expect("inventory 行应被接受");
+        assert_eq!(envelope.schema, INVENTORY_SCHEMA);
+        assert_eq!(envelope.source.system, "wist-harvest");
+        assert_eq!(envelope.source.producer, "tencent-cloud-prod");
+        assert_eq!(envelope.payload["hosts"][0]["host_name"], "h1");
+    }
+
+    #[test]
+    fn unknown_schema_still_falls_through_to_edge_rules() {
+        // 没有 `body` 的 edge 行应以 Read(body) 类错误失败，而不是被 inventory 误收。
+        let line = serde_json::json!({"schema": "atlas.in.edge.v1", "agent": "a"}).to_string();
+        let err = convert_sink_line(&line, "t", None).unwrap_err();
+        assert!(err.contains("body"), "{err}");
+    }
+}
