@@ -1248,6 +1248,8 @@ where
         .await
     {
         Ok(views) => {
+            // 同一次响应里所有主机用同一个「现在」：每行各算一次会让同一页的边界值不一致。
+            let now = chrono::Utc::now();
             let hosts: Vec<HostSummaryHttpItem> = views
                 .into_iter()
                 // 写探针的主机不进展示：它不是资产，只是「写入能跑通」的证据。
@@ -1255,11 +1257,7 @@ where
                 .filter(|view| view.host.host_name != crate::probe::PROBE_HOST)
                 .map(|view| {
                     // 先算再搬：`host` 的字段会被逐个 move 进响应结构。
-                    let observation_state = view
-                        .host
-                        .observation_state(chrono::Utc::now())
-                        .as_str()
-                        .to_string();
+                    let observation_state = view.host.observation_state(now).as_str().to_string();
                     HostSummaryHttpItem {
                         id: view.host.host_id,
                         host_name: view.host.host_name,

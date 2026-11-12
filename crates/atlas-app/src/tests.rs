@@ -814,6 +814,14 @@ async fn http_router_lists_hosts_with_scale_metrics() {
     assert_eq!(hosts[0]["segmentCount"], 0);
     assert_eq!(hosts[0]["stale"], false);
     assert!(hosts[0]["lastInventoryAt"].as_str().is_some());
+    // 可达性是独立的一个轴。这份回放数据的采集时间固定在过去，所以它是 silent，
+    // 而 `stale` 依然是 false —— 「很久没上报」不等于「不存在」。
+    let observation = hosts[0]["observationState"].as_str().unwrap_or_default();
+    assert!(
+        ["live", "quiet", "silent"].contains(&observation),
+        "unexpected observationState: {observation}"
+    );
+    assert_eq!(hosts[0]["stale"], false, "可达性标签不能影响存在性判定");
 }
 
 #[tokio::test]

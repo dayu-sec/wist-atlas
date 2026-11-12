@@ -204,6 +204,9 @@ pub struct HostInventory {
     #[serde(default)]
     pub miss_count: i64,
     /// 归属的快照作用域 `schema:system:producer:tenant:env`（见 `ProcessRuntimeState::ingest_scope`）。
+    ///
+    /// 主机退役**已经不看它了**（那是「最后谁写过」，会被 agentd 每 5 分钟覆盖一次，
+    /// 真正的判据是 `cloud_account`）。保留它只为诊断：能回答「这一行最后一次是谁写的」。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ingest_scope: Option<String>,
 }
@@ -235,6 +238,10 @@ impl ObservationState {
 }
 
 /// `Live` 的窗口：要容得下最快来源的一个上报周期（agentd 默认 5 分钟）。
+///
+/// 注意：只由云 API 采集的主机（没有装 agent）每 6 小时才刷新一次 `last_inventory_at`，
+/// 所以它们几乎总会落在 `Quiet` —— 这是**预期**，不是告警。要判断这类机器在不在，
+/// 看的是云侧完整快照有没有它（见 `stale_at`），而不是可达性标签。
 pub const OBSERVATION_LIVE_SECONDS: i64 = 10 * 60;
 /// `Quiet` 的窗口：一天。超过它就只剩历史观测，不能再声称「现在还看得到」。
 pub const OBSERVATION_QUIET_SECONDS: i64 = 24 * 60 * 60;
@@ -344,6 +351,23 @@ mod tests {
         let (silent, now) = host(OBSERVATION_QUIET_SECONDS + 60);
         assert_eq!(silent.observation_state(now), ObservationState::Silent);
         assert!(silent.stale_at.is_none(), "silent 不写 stale_at");
+    }
+
+    #[test]
+    fn observation_state_boundaries_are_inclusive() {
+        // 边界必须钉住：改成 `age < 600` 之类的差一错误没人看得出来。
+        let (exactly_live, now) = host(OBSERVATION_LIVE_SECONDS);
+        assert_eq!(exactly_live.observation_state(now), ObservationState::Live);
+        let (just_quiet, now) = host(OBSERVATION_LIVE_SECONDS + 1);
+        assert_eq!(just_quiet.observation_state(now), ObservationState::Quiet);
+
+        let (exactly_quiet, now) = host(OBSERVATION_QUIET_SECONDS);
+        assert_eq!(
+            exactly_quiet.observation_state(now),
+            ObservationState::Quiet
+        );
+        let (just_silent, now) = host(OBSERVATION_QUIET_SECONDS + 1);
+        assert_eq!(just_silent.observation_state(now), ObservationState::Silent);
     }
 
     #[test]

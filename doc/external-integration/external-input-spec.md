@@ -165,6 +165,7 @@ atlas.in.<family>.v<major>
 | `res_ver` | string | 否 | K8s 等平台资源版本 |
 | `win_start` | string | 否 | telemetry 窗口开始 |
 | `win_end` | string | 否 | telemetry 窗口结束 |
+| `coverage` | object | 否 | 采集覆盖范围声明，见 3.3.2。**不带等同于「不对存在性发表意见」** |
 
 时间字段统一使用 RFC3339 UTC，例如 `2026-04-26T02:20:30Z`。
 
@@ -189,7 +190,50 @@ atlas.in.<family>.v<major>
 `incremental` / `window` / `correction` 描述的都是**部分**观测，不做任何清扫 ——
 拿部分观测当全集比对会把没投递的对象全标死。
 
-当前实现只对 `payload.processes[]` 生效（`host_inventory` / `network_segment` 的退役待定）。
+#### 3.3.2 主机退役：只认账号级完整快照
+
+主机的「不在」**不能用缺席证明**。关机、agent 被卸载、网络不通，在 atlas 侧都是同一件事
+——这一轮没看到它。三者都不说明机器不存在。所以：
+
+- 端侧（`atlas.in.edge.v1`）快照**永远不退役主机**，不管缺了多少轮；
+- 只有声明了 `collect.coverage` 的快照才有资格，且必须同时满足：
+
+```json
+"collect": {
+  "mode": "snapshot",
+  "coverage": { "scope": "account", "complete": true, "account": "tencent:1300000000" }
+}
+```
+
+| 字段 | 含义 |
+| --- | --- |
+| `scope` | `account` = 账号级全集（所有可见地域、所有资产类型）；`partial` = 子集，不对存在性发表意见 |
+| `complete` | 采集器自身的完整性校验是否通过（工作项全完成、分页总数对齐、地域齐全） |
+| `account` | 本帧覆盖的云账号键（`vendor:account`）。atlas 只做相等比较，不解析 |
+
+判定规则：
+
+1. 目标集 = `cloud_account == 声明的 account` 且带 `cloud_instance_id` 的主机。
+   端侧发现的 IDC 机器没有 `cloud_account`，云侧永远不碰。
+2. 目标集里本轮没出现的，`miss_count += 1`；连续 3 轮完整快照都没出现，才写 `stale_at`。
+3. `stale_at` 保留**首次**判定时间，不重复累加；重新出现即复活。
+4. 不完整的轮次（未声明 / `partial` / `complete=false`）既不累加也不清零 ——
+   它不算一份快照。
+5. 空快照（零主机）永不做退役比对。
+
+发布方同时要把 `account` 写进每条主机行的 `cloud_account`。采集器**不要**自己编账号键：
+没声明就没声明，atlas 宁可不退役。
+
+#### 3.3.3 可达性与存在性是两个轴
+
+读接口的 `observationState`（`live` / `quiet` / `silent`）只描述「多久没有新观测」：
+
+- `live` ≤ 10 分钟（agentd 一个上报周期内）
+- `quiet` ≤ 24 小时
+- `silent` > 24 小时 —— **仍然不是退役**
+
+只由云 API 采集的主机每 6 小时才刷新一次，落在 `quiet` 是预期的。要判断它还在不在，
+看 `stale`（存在性），不是看 `observationState`（可达性）。
 
 ### 3.4 `payload`
 

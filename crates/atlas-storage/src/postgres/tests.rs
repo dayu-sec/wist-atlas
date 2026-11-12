@@ -817,3 +817,84 @@ mod software {
         assert_eq!(fingerprints[0].size_bytes, 1024);
     }
 }
+
+#[test]
+fn host_upsert_preserves_the_identity_of_a_cloud_created_row() {
+    // 云侧先建行（没有 machine_id），端侧后到把 machine_id 补上。
+    // 这类「同一个 host_id、后补身份字段」的写入一旦按 machine_id 仲裁，真 PG 会撞主键
+    // —— 插入时的 PK 冲突不在 ON CONFLICT 的仲裁范围内。内存替身按 host_id 覆盖，
+    // 所以这条用例守的是「语句的仲裁列必须是 host_id」。
+    let store = PostgresTopologyStore::new(MemoryPostgresExecutor::default());
+    let tenant_id = TenantId(Uuid::new_v4());
+    let now = Utc::now();
+    let host_id = Uuid::new_v4();
+
+    let mut host = HostInventory {
+        host_id,
+        tenant_id,
+        environment_id: None,
+        host_name: "node-cloud".to_string(),
+        machine_id: None,
+        cloud_instance_id: Some("ins-1".to_string()),
+        cloud_account: Some("tencent:1300000000".to_string()),
+        os_name: None,
+        os_version: None,
+        arch: None,
+        created_at: now,
+        last_inventory_at: now,
+        stale_at: None,
+        miss_count: 0,
+        ingest_scope: Some("atlas.in.inventory.v1:wist-harvest:harvest-1::".to_string()),
+    };
+    CatalogStore::upsert_host(&store, &host).unwrap();
+
+    // 端侧看到同一台机：同一个 host_id，多了 machine_id / os。
+    host.machine_id = Some("machine-1".to_string());
+    host.os_name = Some("Ubuntu".to_string());
+    CatalogStore::upsert_host(&store, &host).unwrap();
+
+    let stored = CatalogStore::get_host(&store, host_id)
+        .unwrap()
+        .expect("host");
+    assert_eq!(stored.machine_id.as_deref(), Some("machine-1"));
+    assert_eq!(stored.os_name.as_deref(), Some("Ubuntu"));
+    assert_eq!(
+        stored.cloud_account.as_deref(),
+        Some("tencent:1300000000"),
+        "端侧不报账号，账号归属不能被抹掉"
+    );
+    assert_eq!(
+        stored.cloud_instance_id.as_deref(),
+        Some("ins-1"),
+        "云实例 ID 同样不能被抹掉"
+    );
+    assert_eq!(
+        CatalogStore::list_hosts(&store, tenant_id, Page::default())
+            .unwrap()
+            .len(),
+        1,
+        "同一个 host_id 不能变成两行"
+    );
+}
+
+#[test]
+fn host_upsert_is_arbitered_on_the_primary_key() {
+    // 仲裁列必须是主键 `host_id`：云侧先建行（machine_id 为空）、端侧后补 machine_id 时，
+    // 插入会撞 PK，而按 machine_id 仲裁覆盖不到这个冲突 —— 真 PG 会直接报错。
+    assert!(sql::UPSERT_HOST.contains("ON CONFLICT (host_id) DO UPDATE"));
+    assert!(
+        !sql::UPSERT_HOST.contains("ON CONFLICT (machine_id)"),
+        "按 machine_id 仲裁会在「同 host_id、后补身份字段」时撞主键"
+    );
+
+    // 账号归属：能写进去，也能读回来。写不进去 => 退役永远匹配不上账号。
+    assert!(sql::UPSERT_HOST.contains("cloud_account"));
+    assert!(sql::UPSERT_HOST.contains("$15"));
+    assert!(sql::UPSERT_HOST.contains("COALESCE(EXCLUDED.cloud_account"));
+    for statement in [sql::LIST_HOSTS, sql::LIST_ALL_HOSTS, sql::GET_HOST] {
+        assert!(
+            statement.contains("cloud_account"),
+            "读路径少了 cloud_account，退役目标就永远是空的"
+        );
+    }
+}

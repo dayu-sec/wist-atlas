@@ -3,38 +3,21 @@ DROP SCHEMA public CASCADE;
 CREATE SCHEMA public;
 "#;
 
+/// 主机 upsert。
+///
+/// **仲裁列是主键 `host_id`，不是 `machine_id`。**
+///
+/// 为什么：`host_id` 是每一行都有的身份（`stable_uuid` 依次用 machine_id / cloud_instance_id /
+/// host_name 派生），所以任何一次写入都能对上已有的行。反过来，用 `machine_id` 当仲裁列会
+/// 在两个真实场景里**撞主键**——云侧先建行（`machine_id` 为空）、端侧后补机器 ID，
+/// 或者主机先按名字入库、之后才报机器 ID：插入时主键冲突不在仲裁范围内，直接报错。
+///
+/// `machine_id` 的重复仍然由 `idx_host_inventory_machine_id` 拦住 —— 宁可让这一帧失败，
+/// 也不要像旧写法那样把一台机器静默改挂到另一个 `host_id` 上。
+///
+/// `ingest_scope` / `cloud_instance_id` / `cloud_account` 用 COALESCE：本次没带值就保留旧值，
+/// 别让「端侧不知道云账号」变成一次数据丢失。
 pub const UPSERT_HOST: &str = r#"
-INSERT INTO host_inventory (
-    host_id, tenant_id, environment_id, host_name, machine_id, os_name, os_version,
-    created_at, last_inventory_at, arch, stale_at, ingest_scope, miss_count,
-    cloud_instance_id, cloud_account
-) VALUES (
-    NULLIF($1, '')::uuid, NULLIF($2, '')::uuid, NULLIF($3, '')::uuid, $4,
-    NULLIF($5, ''), NULLIF($6, ''), NULLIF($7, ''),
-    NULLIF($8, '')::timestamptz, NULLIF($9, '')::timestamptz,
-    NULLIF($10, ''), NULLIF($11, '')::timestamptz, NULLIF($12, ''),
-    COALESCE(NULLIF($13, '')::bigint, 0),
-    NULLIF($14, ''),
-    NULLIF($15, '')
-)
-ON CONFLICT (machine_id) WHERE machine_id IS NOT NULL DO UPDATE SET
-    tenant_id = EXCLUDED.tenant_id,
-    environment_id = EXCLUDED.environment_id,
-    host_name = EXCLUDED.host_name,
-    machine_id = EXCLUDED.machine_id,
-    os_name = EXCLUDED.os_name,
-    os_version = EXCLUDED.os_version,
-    arch = EXCLUDED.arch,
-    last_inventory_at = EXCLUDED.last_inventory_at,
-    -- 看到了就复活，计数归零（与 process 的 stale_at 同一语义）。
-    stale_at = EXCLUDED.stale_at,
-    miss_count = EXCLUDED.miss_count,
-    ingest_scope = COALESCE(EXCLUDED.ingest_scope, host_inventory.ingest_scope),
-    cloud_instance_id = COALESCE(EXCLUDED.cloud_instance_id, host_inventory.cloud_instance_id),
-    cloud_account = COALESCE(EXCLUDED.cloud_account, host_inventory.cloud_account)
-"#;
-
-pub const UPSERT_HOST_WITHOUT_MACHINE_ID: &str = r#"
 INSERT INTO host_inventory (
     host_id, tenant_id, environment_id, host_name, machine_id, os_name, os_version,
     created_at, last_inventory_at, arch, stale_at, ingest_scope, miss_count,
@@ -57,6 +40,7 @@ ON CONFLICT (host_id) DO UPDATE SET
     os_version = EXCLUDED.os_version,
     arch = EXCLUDED.arch,
     last_inventory_at = EXCLUDED.last_inventory_at,
+    -- 看到了就复活，计数归零（与 process 的 stale_at 同一语义）。
     stale_at = EXCLUDED.stale_at,
     miss_count = EXCLUDED.miss_count,
     ingest_scope = COALESCE(EXCLUDED.ingest_scope, host_inventory.ingest_scope),

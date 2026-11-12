@@ -93,22 +93,8 @@ impl PostgresExecutor for MemoryPostgresExecutor {
 
         match sql {
             value if value == sql::UPSERT_HOST => {
-                let machine_id = params[4].clone();
-                if !machine_id.is_empty() {
-                    let existing_key = state
-                        .hosts
-                        .iter()
-                        .find_map(|(key, row)| (row[4] == machine_id).then(|| key.clone()));
-                    if let Some(existing_key) = existing_key {
-                        state.hosts.insert(existing_key, params.to_vec());
-                    } else {
-                        state.hosts.insert(params[0].clone(), params.to_vec());
-                    }
-                } else {
-                    state.hosts.insert(params[0].clone(), params.to_vec());
-                }
-            }
-            value if value == sql::UPSERT_HOST_WITHOUT_MACHINE_ID => {
+                // 与真 PG 一致：按主键 host_id 覆盖。真库里 machine_id 撞唯一索引会报错，
+                // 这里不模拟——那属于「数据错了」，测试应当用真实 PG 跑。
                 state.hosts.insert(params[0].clone(), params.to_vec());
             }
             value if value == sql::UPSERT_SERVICE => {

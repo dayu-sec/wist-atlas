@@ -732,6 +732,193 @@ fn a_snapshot_without_authoritative_coverage_never_retires_a_host() {
 }
 
 #[test]
+fn a_cloud_snapshot_without_an_account_key_retires_nothing() {
+    // 老采集器只发云实例 ID、没有账号键：该 upsert 就 upsert，什么也不能判死。
+    // 这正是「宁可退不了役」的默认值。
+    let service = TopologyIngestService::new_in_memory();
+    let tenant_id = TenantId(Uuid::new_v4());
+
+    let submit = |ingest_id: &str, payload: serde_json::Value| {
+        let mut envelope = envelope(
+            ingest_id,
+            CLOUD_PRODUCER,
+            IngestMode::Snapshot,
+            tenant_id,
+            payload,
+        );
+        envelope
+            .metadata
+            .insert("schema".to_string(), "atlas.in.inventory.v1".to_string());
+        envelope
+            .metadata
+            .insert("collect.coverage.scope".to_string(), "account".to_string());
+        envelope
+            .metadata
+            .insert("collect.coverage.complete".to_string(), "true".to_string());
+        envelope.metadata.insert(
+            "collect.coverage.account".to_string(),
+            CLOUD_ACCOUNT.to_string(),
+        );
+        service
+            .submit_and_materialize(envelope)
+            .expect("cloud ingest")
+            .1
+            .stale_host_count
+    };
+
+    let rows = |hosts: &[(&str, &str)]| {
+        json!({
+            "hosts": hosts
+                .iter()
+                .map(|(name, instance_id)| json!({
+                    "hostname": name,
+                    "cloud_instance_id": instance_id,
+                }))
+                .collect::<Vec<_>>()
+        })
+    };
+
+    submit("cloud-1", rows(&both_hosts()));
+    for round in 0..host_retire_threshold() {
+        assert_eq!(submit(&format!("cloud-miss-{round}"), rows(&only_a())), 0);
+    }
+
+    assert_eq!(
+        host_state(&service, tenant_id, HOST_B),
+        Some((0, false)),
+        "没有账号键就没有「本账号覆盖集」，不能判死"
+    );
+}
+
+#[test]
+fn an_empty_account_snapshot_retires_nothing() {
+    // 空快照不等于「全没了」：采集器真的空账号也该先按 Aborted 处理，
+    // atlas 这一层再兜一次 —— 空集合永不做退役比对。
+    let service = TopologyIngestService::new_in_memory();
+    let tenant_id = TenantId(Uuid::new_v4());
+
+    cloud_snapshot_hosts(
+        &service,
+        "cloud-1",
+        CLOUD_PRODUCER,
+        &both_hosts(),
+        CLOUD_ACCOUNT,
+        Some(("account", true)),
+        IngestMode::Snapshot,
+        tenant_id,
+    );
+
+    for round in 0..host_retire_threshold() + 1 {
+        let mut envelope = envelope(
+            &format!("cloud-empty-{round}"),
+            CLOUD_PRODUCER,
+            IngestMode::Snapshot,
+            tenant_id,
+            json!({ "hosts": [] }),
+        );
+        envelope
+            .metadata
+            .insert("schema".to_string(), "atlas.in.inventory.v1".to_string());
+        envelope
+            .metadata
+            .insert("collect.coverage.scope".to_string(), "account".to_string());
+        envelope
+            .metadata
+            .insert("collect.coverage.complete".to_string(), "true".to_string());
+        envelope.metadata.insert(
+            "collect.coverage.account".to_string(),
+            CLOUD_ACCOUNT.to_string(),
+        );
+        let summary = service
+            .submit_and_materialize(envelope)
+            .expect("empty cloud ingest")
+            .1;
+        assert_eq!(summary.stale_host_count, 0);
+    }
+
+    assert_eq!(host_state(&service, tenant_id, HOST_B), Some((0, false)));
+}
+
+#[test]
+fn the_account_key_self_corrects_when_the_collector_changes_it() {
+    // 采集器把账号键从 source_code 换成真 AccountId 时，存量行必须能被改写；
+    // 否则它们永远匹配不上退役判定（也就是永远退不了役，而且看不出来）。
+    let service = TopologyIngestService::new_in_memory();
+    let tenant_id = TenantId(Uuid::new_v4());
+
+    cloud_snapshot_hosts(
+        &service,
+        "cloud-1",
+        CLOUD_PRODUCER,
+        &both_hosts(),
+        CLOUD_ACCOUNT,
+        Some(("account", true)),
+        IngestMode::Snapshot,
+        tenant_id,
+    );
+    assert_eq!(
+        host_row(&service, tenant_id, HOST_B)
+            .expect("host b")
+            .cloud_account
+            .as_deref(),
+        Some(CLOUD_ACCOUNT)
+    );
+
+    // 同一个实例，新账号键。
+    cloud_snapshot_hosts(
+        &service,
+        "cloud-2",
+        CLOUD_PRODUCER,
+        &both_hosts(),
+        OTHER_ACCOUNT,
+        Some(("account", true)),
+        IngestMode::Snapshot,
+        tenant_id,
+    );
+    assert_eq!(
+        host_row(&service, tenant_id, HOST_B)
+            .expect("host b")
+            .cloud_account
+            .as_deref(),
+        Some(OTHER_ACCOUNT),
+        "账号归属是云侧权威，旧值要被改写"
+    );
+
+    // 旧账号再也扫不到它；新账号能。
+    for round in 0..host_retire_threshold() {
+        assert_eq!(
+            cloud_snapshot_hosts(
+                &service,
+                &format!("old-account-{round}"),
+                CLOUD_PRODUCER,
+                &only_a(),
+                CLOUD_ACCOUNT,
+                Some(("account", true)),
+                IngestMode::Snapshot,
+                tenant_id,
+            ),
+            0
+        );
+    }
+    assert_eq!(host_state(&service, tenant_id, HOST_B), Some((0, false)));
+
+    let mut newly = 0;
+    for round in 0..host_retire_threshold() {
+        newly = cloud_snapshot_hosts(
+            &service,
+            &format!("new-account-{round}"),
+            CLOUD_PRODUCER,
+            &only_a(),
+            OTHER_ACCOUNT,
+            Some(("account", true)),
+            IngestMode::Snapshot,
+            tenant_id,
+        );
+    }
+    assert_eq!(newly, 1);
+}
+
+#[test]
 fn a_host_seen_by_agentd_is_still_retired_by_the_cloud() {
     // 这是 `cloud_account` 存在的全部理由：agentd 每 5 分钟覆盖一次 `ingest_scope`。
     // 如果退役目标按「最后谁写过」圈定，装了 agent 的云主机永远退不了役 ——

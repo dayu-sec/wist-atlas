@@ -151,11 +151,8 @@ where
     }
 
     fn upsert_host(&self, host: &HostInventory) -> StorageResult<()> {
-        let sql = if host.machine_id.is_some() {
-            sql::UPSERT_HOST
-        } else {
-            sql::UPSERT_HOST_WITHOUT_MACHINE_ID
-        };
+        // 仲裁列是主键（见 `sql::UPSERT_HOST` 的注释）：带不带 machine_id 走同一条语句。
+        let sql = sql::UPSERT_HOST;
         self.executor.exec(
             sql,
             &[

@@ -21,14 +21,22 @@
 //! | CLOUD_HOST | `hosts[]` | `extract_host_candidates` |
 //! | VPC / SUB_NET | `network_segments[]`（按 `cidr`） | `extract_network_segment_candidates` |
 //!
+//! ## 完整性声明（`collect.coverage`）
+//!
+//! 采集器在快照里写 `coverage: { scope, complete, account }` 时，原样透传到信封。
+//! **这是主机退役的唯一凭证**：只有 `scope=account && complete && account` 的帧，
+//! 缺席才能当作「云上已不存在」。`account` 同时写进每条主机行的 `cloud_account` ——
+//! 退役目标靠这两处相等来圈定。
+//!
+//! 采集器不给就不给：缺省 = 只 upsert、永不判死。**不要在这里替它编一个账号键**
+//! （比如拿 `source_code` 顶替），否则哪天采集器改用真 `AccountId`，存量行会永久失配。
+//!
 //! ## 本版明确不做
 //!
 //! - **不建 `NetworkDomain`**：现在物料化层只有一个自动创建的 `default` 域，
 //!   VPC→Domain 的语义需要另做（涉及建模决定），本版先把 VPC/子网都作为**段**送进来。
-//! - **不做跨来源合并**：云主机与 agentd 上报的同一台机器靠
-//!   `cloud_instance_id` 关联，那需要 `HostCandidate` 多一个字段 + 存储列 + resolver 改动。
-//!   这里先把 `cloud_instance_id` 放进 host 行（当前的抽取器会忽略它，但字段已经在线上，
-//!   等抽取器学会读它时不用再改数据面）。
+//! - **不送 EIP**：EIP 的生命周期与主机独立（机器下线 EIP 还在），是独立对象，
+//!   等模型定名后单独接。
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde::Deserialize;
@@ -208,8 +216,7 @@ pub fn envelope_from_sink_line(
                 "host_name": name,
                 // 云侧外部 ID：资源匹配与后续跨来源归并都以它为准。
                 "external_ref": host.source_asset_id,
-                // 跨来源归并键。**当前抽取器还不读它**（`HostCandidate` 没有这个字段），
-                // 但先放到线上：等字段加上时数据面不用再改。
+                // 跨来源归并键：agentd 从元数据服务读到的 instance-id 与它相等即同一台机。
                 "cloud_instance_id": host.source_asset_id,
                 // 账号归属：退役判定的作用域（云侧独占写）。
                 "cloud_account": account,
