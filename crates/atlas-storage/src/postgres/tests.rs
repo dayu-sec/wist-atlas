@@ -1002,6 +1002,24 @@ fn real_postgres_host_upsert_keeps_one_row_per_identity() {
             .expect("list hosts");
         assert_eq!(rows.len(), 1, "同一次身份不能变成两行");
 
+        // P2-11：唯一约束冲突必须能看出是哪条约束（以前只有「db error」）。
+        let mut duplicate = host.clone();
+        duplicate.host_id = Uuid::new_v4();
+        duplicate.machine_id = None;
+        duplicate.cloud_instance_id = None;
+        let err = AsyncCatalogStore::upsert_host(&store, &duplicate)
+            .await
+            .expect_err("同名主机应当撞唯一约束");
+        let text = err.to_string();
+        assert!(
+            text.contains("23505") || text.contains("duplicate key"),
+            "错误里要有 SQLSTATE 或原文: {text}"
+        );
+        assert!(
+            text.contains("constraint=") || text.contains("host_name"),
+            "错误里要能看出是哪条约束: {text}"
+        );
+
         executor
             .exec_batch_async(&format!("DROP SCHEMA {schema} CASCADE"))
             .await

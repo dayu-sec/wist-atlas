@@ -477,10 +477,31 @@ impl PostgresExecutor for MemoryPostgresExecutor {
     }
 }
 
-// TODO(P2-11): 这里的错误文案只保留了 `tokio_postgres::Error` 的 `Display`（"db error"），
-// 真正的 SQLSTATE / 约束名 / detail 都在 `source()` 里。真库出错时（例如唯一索引冲突）
-// 现在只能看到 `execute postgres sql: db error`，定位不到是哪条约束。
-// 改法：用 `err.as_db_error()` 把 `code()` / `message()` / `detail()` 拼进 detail。
+/// 把 `tokio_postgres::Error` 摊平成可诊断的文案。
+///
+/// `Display` 只有 `db error` —— SQLSTATE、约束名、detail 全在 `as_db_error()` 里。
+/// 没有这段，唯一约束冲突在日志里长得跟网络抖动一模一样（这条是 P2-11）。
+fn describe_sql_error(context: &str, err: &tokio_postgres::Error) -> String {
+    let Some(db) = err.as_db_error() else {
+        return format!("{context}: {err}");
+    };
+
+    let mut text = format!("{context}: [{}] {}", db.code().code(), db.message());
+    if let Some(constraint) = db.constraint() {
+        text.push_str(&format!("; constraint={constraint}"));
+    }
+    if let Some(detail) = db.detail() {
+        text.push_str(&format!("; detail={detail}"));
+    }
+    if let Some(hint) = db.hint() {
+        text.push_str(&format!("; hint={hint}"));
+    }
+    if let Some(table) = db.table() {
+        text.push_str(&format!("; table={table}"));
+    }
+    text
+}
+
 impl LivePostgresExecutor {
     pub async fn new(connection_string: impl Into<String>) -> StorageResult<Self> {
         let connection_string = connection_string.into();
@@ -510,7 +531,7 @@ impl LivePostgresExecutor {
             .client
             .query(sql, &bind_params)
             .await
-            .map_err(|err| operation_failed(format!("query postgres sql: {err}")))?;
+            .map_err(|err| operation_failed(describe_sql_error("query postgres sql", &err)))?;
         rows.into_iter().map(row_to_strings).collect()
     }
 
@@ -522,13 +543,13 @@ impl LivePostgresExecutor {
         self.client
             .execute(sql, &bind_params)
             .await
-            .map_err(|err| operation_failed(format!("execute postgres sql: {err}")))
+            .map_err(|err| operation_failed(describe_sql_error("execute postgres sql", &err)))
     }
 
     pub(super) async fn exec_batch_async(&self, sql: &str) -> StorageResult<()> {
         self.client
             .batch_execute(sql)
             .await
-            .map_err(|err| operation_failed(format!("execute postgres batch sql: {err}")))
+            .map_err(|err| operation_failed(describe_sql_error("execute postgres batch sql", &err)))
     }
 }
