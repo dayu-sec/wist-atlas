@@ -119,6 +119,7 @@ where
                 host_props.insert("processCount".to_string(), Value::from(processes));
             }
         }
+        super::insert_agentd_properties(&mut host_props, view.latest_runtime.as_ref());
         nodes.push(HostProcessTopologyNode {
             id: host_node_id.clone(),
             object_kind: "HostInventory",

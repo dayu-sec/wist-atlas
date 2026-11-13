@@ -167,6 +167,7 @@ fn host_node(
         properties.insert("processCount".to_string(), Value::from(count));
     }
 
+    super::insert_agentd_properties(&mut properties, latest_runtime);
     HostProcessTopologyNode {
         id: format!("host:{}", host.host_id),
         object_kind: "HostInventory",

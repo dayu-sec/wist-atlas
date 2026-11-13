@@ -5,7 +5,7 @@
 //! 画布与卡片都不用新增节点类型。
 
 use atlas_api::TopologyQueryService;
-use atlas_storage::{AsyncCatalogStore, AsyncGovernanceStore, AsyncRuntimeStore};
+use atlas_storage::{AsyncCatalogStore, AsyncGovernanceStore, AsyncRuntimeStore, Page};
 use chrono::Utc;
 use orion_error::conversion::ConvErr;
 use serde_json::Value;
@@ -66,6 +66,14 @@ where
     for host in &view.hosts {
         let process_count = counts.get(&host.host_id).copied().unwrap_or(0);
         process_total += process_count as usize;
+        // 网段视图也要能看出「这台机装没装 agentd」：从网络资产页点过来落的就是这一屏，
+        // 少了这个标记，同一台机在总览和网段视图里会看起来不一样。
+        let latest_runtime =
+            AsyncRuntimeStore::list_host_runtime_states(&store, host.host_id, Page::default())
+                .await
+                .conv_err()?
+                .into_iter()
+                .max_by_key(|state| state.observed_at.0);
 
         let host_node_id = format!("host:{}", host.host_id);
         let mut props = serde_json::Map::new();
@@ -87,6 +95,7 @@ where
             "processCount".to_string(),
             Value::Number(serde_json::Number::from(process_count as u64)),
         );
+        super::insert_agentd_properties(&mut props, latest_runtime.as_ref());
 
         nodes.push(HostProcessTopologyNode {
             id: host_node_id.clone(),

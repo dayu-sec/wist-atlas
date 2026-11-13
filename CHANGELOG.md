@@ -3,7 +3,47 @@
 本文件记录 `wist-atlas` 的所有重要变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [0.6.0] · 2026-11-12
+## [0.7.0] · 2026-11-13
+
+### 新增（云账号资产进目录：EIP / VPC / 子网）
+
+以前 atlas 里只有「主机」和「主机看到的网段」，云侧的地址规划与暴露面进不来。这一版把
+云账号采集（`atlas.in.inventory.v1`）的另外三类也落进目录：
+
+- **弹性公网 IP 是独立资产**（`ElasticIp`）：生命周期与主机解耦 —— 机器下线、地址还在。
+  唯一关系是 `binding → host`，绑定状态按快照态维护（解绑就是解绑，不是「这帧没提到」）。
+  新接口 `GET /api/elastic-ips`。
+- **VPC → `NetworkDomain`、子网 → `NetworkSegment`**，主机挂到子网；域**存自己的 CIDR**
+  —— 每个地域都有的 `Default-VPC` 同名，只能靠 CIDR 区分。新接口
+  `GET /api/network-domains`（VPC → 子网 + 每段主机数）。
+- 子网 / VPC 也参与退役（云上删掉的段不会永远占着目录）；主机换子网时封掉旧的主机↔网段关联。
+- 主机读接口暴露 `cloudInstanceId` / `cloudAccount`：前端不用再猜这台机是哪朵云的哪个账号。
+
+### 新增（主机上的 agentd 标记）
+
+主机节点带 `agentd` / `agentdHealth` / `agentdObservedAt`。
+
+判据是**这台机有运行时报文**（启动时间 / 负载 / 内存只有 agent 采得到，云 API 给不了静态值）。
+总览、网段视图、服务视图、单机视图四处一致；没有运行时的主机显式给 `false`，不是缺字段 ——
+「测出来没有」和「没测」在资产界面上是两件事。
+
+### 变更（退役口径：只信账号级完整快照）
+
+- 主机退役只认 `collect.coverage = scope:account + complete + account`：端侧「这一轮没出现」
+  不再等于消失。采集器抖动一次不会把还在的机器判死。
+- 退役目标按 `cloud_account` 圈定，不再看「最后谁写过」——多来源写同一台机时，最后写的人
+  决定谁的事，本来就是错的。
+- 同一账号有多个生产者都声称账号级完整覆盖时，**退役权先到先得**
+  （`retirement_owner` 表 + 7 天 TTL 心跳）：否则每帧双方都把 `miss_count` 加一，
+  退役速度直接翻倍（3 轮变 1.5 轮）。
+- 导入报告把「主机退役」与「进程退役」分开计数。
+
+### 修复
+
+- **PG 错误文案带 SQLSTATE / 约束名 / detail**（P2-11）。以前只有 `db error`，
+  唯一约束冲突和网络抖动在日志里长得一模一样。改用静态 SQL 守卫后顺带扫出 5 处同款隐藏
+  问题（参数是 `&str` 时 tokio-postgres 会按列类型推成 uuid，必须 `NULLIF($1,'')::uuid`）。
+- 主机按 `cloud_instance_id` 归并双来源，命中已有主机时回填空属性。
 
 ### 变更（多主机总览只给资产图：2.8 MB 的响应降到 ~21 KB）
 
@@ -34,6 +74,11 @@
 `export-visualization` **不受影响**：导出始终是完整图（几台主机都导进程树）——
 首屏的优化不该把离线排查用的快照抽小。这条由
 `export_visualization_keeps_the_full_fleet_graph` 守住。
+
+主机 UPSERT 的仲裁列从 `machine_id` 换成 `host_id`：云侧先建行（`machine_id` 为空）、
+端侧后到补上 `machine_id` 时，插入会撞主键，而 PK 冲突不在 `ON CONFLICT (machine_id)`
+的仲裁范围内 —— 真 PG 直接 `duplicate key`。`machine_id` 重复仍由唯一索引拦：宁可让这一帧
+失败，也不把一台机器静默改挂到另一个 `host_id`。
 
 ## [0.5.1] · 2026-11-12
 

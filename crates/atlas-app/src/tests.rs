@@ -2223,3 +2223,169 @@ async fn http_router_groups_subnets_under_their_vpc() {
         2
     );
 }
+
+/// 主机节点要能表达「这台机上有 agentd」。
+///
+/// 判据是运行时报文：启动时间 / 负载 / 内存只有 agent 采，云 API 只给静态资产。
+/// 这条断言同时守着三件事：
+/// 1. 有运行时的机器 `agentd=true`，并带上健康与观测时刻；
+/// 2. 纯云采集的机器 `agentd=false`（不是缺席 —— 缺席会让前端猜）；
+/// 3. 五个视图口径一致：同一台机在总览 / 网段 / 服务视图里标出来的是同一件事。
+#[tokio::test]
+async fn http_router_marks_hosts_that_have_an_agentd() {
+    let store = InMemoryTopologyStore::default();
+    let tenant = atlas_domain::TenantId(Uuid::new_v4());
+    let now = chrono::Utc::now();
+    let host = |name: &str, cloud: bool| atlas_domain::HostInventory {
+        host_id: Uuid::new_v4(),
+        tenant_id: tenant,
+        environment_id: None,
+        host_name: name.to_string(),
+        machine_id: None,
+        cloud_instance_id: cloud.then(|| format!("ins-{name}")),
+        cloud_account: cloud.then(|| "tencent:100041355715".to_string()),
+        os_name: Some("linux".to_string()),
+        os_version: None,
+        arch: None,
+        created_at: now,
+        last_inventory_at: now,
+        stale_at: None,
+        miss_count: 0,
+        ingest_scope: None,
+    };
+    // 一台装了 agentd（有运行时报文），一台只有云采集。
+    let edge_host = host("edge-host", true);
+    let cloud_only = host("cloud-only", true);
+    for item in [&edge_host, &cloud_only] {
+        CatalogStore::upsert_host(&store, item).unwrap();
+    }
+    RuntimeStore::insert_host_runtime_state(
+        &store,
+        &atlas_domain::HostRuntimeState {
+            host_id: edge_host.host_id,
+            observed_at: atlas_domain::ObservedAt(now),
+            boot_id: Some("boot-1".to_string()),
+            uptime_seconds: Some(3600),
+            loadavg_1m: Some(0.4),
+            loadavg_5m: None,
+            loadavg_15m: None,
+            cpu_usage_pct: None,
+            memory_used_bytes: Some(2048),
+            memory_available_bytes: Some(4096),
+            process_count: Some(12),
+            container_count: Some(0),
+            agent_health: atlas_domain::AgentHealth::Healthy,
+        },
+    )
+    .unwrap();
+
+    let router = build_http_router(HttpAppState::new(TopologyMonolith::Memory(store)));
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/api/topology/host/first/processes")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let payload: Value = serde_json::from_slice(&body).unwrap();
+    let nodes = payload["data"]["nodes"].as_array().unwrap();
+    let host_node = |name: &str| {
+        nodes
+            .iter()
+            .find(|node| node["objectKind"] == "HostInventory" && node["label"] == name)
+            .unwrap_or_else(|| panic!("缺少主机节点 {name}：{payload}"))
+    };
+
+    let edge = host_node("edge-host");
+    assert_eq!(
+        edge["properties"]["agentd"], true,
+        "有运行时就必须标出 agentd"
+    );
+    assert_eq!(edge["properties"]["agentdHealth"], "healthy");
+    assert!(
+        edge["properties"]["agentdObservedAt"].is_string(),
+        "要能看出是「正在报」还是「装过早就不报了」"
+    );
+
+    let plain = host_node("cloud-only");
+    assert_eq!(
+        plain["properties"]["agentd"], false,
+        "纯云采集的机器要明确 false，而不是不写这个字段"
+    );
+    assert!(plain["properties"].get("agentdHealth").is_none());
+}
+
+/// 单主机视图（`/api/topology/host/{id}`）走的是另一条构建路径，
+/// 标记不能只在总览里有 —— 同一台机换个视图就变样是最难查的一类 bug。
+#[tokio::test]
+async fn single_host_view_also_marks_agentd() {
+    let store = InMemoryTopologyStore::default();
+    let tenant = atlas_domain::TenantId(Uuid::new_v4());
+    let now = chrono::Utc::now();
+    let host = atlas_domain::HostInventory {
+        host_id: Uuid::new_v4(),
+        tenant_id: tenant,
+        environment_id: None,
+        host_name: "edge-host".to_string(),
+        machine_id: None,
+        cloud_instance_id: Some("ins-edge".to_string()),
+        cloud_account: Some("tencent:100041355715".to_string()),
+        os_name: None,
+        os_version: None,
+        arch: None,
+        created_at: now,
+        last_inventory_at: now,
+        stale_at: None,
+        miss_count: 0,
+        ingest_scope: None,
+    };
+    CatalogStore::upsert_host(&store, &host).unwrap();
+    RuntimeStore::insert_host_runtime_state(
+        &store,
+        &atlas_domain::HostRuntimeState {
+            host_id: host.host_id,
+            observed_at: atlas_domain::ObservedAt(now),
+            boot_id: None,
+            uptime_seconds: None,
+            loadavg_1m: None,
+            loadavg_5m: None,
+            loadavg_15m: None,
+            cpu_usage_pct: None,
+            memory_used_bytes: None,
+            memory_available_bytes: None,
+            process_count: None,
+            container_count: None,
+            agent_health: atlas_domain::AgentHealth::Degraded,
+        },
+    )
+    .unwrap();
+
+    let router = build_http_router(HttpAppState::new(TopologyMonolith::Memory(store)));
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/topology/host/{}/processes", host.host_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let payload: Value = serde_json::from_slice(&body).unwrap();
+    let node = payload["data"]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["objectKind"] == "HostInventory")
+        .expect("主机节点");
+    assert_eq!(node["properties"]["agentd"], true);
+    assert_eq!(node["properties"]["agentdHealth"], "degraded");
+}

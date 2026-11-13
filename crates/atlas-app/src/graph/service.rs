@@ -238,6 +238,16 @@ where
             resolved_hosts.insert(host.host_id);
             let host_node_id = format!("host:{}", host.host_id);
             if host_node_ids.insert(host_node_id.clone()) {
+                // 服务视图里也要能看出端侧观测（同一台机在不同视图里不该长得不一样）。
+                let latest_runtime = AsyncRuntimeStore::list_host_runtime_states(
+                    &store,
+                    host.host_id,
+                    Page::default(),
+                )
+                .await
+                .conv_err()?
+                .into_iter()
+                .max_by_key(|state| state.observed_at.0);
                 let mut props = serde_json::Map::new();
                 props.insert(
                     "hostName".to_string(),
@@ -252,6 +262,7 @@ where
                 if let Some(arch) = &host.arch {
                     props.insert("arch".to_string(), Value::String(arch.clone()));
                 }
+                super::insert_agentd_properties(&mut props, latest_runtime.as_ref());
                 nodes.push(HostProcessTopologyNode {
                     id: host_node_id.clone(),
                     object_kind: "HostInventory",

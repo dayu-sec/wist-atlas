@@ -78,6 +78,40 @@ pub(crate) enum FleetShape {
     Detailed,
 }
 
+/// 主机节点上的「端侧（agentd）观测」标记。
+///
+/// 判据：**这台主机有没有运行时报文**。启动时间 / 负载 / 内存只有 agent 能采，
+/// 云 API 那边只给静态资产属性 —— 所以「有运行时就说明这台机上有 agentd 在跑」。
+/// 时钟只有一期：`agentdObservedAt` 让前端能把「装过但早就不报了」和「正在报」分开。
+///
+/// 放在一个函数里而不是每个视图各写一遍：主机节点有 5 个构建点，
+/// 漏一个就会出现「同一台机在总览里有标、在网段视图里没有」。
+pub(crate) fn insert_agentd_properties(
+    properties: &mut serde_json::Map<String, Value>,
+    runtime: Option<&atlas_domain::HostRuntimeState>,
+) {
+    properties.insert("agentd".to_string(), Value::Bool(runtime.is_some()));
+    let Some(runtime) = runtime else {
+        return;
+    };
+    properties.insert(
+        "agentdHealth".to_string(),
+        Value::String(
+            match runtime.agent_health {
+                atlas_domain::AgentHealth::Healthy => "healthy",
+                atlas_domain::AgentHealth::Degraded => "degraded",
+                atlas_domain::AgentHealth::Protect => "protect",
+                atlas_domain::AgentHealth::Unavailable => "unavailable",
+            }
+            .to_string(),
+        ),
+    );
+    properties.insert(
+        "agentdObservedAt".to_string(),
+        Value::String(runtime.observed_at.0.to_rfc3339()),
+    );
+}
+
 /// 导出用：始终完整图。
 pub(crate) fn build_visualization_graph<S>(store: S) -> AppResult<HostProcessTopologyGraph>
 where
@@ -179,6 +213,7 @@ where
                 host_props.insert("processCount".to_string(), Value::from(processes));
             }
         }
+        insert_agentd_properties(&mut host_props, view.latest_runtime.as_ref());
         nodes.push(HostProcessTopologyNode {
             id: host_node_id.clone(),
             object_kind: "HostInventory",
