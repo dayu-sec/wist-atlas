@@ -29,6 +29,10 @@
 //! - 有**永久性**失败（不是快照、没有 `body`、JSON 坏了）→ `400`，让它在 rescue 里显形；
 //! - 有**暂时性**失败（写库失败）→ `503`，让数据面下一轮重试。
 
+use std::collections::HashMap;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+
 use atlas_api::{PipelineRunSummary, TopologyIngestService};
 use atlas_domain::TenantId;
 use atlas_storage::{AsyncCatalogStore, AsyncGovernanceStore, AsyncIngestStore, AsyncRuntimeStore};
@@ -66,10 +70,73 @@ pub(crate) struct EdgeIngestQuery {
 
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct IngestStatsQuery {
-    /// 统计窗口（秒）；缺省 1 小时，夹到 60 秒 ~ 24 小时。
+    /// 统计窗口（秒）；缺省 1 小时，夹到 60 秒 ~ 24 小时。`0` = 不算窗口，只回累计。
     window_seconds: Option<i64>,
     /// 客户号（与写入时的 `cust_id` 同一 ID 空间，按清单解析成内部 UUID）。
     tenant: Option<String>,
+}
+
+/// 一个租户的写入计数（看板用）。
+#[derive(Debug, Default)]
+struct TenantIngest {
+    total: AtomicU64,
+    last_at_ms: AtomicI64,
+    seeded: AtomicBool,
+}
+
+/// 进程内的投递计数：看板要「累计写入条数 + 最后一次写入时间」。
+///
+/// 为什么不在每次请求里 `count(*)`：`ingest_job` 一直在长，秒级轮询会变成反复扫表。
+/// 这里写成功就记一次（按快照条数计），读只读两个原子量；
+/// 进程重启后第一次读用一次 `count(*)` 对齐基线。
+#[derive(Debug, Default)]
+pub(crate) struct IngestCounter {
+    per_tenant: Mutex<HashMap<String, TenantIngest>>,
+}
+
+impl IngestCounter {
+    fn with_tenant<T>(&self, tenant: TenantId, f: impl FnOnce(&TenantIngest) -> T) -> T {
+        let mut guard = self.per_tenant.lock().expect("ingest counter poisoned");
+        let slot = guard.entry(tenant.0.to_string()).or_default();
+        f(slot)
+    }
+
+    /// 一次成功投递里写进的快照条数（重投不计：它什么都没写）。
+    fn record(&self, tenant: TenantId, at: chrono::DateTime<chrono::Utc>, count: u64) {
+        if count == 0 {
+            return;
+        }
+        self.with_tenant(tenant, |slot| {
+            slot.total.fetch_add(count, Ordering::Relaxed);
+            slot.last_at_ms
+                .fetch_max(at.timestamp_millis(), Ordering::Relaxed);
+        });
+    }
+
+    fn is_seeded(&self, tenant: TenantId) -> bool {
+        self.with_tenant(tenant, |slot| slot.seeded.load(Ordering::Relaxed))
+    }
+
+    /// 用库里已有的一行数做基线（取 max：计数与 count 之间那个极小窗口不能把已计过的抹掉）。
+    fn seed(&self, tenant: TenantId, total: u64, last_at_ms: Option<i64>) {
+        self.with_tenant(tenant, |slot| {
+            slot.total.fetch_max(total, Ordering::Relaxed);
+            if let Some(at_ms) = last_at_ms {
+                slot.last_at_ms.fetch_max(at_ms, Ordering::Relaxed);
+            }
+            slot.seeded.store(true, Ordering::Relaxed);
+        });
+    }
+
+    fn snapshot(&self, tenant: TenantId) -> (u64, Option<i64>) {
+        self.with_tenant(tenant, |slot| {
+            let last = slot.last_at_ms.load(Ordering::Relaxed);
+            (
+                slot.total.load(Ordering::Relaxed),
+                (last > 0).then_some(last),
+            )
+        })
+    }
 }
 
 /// `GET /internal/atlas/stats?window_seconds=&tenant=` — 窗口内投递批次 + 最后一次时间。
@@ -98,22 +165,49 @@ pub(crate) async fn ingest_stats(
         }
     };
 
+    // 累计：进程内计数器（O(1)）；每个租户的第一次读用库里的一行数对齐基线。
+    if !state.ingest.is_seeded(target.tenant) {
+        let epoch = chrono::DateTime::<chrono::Utc>::from_timestamp(0, 0).unwrap_or_default();
+        let baseline = match &target.app {
+            TopologyMonolith::Memory(store) => store.ingest_stats(target.tenant, epoch).await,
+            TopologyMonolith::PostgresMock(store) => store.ingest_stats(target.tenant, epoch).await,
+            TopologyMonolith::PostgresLive(store) => store.ingest_stats(target.tenant, epoch).await,
+        };
+        if let Ok(baseline) = baseline {
+            state.ingest.seed(
+                target.tenant,
+                baseline.received,
+                baseline.last_received_at.map(|at| at.timestamp_millis()),
+            );
+        }
+    }
+
     let window = query.window_seconds.unwrap_or(3_600).clamp(60, 86_400);
     let since = chrono::Utc::now() - chrono::Duration::seconds(window);
-    let result = match &target.app {
-        TopologyMonolith::Memory(store) => store.ingest_stats(target.tenant, since).await,
-        TopologyMonolith::PostgresMock(store) => store.ingest_stats(target.tenant, since).await,
-        TopologyMonolith::PostgresLive(store) => store.ingest_stats(target.tenant, since).await,
+    // `window_seconds=0` = 只看累计，不算窗口（看板实时轮询走这条，不做 count）。
+    let windowed = if query.window_seconds == Some(0) {
+        None
+    } else {
+        let result = match &target.app {
+            TopologyMonolith::Memory(store) => store.ingest_stats(target.tenant, since).await,
+            TopologyMonolith::PostgresMock(store) => store.ingest_stats(target.tenant, since).await,
+            TopologyMonolith::PostgresLive(store) => store.ingest_stats(target.tenant, since).await,
+        };
+        match result {
+            Ok(stats) => Some(stats),
+            Err(err) => return ingest_error(StatusCode::SERVICE_UNAVAILABLE, err.to_string()),
+        }
     };
-    match result {
-        Ok(stats) => Json(json!({
-            "window_seconds": window,
-            "received": stats.received,
-            "last_at_ms": stats.last_received_at.map(|at| at.timestamp_millis()),
-        }))
-        .into_response(),
-        Err(err) => ingest_error(StatusCode::SERVICE_UNAVAILABLE, err.to_string()),
-    }
+    let (total, total_last_ms) = state.ingest.snapshot(target.tenant);
+    Json(json!({
+        "window_seconds": windowed.as_ref().map(|_| window),
+        "received": windowed.as_ref().map(|stats| stats.received),
+        "total": total,
+        "last_at_ms": windowed
+            .and_then(|stats| stats.last_received_at.map(|at| at.timestamp_millis()))
+            .or(total_last_ms),
+    }))
+    .into_response()
 }
 
 /// 写入请求：**两字段**（`cust_id` / `content`）。
@@ -227,7 +321,15 @@ pub(crate) async fn ingest_atlas(
         .filter(|value| !value.trim().is_empty())
         .map(|value| value.trim().to_string());
 
-    ingest_records(&target.app, target.tenant, tenant_ref, env, records).await
+    ingest_records(
+        &target.app,
+        target.tenant,
+        tenant_ref,
+        env,
+        records,
+        &state.ingest,
+    )
+    .await
 }
 
 /// 一行 sink 记录的失败分级：`permanent` 重试无用（进 rescue 让人看），
@@ -284,6 +386,7 @@ async fn ingest_records(
     tenant_ref: String,
     env: Option<String>,
     records: Vec<Value>,
+    counter: &IngestCounter,
 ) -> Response {
     let mut ingested = 0usize;
     let mut hosts = 0usize;
@@ -320,6 +423,9 @@ async fn ingest_records(
         StatusCode::BAD_REQUEST
     };
 
+    // 看板计数器：只算真的写进去的快照（失败的不记）。
+    counter.record(tenant_id, chrono::Utc::now(), ingested as u64);
+
     (
         status,
         Json(json!({
@@ -354,4 +460,34 @@ fn ingest_error_code(
         })),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 计数器只往上走：按快照条数累加、最后一次时间取最大值、基线只抬不降。
+    #[test]
+    fn ingest_counter_accumulates_snapshots_and_never_drops_the_baseline() {
+        let counter = IngestCounter::default();
+        let tenant = TenantId(uuid::Uuid::nil());
+        assert_eq!(counter.snapshot(tenant), (0, None));
+
+        let first =
+            chrono::DateTime::<chrono::Utc>::from_timestamp(1_700_000_000, 0).expect("valid");
+        let later =
+            chrono::DateTime::<chrono::Utc>::from_timestamp(1_700_000_042, 0).expect("valid");
+        counter.record(tenant, later, 3);
+        counter.record(tenant, first, 2);
+        assert_eq!(counter.snapshot(tenant), (5, Some(1_700_000_042_000)));
+
+        // 重启后的基线：库里已经有 40 条，计数不能被抹回 5。
+        counter.seed(tenant, 40, Some(1_600_000_000_000));
+        assert!(counter.is_seeded(tenant));
+        assert_eq!(counter.snapshot(tenant), (40, Some(1_700_000_042_000)));
+
+        // 空投递不记账（它什么都没写）。
+        counter.record(tenant, later, 0);
+        assert_eq!(counter.snapshot(tenant).0, 40);
+    }
 }

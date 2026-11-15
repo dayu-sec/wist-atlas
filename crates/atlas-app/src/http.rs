@@ -136,6 +136,8 @@ pub(crate) struct HttpAppState {
     cells: Option<std::sync::Arc<crate::cells::CellRouter>>,
     /// 单库部署的默认客户（`WIST_ATLAS_DEFAULT_TENANT`）；只在日志/告警里用。
     default_tenant: Option<String>,
+    /// 看板用的投递计数（累计 + 最后一次），读取是 O(1)。
+    pub(crate) ingest: std::sync::Arc<crate::ingest_http::IngestCounter>,
 }
 
 /// 一次请求解析出的目标：用哪个库、以及在该库里的租户。
@@ -162,6 +164,7 @@ impl HttpAppState {
             token: None,
             cells: None,
             default_tenant: None,
+            ingest: Default::default(),
         }
     }
 
@@ -178,6 +181,7 @@ impl HttpAppState {
             token: None,
             cells: Some(std::sync::Arc::new(cells)),
             default_tenant: None,
+            ingest: Default::default(),
         }
     }
 

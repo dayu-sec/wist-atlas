@@ -3,6 +3,22 @@
 本文件记录 `wist-atlas` 的所有重要变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.7.2] · 2026-11-15
+
+### 新增（累计写入条数：`/internal/atlas/stats` 的 `total`）
+
+看板要秒级刷新「累计写进来多少 + 最后一次什么时候」，而每次 `count(*)` 会随 `ingest_job`
+变长而反复扫表。改成按租户的**进程内计数器**：投递成功按快照里的记录条数累加、
+记最后一次投递时间，读只读两个原子量；每个租户**第一次读**用一次 `count(*)` 对齐基线
+（取 `max`，不抹掉刚计过的写）。
+
+- 响应扩成 `{window_seconds, received, total, last_at_ms}`；
+- **`window_seconds=0` = 只看累计**：不算窗口、不做 count（`window_seconds` / `received` 为 `null`），
+  概览页的 3 秒轮询走这条；
+- 计数单位是**条**（原来 `received` 报的是批次数，两列不再混用同一个数）：BFF 的
+  `/api/ingest/stats` 也跟着把 Atlas 那一路的单位改成「条」；
+- 空投递（`count = 0`）不计。
+
 ## [0.7.1] · 2026-11-15
 
 ### 新增（投递批次计数：`GET /internal/atlas/stats`）
