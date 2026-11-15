@@ -380,6 +380,21 @@ FROM ingest_job
 WHERE ingest_id = $1
 "#;
 
+/// 窗口内的投递批次计数（看板用）。
+///
+/// 时间列在 SQL 里就格式化成 RFC3339：执行器把整行都当字符串取回，
+/// 直接 `max(received_at)::text` 会拿到 `2026-11-13 12:00:00+00` 这种形状，解析要多一条路。
+pub const INGEST_STATS: &str = r#"
+SELECT count(*)::text,
+       coalesce(
+           to_char(max(received_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+           ''
+       )
+FROM ingest_job
+WHERE tenant_id = NULLIF($1, '')::uuid
+  AND received_at >= NULLIF($2, '')::timestamptz
+"#;
+
 pub const UPSERT_HOST_RUNTIME_STATE: &str = r#"
 INSERT INTO host_runtime_state (
     host_id, observed_at, boot_id, uptime_seconds, loadavg_1m, loadavg_5m, loadavg_15m,

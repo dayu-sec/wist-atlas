@@ -12,7 +12,7 @@ use crate::{
     GovernanceStore, Page, RuntimeStore, SoftwareStore, StorageResult,
 };
 
-use super::{AsyncIngestStore, InMemoryTopologyStore, IngestJobEntry, IngestStore};
+use super::{AsyncIngestStore, InMemoryTopologyStore, IngestJobEntry, IngestStats, IngestStore};
 
 impl AsyncCatalogStore for InMemoryTopologyStore {
     async fn upsert_business(&self, business: &atlas_domain::BusinessDomain) -> StorageResult<()> {
@@ -337,6 +337,14 @@ impl AsyncIngestStore for InMemoryTopologyStore {
 
     async fn get_ingest_job(&self, ingest_id: &str) -> StorageResult<Option<IngestJobEntry>> {
         IngestStore::get_ingest_job(self, ingest_id)
+    }
+
+    async fn ingest_stats(
+        &self,
+        tenant_id: TenantId,
+        since: chrono::DateTime<chrono::Utc>,
+    ) -> StorageResult<IngestStats> {
+        IngestStore::ingest_stats(self, tenant_id, since)
     }
 }
 

@@ -43,4 +43,28 @@ where
             .map(|row| decode_ingest_job(&row))
             .transpose()?)
     }
+
+    fn ingest_stats(
+        &self,
+        tenant_id: TenantId,
+        since: chrono::DateTime<chrono::Utc>,
+    ) -> StorageResult<crate::IngestStats> {
+        let rows = self.executor.query_rows(
+            sql::INGEST_STATS,
+            &[tenant_id.0.to_string(), since.to_rfc3339()],
+        )?;
+        let row = rows.into_iter().next().unwrap_or_default();
+        let received = row
+            .first()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(0);
+        let last_received_at = match row.get(1) {
+            Some(value) if !value.is_empty() => Some(parse_datetime(value)?),
+            _ => None,
+        };
+        Ok(crate::IngestStats {
+            received,
+            last_received_at,
+        })
+    }
 }

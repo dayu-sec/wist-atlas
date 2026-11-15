@@ -25,15 +25,33 @@ pub struct IngestJobEntry {
     pub error: Option<String>,
 }
 
+/// 窗口内的投递计数（看板用）。
+///
+/// 一行 `ingest_job` = 数据面发来的**一批**（一次 `POST /internal/atlas`，
+/// `batch_size > 1` 时一批里有多条记录），所以这里的单位是批而不是条。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct IngestStats {
+    pub received: u64,
+    pub last_received_at: Option<DateTime<Utc>>,
+}
+
 pub trait IngestStore {
     fn record_ingest_job(&self, entry: IngestJobEntry) -> StorageResult<()>;
     fn get_ingest_job(&self, ingest_id: &str) -> StorageResult<Option<IngestJobEntry>>;
+    /// 窗口内的投递批次计数（看板用）：`since` 之前的不算。
+    fn ingest_stats(&self, tenant_id: TenantId, since: DateTime<Utc>)
+    -> StorageResult<IngestStats>;
 }
 
 #[allow(async_fn_in_trait)]
 pub trait AsyncIngestStore: Sync {
     async fn record_ingest_job(&self, entry: IngestJobEntry) -> StorageResult<()>;
     async fn get_ingest_job(&self, ingest_id: &str) -> StorageResult<Option<IngestJobEntry>>;
+    async fn ingest_stats(
+        &self,
+        tenant_id: TenantId,
+        since: DateTime<Utc>,
+    ) -> StorageResult<IngestStats>;
 }
 
 #[derive(Debug, Default)]

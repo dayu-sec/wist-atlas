@@ -318,3 +318,40 @@ mod software {
         );
     }
 }
+
+#[test]
+fn ingest_stats_counts_only_jobs_inside_the_window() {
+    let store = InMemoryTopologyStore::default();
+    let tenant_id = TenantId(Uuid::new_v4());
+    let other = TenantId(Uuid::new_v4());
+    let now = Utc::now();
+
+    for (id, owner, age_minutes) in [
+        ("ing-now", tenant_id, 1),
+        ("ing-old", tenant_id, 120),
+        ("ing-else", other, 1),
+    ] {
+        IngestStore::record_ingest_job(
+            &store,
+            IngestJobEntry {
+                ingest_id: id.to_string(),
+                tenant_id: owner,
+                source_name: "fixture".to_string(),
+                source_kind: "batch_import".to_string(),
+                received_at: now - chrono::Duration::minutes(age_minutes),
+                status: "accepted".to_string(),
+                payload_ref: None,
+                error: None,
+            },
+        )
+        .unwrap();
+    }
+
+    let stats =
+        IngestStore::ingest_stats(&store, tenant_id, now - chrono::Duration::hours(1)).unwrap();
+    assert_eq!(stats.received, 1, "窗口外与别的租户都不算");
+    assert!(
+        stats.last_received_at.is_some(),
+        "最后一条时间要看板用来分「没数据」和「断了」"
+    );
+}

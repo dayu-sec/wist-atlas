@@ -1728,6 +1728,11 @@ pub(crate) fn build_http_router(state: HttpAppState) -> Router {
     // Router 与 spec 不会各写一份。一个 `.routes()` 只对应**一条路径**
     // （utoipa-axum 把同一路径上的多个方法合成一个 MethodRouter），所以逐个写。
     let (protected, _documented) = documented_routes().split_for_parts();
+    // 非 OpenAPI 的只读端点（看板用的聚合值）：走同一道令牌，并进上面的 protected。
+    let protected = protected.route(
+        "/internal/atlas/stats",
+        get(crate::ingest_http::ingest_stats),
+    );
     // 没有 token 的 router 只在单元测试里出现；`serve` 入口拿不到 `WIST_ATLAS_TOKEN` 会直接失败。
     let protected = match token {
         Some(expected) => protected.layer(axum::middleware::from_fn(

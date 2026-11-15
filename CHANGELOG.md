@@ -3,6 +3,19 @@
 本文件记录 `wist-atlas` 的所有重要变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.7.1] · 2026-11-15
+
+### 新增（投递批次计数：`GET /internal/atlas/stats`）
+
+看板要回答「数据有没有进来」，而探活只证明端口通。新端点返回窗口内的投递**批次**数与
+最后一次投递时间（`{received, last_at_ms}`）：
+
+- 一行 `ingest_job` = 数据面一次 `POST /internal/atlas`（`batch_size > 1` 时一批里有多条记录），
+  所以单位是**批**，不是条；
+- 客户号走写入时同一条 `resolve_write` 解析（`cust_id` → 内部 UUID），**未登记一律 400**，
+  不静默汇总成全租户 —— 多客户站点上那样会把不同客户的数加在一起；
+- 挂在需要 `Authorization: Bearer` 的读路由上，不返回任何内容。
+
 ## [0.7.0] · 2026-11-13
 
 ### 新增（云账号资产进目录：EIP / VPC / 子网）

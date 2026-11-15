@@ -64,6 +64,58 @@ pub(crate) struct EdgeIngestQuery {
     env: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct IngestStatsQuery {
+    /// 统计窗口（秒）；缺省 1 小时，夹到 60 秒 ~ 24 小时。
+    window_seconds: Option<i64>,
+    /// 客户号（与写入时的 `cust_id` 同一 ID 空间，按清单解析成内部 UUID）。
+    tenant: Option<String>,
+}
+
+/// `GET /internal/atlas/stats?window_seconds=&tenant=` — 窗口内投递批次 + 最后一次时间。
+///
+/// 一行 `ingest_job` = 数据面发来的一批（`batch_size > 1` 时一批里有多条记录），
+/// 所以单位是**批**，不是条。看板要的是「有没有数据进来」，不是「进来多少条记录」。
+///
+/// 客户号走写入时同一条解析（`resolve_write`）：未登记一律 400，
+/// 不静默汇总成“全租户”，否则多客户站点会把不同客户的数加在一起。
+pub(crate) async fn ingest_stats(
+    State(state): State<HttpAppState>,
+    Query(query): Query<IngestStatsQuery>,
+) -> Response {
+    let Some(tenant_ref) = query
+        .tenant
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return ingest_error(StatusCode::BAD_REQUEST, "tenant is required");
+    };
+    let target = match state.resolve_write(tenant_ref) {
+        Ok(target) => target,
+        Err(detail) => {
+            return ingest_error_code(StatusCode::BAD_REQUEST, Some("tenant_unregistered"), detail);
+        }
+    };
+
+    let window = query.window_seconds.unwrap_or(3_600).clamp(60, 86_400);
+    let since = chrono::Utc::now() - chrono::Duration::seconds(window);
+    let result = match &target.app {
+        TopologyMonolith::Memory(store) => store.ingest_stats(target.tenant, since).await,
+        TopologyMonolith::PostgresMock(store) => store.ingest_stats(target.tenant, since).await,
+        TopologyMonolith::PostgresLive(store) => store.ingest_stats(target.tenant, since).await,
+    };
+    match result {
+        Ok(stats) => Json(json!({
+            "window_seconds": window,
+            "received": stats.received,
+            "last_at_ms": stats.last_received_at.map(|at| at.timestamp_millis()),
+        }))
+        .into_response(),
+        Err(err) => ingest_error(StatusCode::SERVICE_UNAVAILABLE, err.to_string()),
+    }
+}
+
 /// 写入请求：**两字段**（`cust_id` / `content`）。
 ///
 /// 证据服务那边是三字段，多出来的 `cmd_id` 是因为它写的是「一次命令的产物」，需要一个幂等键。

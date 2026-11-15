@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use crate::{
     AsyncCatalogStore, AsyncGovernanceStore, AsyncRuntimeStore, AsyncSoftwareStore, CatalogStore,
-    GovernanceStore, IngestStore, Page, RuntimeStore, SoftwareStore, StorageResult,
+    GovernanceStore, IngestStats, IngestStore, Page, RuntimeStore, SoftwareStore, StorageResult,
     memory::AsyncIngestStore, memory::IngestJobEntry, migrations::MIGRATIONS, not_configured,
 };
 
@@ -419,6 +419,14 @@ impl AsyncIngestStore for PostgresTopologyStore<MemoryPostgresExecutor> {
 
     async fn get_ingest_job(&self, ingest_id: &str) -> StorageResult<Option<IngestJobEntry>> {
         IngestStore::get_ingest_job(self, ingest_id)
+    }
+
+    async fn ingest_stats(
+        &self,
+        tenant_id: atlas_domain::TenantId,
+        since: chrono::DateTime<chrono::Utc>,
+    ) -> StorageResult<IngestStats> {
+        IngestStore::ingest_stats(self, tenant_id, since)
     }
 }
 
