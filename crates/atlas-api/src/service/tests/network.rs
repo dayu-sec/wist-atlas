@@ -487,3 +487,133 @@ fn a_frame_that_does_not_report_networks_never_retires_them() {
     assert!(rows[0].stale_at.is_none(), "没观测 ≠ 删除");
     assert_eq!(rows[0].miss_count, 0, "miss_count 一次都不该被推进");
 }
+
+/// 一台机同时上报多张网卡（eth0 + docker 网桥）的发现快照。
+///
+/// 现场实例：`dev-int-wist-gateway-01` 同时有 172.18.0.1 / 172.19.0.1 两张网桥。
+/// 旧逻辑「每写一条关联就关掉该主机其它所有敞开关联」会把先写的那条封成
+/// `valid_to == valid_from`，PG 的 `host_net_assoc_check` 直接拒掉整帧。
+fn multi_nic_payload(with_bridge: bool) -> Value {
+    let mut interfaces = vec![json!({
+        "host_ref": "node-a",
+        "machine_id": "machine-a",
+        "name": "eth0",
+        "addresses": [{ "family": "ipv4", "ip": "10.0.1.10", "prefix": 24 }],
+    })];
+    if with_bridge {
+        interfaces.push(json!({
+            "host_ref": "node-a",
+            "machine_id": "machine-a",
+            "name": "br-afa95e6833a2",
+            "addresses": [{ "family": "ipv4", "ip": "172.18.0.1", "prefix": 16 }],
+        }));
+    }
+    json!({
+        "hosts": [{ "hostname": "node-a", "machine_id": "machine-a" }],
+        "interfaces": interfaces,
+    })
+}
+
+fn assert_no_zero_length_interval(rows: &[atlas_domain::HostNetAssoc]) {
+    assert!(
+        rows.iter().all(|assoc| assoc
+            .validity
+            .valid_to
+            .map(|to| to > assoc.validity.valid_from)
+            .unwrap_or(true)),
+        "任何一行都不能是零长度区间（host_net_assoc_check 会拒掉整帧）：{:?}",
+        rows.iter()
+            .map(|assoc| (
+                &assoc.ip_addr,
+                assoc.validity.valid_from,
+                assoc.validity.valid_to
+            ))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn a_multi_nic_host_keeps_every_reported_association_open() {
+    let service = TopologyIngestService::new_in_memory();
+    let tenant_id = TenantId(Uuid::new_v4());
+
+    ingest(
+        &service,
+        "ing-multi-nic",
+        multi_nic_payload(true),
+        tenant_id,
+    );
+
+    let node_a = host_id(&service, tenant_id, "node-a");
+    let rows = assocs(&service, node_a);
+    assert_eq!(rows.len(), 2, "多网卡就是多条关联，不能只剩一条");
+    assert!(
+        rows.iter().all(|assoc| assoc.validity.valid_to.is_none()),
+        "同一帧里上报的关联都同时有效：{:?}",
+        rows.iter()
+            .map(|assoc| (&assoc.ip_addr, assoc.validity.valid_to))
+            .collect::<Vec<_>>()
+    );
+    assert_no_zero_length_interval(&rows);
+}
+
+#[tokio::test]
+async fn the_async_path_also_keeps_multi_nic_associations_open() {
+    let service = TopologyIngestService::new_in_memory();
+    let tenant_id = TenantId(Uuid::new_v4());
+
+    service
+        .submit_and_materialize_async(envelope(
+            "ing-multi-nic-async",
+            multi_nic_payload(true),
+            tenant_id,
+        ))
+        .await
+        .expect("ingest");
+
+    let node_a = host_id(&service, tenant_id, "node-a");
+    let rows = assocs(&service, node_a);
+    assert_eq!(rows.len(), 2, "async 路径也要保住两张网卡");
+    assert!(
+        rows.iter().all(|assoc| assoc.validity.valid_to.is_none()),
+        "同一帧里上报的关联都同时有效"
+    );
+    assert_no_zero_length_interval(&rows);
+}
+
+#[test]
+fn an_association_missing_from_the_next_frame_is_closed() {
+    // 收口仍然要发生：下一帧不再上报的网卡，它的关联必须封口（不能永远「现在有效」）。
+    let service = TopologyIngestService::new_in_memory();
+    let tenant_id = TenantId(Uuid::new_v4());
+
+    ingest(
+        &service,
+        "ing-multi-nic",
+        multi_nic_payload(true),
+        tenant_id,
+    );
+    ingest(
+        &service,
+        "ing-eth0-only",
+        multi_nic_payload(false),
+        tenant_id,
+    );
+
+    let node_a = host_id(&service, tenant_id, "node-a");
+    let rows = assocs(&service, node_a);
+    let open: Vec<_> = rows
+        .iter()
+        .filter(|assoc| assoc.validity.valid_to.is_none())
+        .collect();
+    let closed: Vec<_> = rows
+        .iter()
+        .filter(|assoc| assoc.validity.valid_to.is_some())
+        .collect();
+
+    assert_eq!(open.len(), 1, "只剩这张网卡还在上报");
+    assert_eq!(open[0].ip_addr, "10.0.1.10");
+    assert_eq!(closed.len(), 1, "消失的网卡要封口，不能删（历史要留）");
+    assert_eq!(closed[0].ip_addr, "172.18.0.1");
+    assert_no_zero_length_interval(&rows);
+}

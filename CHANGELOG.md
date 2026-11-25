@@ -3,6 +3,25 @@
 本文件记录 `wist-atlas` 的所有重要变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.7.3] · 2026-11-25
+
+### 修复（多网卡主机的每份快照都被 503 拒绝）
+
+`host_net_assoc` 的收口逻辑假设「一台主机只有一个网络关联」：每写一条关联就把该主机
+其它**所有**敞开关联的 `valid_to` 置成同一个快照时间。多网卡主机（例如同时有
+`172.18.0.1` / `172.19.0.1` 两张 docker 网桥）在同一帧里上报多条关联时，后写的那条会把
+先写的那条封成 `valid_to == valid_from` 的零长度区间，触发 `host_net_assoc_check`
+（要求 `valid_to > valid_from`），整帧被 PG 拒绝。
+
+- 影响：多网卡主机的**每一份**发现快照都返回 503（数据面重试后落 rescue）；
+  `ingest_job` 仍会落行且状态 `accepted`，但 `/internal/atlas/stats` 的
+  `total` / `last_at_ms` 不前进，看板一直显示「无数据 / 未接入」；
+- 修复：一帧处理完再收口 —— 按本帧为该主机实际写过的 `assoc_id` 集合（多网卡就是多个）
+  封口「本帧没再出现」的旧关联；同一帧里上报的关联都保持有效；
+- 换 IP / 换子网 / 网卡消失仍然会封旧行；封口只作用于 `valid_from < now` 的行，
+  不再产生零长度区间；
+- 新增用例：多网卡同帧保持有效（sync + async）、下一帧消失的网卡收口。
+
 ## [0.7.2] · 2026-11-15
 
 ### 新增（累计写入条数：`/internal/atlas/stats` 的 `total`）

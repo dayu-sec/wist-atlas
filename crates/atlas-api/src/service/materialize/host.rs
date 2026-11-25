@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use atlas_domain::{
     BindingScope, BusinessCatalogCandidate, Confidence, HostCandidate, HostInventory, HostNetAssoc,
@@ -34,27 +34,25 @@ pub(crate) struct MaterializedHosts {
     pub assoc_count: usize,
 }
 
-/// 写「主机 ↔ 网段」关联，并把同一台主机其它仍然敞开的关联封口。
+/// 写一条「主机 ↔ 网段」关联。
 ///
-/// 为什么必须封口：关联 ID 里含 IP（见 `pipeline::host_net_assoc_for`），主机换私网 IP
-/// 就是一条新行。不关旧的，一台机在拓扑里会同时挂在两个子网、两个 IP 上，而且旧的那条
-/// 永远显示「现在有效」—— 这比丢数据更糟，因为它看起来是对的。
+/// **不在这里封口其它关联**：一帧快照里同一台主机可能上报多条关联（eth0 + 多张
+/// docker 网桥），它们**同时有效**。以前「写入一条就关掉该主机其它所有敞开的关联」
+/// 会让同一帧里后写的那条把前一条的 `valid_to` 写成与 `valid_from` 相同的时刻，
+/// 触发 `host_net_assoc_check`（要求 `valid_to > valid_from`），整帧被判失败。
+/// 真实事故：多网卡主机（172.18/172.19 两张网桥）每份快照都被 503 拒绝，
+/// `ingest_job` 照写，看板计数器却永远「无数据」。
+///
+/// 收口交给 [`close_superseded_host_net_assocs`]：一帧处理完，按本帧实际上报的
+/// 关联集合封口「本帧没再出现」的旧关联（换 IP / 换子网 / 网卡消失都能收掉）。
 fn upsert_host_net_assoc<S>(
     store: &S,
     catalog: &mut InMemoryCatalog,
     assoc: &HostNetAssoc,
-    now: DateTime<Utc>,
 ) -> StorageResult<()>
 where
     S: CatalogStore + RuntimeStore,
 {
-    for mut existing in open_assocs_to_close(catalog, assoc) {
-        existing.validity.valid_to = Some(now);
-        existing.updated_at = now;
-        store.upsert_host_net_assoc(&existing)?;
-        replace_catalog_assoc(catalog, existing);
-    }
-
     store.upsert_host_net_assoc(assoc)?;
     replace_catalog_assoc(catalog, assoc.clone());
     Ok(())
@@ -64,32 +62,74 @@ async fn upsert_host_net_assoc_async<S>(
     store: &S,
     catalog: &mut InMemoryCatalog,
     assoc: &HostNetAssoc,
-    now: DateTime<Utc>,
 ) -> StorageResult<()>
 where
     S: AsyncCatalogStore + AsyncRuntimeStore,
 {
-    for mut existing in open_assocs_to_close(catalog, assoc) {
-        existing.validity.valid_to = Some(now);
-        existing.updated_at = now;
-        atlas_storage::AsyncRuntimeStore::upsert_host_net_assoc(store, &existing).await?;
-        replace_catalog_assoc(catalog, existing);
-    }
-
     atlas_storage::AsyncRuntimeStore::upsert_host_net_assoc(store, assoc).await?;
     replace_catalog_assoc(catalog, assoc.clone());
     Ok(())
 }
 
-/// 同一台主机上、与这条不同的、还没封口的关联。
-fn open_assocs_to_close(catalog: &InMemoryCatalog, assoc: &HostNetAssoc) -> Vec<HostNetAssoc> {
+/// 一帧结束时收口：本帧该主机没再上报、但仍然敞开的关联 → 置 `valid_to`。
+///
+/// - `keep` 是本帧为这台主机写过的全部 `assoc_id`（多网卡就是多个）；
+/// - 只封 `valid_from < now` 的行：与 `host_net_assoc_check` 对齐，任何情况下都
+///   不写出 `valid_to == valid_from` 的零长度区间。
+fn close_superseded_host_net_assocs<S>(
+    store: &S,
+    catalog: &mut InMemoryCatalog,
+    host_id: Uuid,
+    keep: &BTreeSet<Uuid>,
+    now: DateTime<Utc>,
+) -> StorageResult<()>
+where
+    S: CatalogStore + RuntimeStore,
+{
+    for mut existing in superseded_open_assocs(catalog, host_id, keep, now) {
+        existing.validity.valid_to = Some(now);
+        existing.updated_at = now;
+        store.upsert_host_net_assoc(&existing)?;
+        replace_catalog_assoc(catalog, existing);
+    }
+    Ok(())
+}
+
+async fn close_superseded_host_net_assocs_async<S>(
+    store: &S,
+    catalog: &mut InMemoryCatalog,
+    host_id: Uuid,
+    keep: &BTreeSet<Uuid>,
+    now: DateTime<Utc>,
+) -> StorageResult<()>
+where
+    S: AsyncCatalogStore + AsyncRuntimeStore,
+{
+    for mut existing in superseded_open_assocs(catalog, host_id, keep, now) {
+        existing.validity.valid_to = Some(now);
+        existing.updated_at = now;
+        atlas_storage::AsyncRuntimeStore::upsert_host_net_assoc(store, &existing).await?;
+        replace_catalog_assoc(catalog, existing);
+    }
+    Ok(())
+}
+
+/// 同一台主机上、本帧没再出现、仍然敞开、且允许封口的关联。
+fn superseded_open_assocs(
+    catalog: &InMemoryCatalog,
+    host_id: Uuid,
+    keep: &BTreeSet<Uuid>,
+    now: DateTime<Utc>,
+) -> Vec<HostNetAssoc> {
     catalog
         .host_net_assocs
         .iter()
         .filter(|existing| {
-            existing.host_id == assoc.host_id
-                && existing.assoc_id != assoc.assoc_id
+            existing.host_id == host_id
                 && existing.validity.valid_to.is_none()
+                && !keep.contains(&existing.assoc_id)
+                // 同一帧刚建的关联 valid_from == now；封它会写出零长度区间。
+                && existing.validity.valid_from < now
         })
         .cloned()
         .collect()
@@ -337,6 +377,8 @@ where
     S: CatalogStore + RuntimeStore,
 {
     let mut result = MaterializedHosts::default();
+    // 本帧每台主机实际写过的关联；一帧结束才据此收口（多网卡不会互相封口）。
+    let mut assocs_by_host: BTreeMap<Uuid, BTreeSet<Uuid>> = BTreeMap::new();
 
     for network_candidate in networks {
         // 段与域**独立落地**：云侧的 VPC / 子网没有 machine_id / host_name，
@@ -380,7 +422,11 @@ where
         store.upsert_host(&host)?;
         store.upsert_network_segment(&materialized.segment)?;
         if let Some(assoc) = &materialized.assoc {
-            upsert_host_net_assoc(store, catalog, assoc, now)?;
+            upsert_host_net_assoc(store, catalog, assoc)?;
+            assocs_by_host
+                .entry(assoc.host_id)
+                .or_default()
+                .insert(assoc.assoc_id);
             result.assoc_count += 1;
         }
         result.host_ids.insert(host.host_id);
@@ -400,11 +446,20 @@ where
         // 云侧主机带了私网 IP：把「它在哪个子网」建成关联。
         // 优先用 SubnetId，没有就按 CIDR 包含（最长前缀）兜底。
         if let Some(assoc) = host_net_assoc_for(catalog, &host_candidate, host.host_id, now) {
-            upsert_host_net_assoc(store, catalog, &assoc, now)?;
+            upsert_host_net_assoc(store, catalog, &assoc)?;
+            assocs_by_host
+                .entry(assoc.host_id)
+                .or_default()
+                .insert(assoc.assoc_id);
             result.assoc_count += 1;
         }
         result.host_ids.insert(host.host_id);
         result.host_count += 1;
+    }
+
+    // 一帧结束才收口：本帧上报过的关联都算「仍在」，只有没再出现的旧关联封口。
+    for (host_id, keep) in &assocs_by_host {
+        close_superseded_host_net_assocs(store, catalog, *host_id, keep, now)?;
     }
 
     Ok(result)
@@ -422,6 +477,8 @@ where
     S: AsyncCatalogStore + AsyncRuntimeStore,
 {
     let mut result = MaterializedHosts::default();
+    // 与 sync 路径同一口径：一帧结束才按「本帧上报过的关联集合」收口。
+    let mut assocs_by_host: BTreeMap<Uuid, BTreeSet<Uuid>> = BTreeMap::new();
 
     for network_candidate in networks {
         let network_resolution = resolve_network_candidate(catalog, &network_candidate, now);
@@ -463,7 +520,11 @@ where
         upsert_catalog_host(catalog, host.clone());
         atlas_storage::AsyncCatalogStore::upsert_host(store, &host).await?;
         if let Some(assoc) = &materialized.assoc {
-            upsert_host_net_assoc_async(store, catalog, assoc, now).await?;
+            upsert_host_net_assoc_async(store, catalog, assoc).await?;
+            assocs_by_host
+                .entry(assoc.host_id)
+                .or_default()
+                .insert(assoc.assoc_id);
             result.assoc_count += 1;
         }
         result.host_ids.insert(host.host_id);
@@ -481,11 +542,19 @@ where
         upsert_catalog_host(catalog, host.clone());
         atlas_storage::AsyncCatalogStore::upsert_host(store, &host).await?;
         if let Some(assoc) = host_net_assoc_for(catalog, &host_candidate, host.host_id, now) {
-            upsert_host_net_assoc_async(store, catalog, &assoc, now).await?;
+            upsert_host_net_assoc_async(store, catalog, &assoc).await?;
+            assocs_by_host
+                .entry(assoc.host_id)
+                .or_default()
+                .insert(assoc.assoc_id);
             result.assoc_count += 1;
         }
         result.host_ids.insert(host.host_id);
         result.host_count += 1;
+    }
+
+    for (host_id, keep) in &assocs_by_host {
+        close_superseded_host_net_assocs_async(store, catalog, *host_id, keep, now).await?;
     }
 
     Ok(result)
