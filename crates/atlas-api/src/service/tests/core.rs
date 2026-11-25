@@ -1,6 +1,6 @@
 use atlas_domain::{AtlasInputEnvelope, IngestEnvelope, IngestMode, SourceKind, TenantId};
 use atlas_storage::{CatalogStore, IngestStore};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use serde_json::json;
 use uuid::Uuid;
 
@@ -294,4 +294,102 @@ fn submit_and_materialize_persists_host_without_network_candidates() {
     assert_eq!(hosts.len(), 1);
     assert_eq!(hosts[0].host_name, "node-host-only");
     assert_eq!(hosts[0].machine_id.as_deref(), Some("machine-host-only"));
+}
+
+/// 只有 `payload_ref`、没有 `payload_inline`：验证能过（ref 非空），物化阶段必错。
+/// 正好用来验证「失败要落到 job 行上」，不需要注入一个会失败的 store。
+fn unreadable_payload_envelope(ingest_id: &str, tenant_id: TenantId) -> IngestEnvelope {
+    IngestEnvelope {
+        ingest_id: ingest_id.to_string(),
+        source_kind: SourceKind::BatchImport,
+        source_name: "fixture".to_string(),
+        ingest_mode: IngestMode::BatchUpsert,
+        tenant_id,
+        environment_id: None,
+        observed_at: None,
+        received_at: Utc::now(),
+        payload_ref: Some("fixture://unreadable".to_string()),
+        payload_inline: None,
+        metadata: Default::default(),
+    }
+}
+
+#[test]
+fn a_frame_that_fails_after_recording_is_marked_failed() {
+    // 以前 job 行在物化前就写 `accepted`、失败也不改 —— 于是「库里有行、数据一条没写」
+    // 看起来像一切正常。失败必须有事实可查。
+    let service = TopologyIngestService::new_in_memory();
+    let tenant_id = TenantId(Uuid::new_v4());
+
+    let err = match service
+        .submit_and_materialize(unreadable_payload_envelope("ing-failed", tenant_id))
+    {
+        Ok(_) => panic!("只有 payload_ref 的信封必须物化失败"),
+        Err(err) => err,
+    };
+    assert!(!err.to_string().is_empty());
+
+    let row = IngestStore::get_ingest_job(service.store(), "ing-failed")
+        .expect("read job")
+        .expect("失败也要留一行，不能什么都不落");
+    assert_eq!(row.status, "failed");
+    assert!(row.error.is_some(), "失败原因要落库：{row:?}");
+}
+
+#[tokio::test]
+async fn the_async_path_also_marks_failed_jobs() {
+    // 生产走 async，sync 的修复不能只修一半。
+    let service = TopologyIngestService::new_in_memory();
+    let tenant_id = TenantId(Uuid::new_v4());
+
+    let result = service
+        .submit_and_materialize_async(unreadable_payload_envelope("ing-failed-async", tenant_id))
+        .await;
+    assert!(result.is_err(), "只有 payload_ref 的信封必须物化失败");
+
+    let row = IngestStore::get_ingest_job(service.store(), "ing-failed-async")
+        .expect("read job")
+        .expect("失败也要留一行");
+    assert_eq!(row.status, "failed");
+    assert!(row.error.is_some());
+}
+
+#[test]
+fn failed_frames_are_not_counted_as_received_data() {
+    let service = TopologyIngestService::new_in_memory();
+    let tenant_id = TenantId(Uuid::new_v4());
+
+    let ok = IngestEnvelope {
+        ingest_id: "ing-ok".to_string(),
+        source_kind: SourceKind::BatchImport,
+        source_name: "fixture".to_string(),
+        ingest_mode: IngestMode::BatchUpsert,
+        tenant_id,
+        environment_id: None,
+        observed_at: None,
+        received_at: Utc::now(),
+        payload_ref: None,
+        payload_inline: Some(json!({
+            "hosts": [{ "host_name": "node-ok", "machine_id": "machine-ok" }]
+        })),
+        metadata: Default::default(),
+    };
+    service.submit_and_materialize(ok).expect("good ingest");
+    assert!(
+        service
+            .submit_and_materialize(unreadable_payload_envelope("ing-bad", tenant_id))
+            .is_err()
+    );
+
+    let epoch = DateTime::<Utc>::from_timestamp(0, 0).expect("epoch");
+    let stats = IngestStore::ingest_stats(service.store(), tenant_id, epoch).expect("stats");
+    assert_eq!(
+        stats.received, 1,
+        "失败帧留行是为了排障，不能算成「数据进来了」"
+    );
+
+    let ok_row = IngestStore::get_ingest_job(service.store(), "ing-ok")
+        .expect("read ok job")
+        .expect("ok row");
+    assert_eq!(ok_row.status, "accepted");
 }

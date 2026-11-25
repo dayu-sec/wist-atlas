@@ -393,6 +393,8 @@ SELECT count(*)::text,
 FROM ingest_job
 WHERE tenant_id = NULLIF($1, '')::uuid
   AND received_at >= NULLIF($2, '')::timestamptz
+  -- 只数真正写进去的帧：失败帧也会落行（要留证据），不能当成「数据进来了」。
+  AND status = 'accepted'
 "#;
 
 pub const UPSERT_HOST_RUNTIME_STATE: &str = r#"

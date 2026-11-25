@@ -9,8 +9,25 @@ use crate::error::{ApiResult, missing_payload, recorder_unavailable, unsupported
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum IngestJobStatus {
+    /// 已收到、物化还没跑完。进程在中间崩掉时留在库里的就是这个状态。
+    Pending,
     Accepted,
     Rejected,
+    /// 物化失败（写库约束、存储不可用…）。`error` 里带原因。
+    Failed,
+}
+
+impl IngestJobStatus {
+    /// 落库里用的字符串。**这是事实，不是展示文案**：失败必须写 `failed`，
+    /// 否则「库里有行」会被当成「数据进来了」。
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Accepted => "accepted",
+            Self::Rejected => "rejected",
+            Self::Failed => "failed",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

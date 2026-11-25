@@ -43,25 +43,14 @@ where
         source_kind: envelope.source_kind,
         source_name: envelope.source_name.clone(),
         received_at: envelope.received_at,
-        status: IngestJobStatus::Accepted,
+        status: IngestJobStatus::Pending,
         payload_ref: envelope.payload_ref.clone(),
         error: None,
     };
 
-    store
-        .record_ingest_job(IngestJobEntry {
-            ingest_id: record.ingest_id.clone(),
-            tenant_id: record.tenant_id,
-            source_name: record.source_name.clone(),
-            source_kind: format!("{:?}", record.source_kind).to_lowercase(),
-            received_at: record.received_at,
-            status: "accepted".to_string(),
-            payload_ref: record.payload_ref.clone(),
-            error: None,
-        })
-        .source_err(ApiReason::IngestRejected, "record ingest job")?;
-
-    Ok(record)
+    // 先落一行 `pending`：进程在物化中途挂掉时，库里能看出「这帧收到了但没跑完」。
+    // 成功/失败由 `submit_and_materialize` 收尾成 `accepted` / `failed`。
+    mark_ingest_job(store, &record, IngestJobStatus::Pending, None)
 }
 
 pub(super) async fn validate_and_record_async<S>(
@@ -85,10 +74,61 @@ where
         source_kind: envelope.source_kind,
         source_name: envelope.source_name.clone(),
         received_at: envelope.received_at,
-        status: IngestJobStatus::Accepted,
+        status: IngestJobStatus::Pending,
         payload_ref: envelope.payload_ref.clone(),
         error: None,
     };
+
+    mark_ingest_job_async(store, &record, IngestJobStatus::Pending, None).await
+}
+
+/// 把同一 `ingest_id` 的 job 行写成指定状态，返回更新后的记录。
+///
+/// **状态是事实**：物化失败必须写 `failed` + `error`。以前只在物化前写一次
+/// `accepted`、失败也不改，于是「`ingest_job` 有行、数据一条没写进去」看起来像
+/// 一切正常，只有看板一直「无数据」。
+pub(super) fn mark_ingest_job<S>(
+    store: &S,
+    record: &IngestJobRecord,
+    status: IngestJobStatus,
+    error: Option<String>,
+) -> ApiResult<IngestJobRecord>
+where
+    S: IngestStore,
+{
+    let mut record = record.clone();
+    record.status = status;
+    record.error = error;
+
+    store
+        .record_ingest_job(IngestJobEntry {
+            ingest_id: record.ingest_id.clone(),
+            tenant_id: record.tenant_id,
+            source_name: record.source_name.clone(),
+            source_kind: format!("{:?}", record.source_kind).to_lowercase(),
+            received_at: record.received_at,
+            status: status.as_str().to_string(),
+            payload_ref: record.payload_ref.clone(),
+            error: record.error.clone(),
+        })
+        .source_err(ApiReason::IngestRejected, "record ingest job")?;
+
+    Ok(record)
+}
+
+/// 同 [`mark_ingest_job`]（生产走 async）。
+pub(super) async fn mark_ingest_job_async<S>(
+    store: &S,
+    record: &IngestJobRecord,
+    status: IngestJobStatus,
+    error: Option<String>,
+) -> ApiResult<IngestJobRecord>
+where
+    S: AsyncIngestStore,
+{
+    let mut record = record.clone();
+    record.status = status;
+    record.error = error;
 
     atlas_storage::AsyncIngestStore::record_ingest_job(
         store,
@@ -98,9 +138,9 @@ where
             source_name: record.source_name.clone(),
             source_kind: format!("{:?}", record.source_kind).to_lowercase(),
             received_at: record.received_at,
-            status: "accepted".to_string(),
+            status: status.as_str().to_string(),
             payload_ref: record.payload_ref.clone(),
-            error: None,
+            error: record.error.clone(),
         },
     )
     .await

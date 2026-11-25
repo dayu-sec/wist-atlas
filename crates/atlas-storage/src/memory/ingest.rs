@@ -23,7 +23,12 @@ impl IngestStore for InMemoryTopologyStore {
             for job in state
                 .ingest_jobs
                 .iter()
-                .filter(|job| job.tenant_id == tenant_id && job.received_at >= since)
+                // 与 PG 的 INGEST_STATS 同一口径：失败帧留行但不算「收到数据」。
+                .filter(|job| {
+                    job.tenant_id == tenant_id
+                        && job.received_at >= since
+                        && job.status == "accepted"
+                })
             {
                 stats.received += 1;
                 stats.last_received_at = Some(match stats.last_received_at {

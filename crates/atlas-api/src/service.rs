@@ -13,12 +13,12 @@ use uuid::Uuid;
 
 use crate::error::ApiResult;
 use crate::ingest::{
-    IngestJobRecord, extract_business_catalog_candidates, extract_container_runtime_candidates,
-    extract_elastic_ip_candidates, extract_host_candidates, extract_host_telemetry_candidates,
-    extract_network_domain_candidates, extract_network_segment_candidates,
-    extract_process_runtime_candidates, extract_process_telemetry_candidates,
-    extract_responsibility_assignment_candidates, extract_service_endpoint_candidates,
-    extract_subject_candidates,
+    IngestJobRecord, IngestJobStatus, extract_business_catalog_candidates,
+    extract_container_runtime_candidates, extract_elastic_ip_candidates, extract_host_candidates,
+    extract_host_telemetry_candidates, extract_network_domain_candidates,
+    extract_network_segment_candidates, extract_process_runtime_candidates,
+    extract_process_telemetry_candidates, extract_responsibility_assignment_candidates,
+    extract_service_endpoint_candidates, extract_subject_candidates,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -80,145 +80,148 @@ where
         envelope: IngestEnvelope,
     ) -> ApiResult<(IngestJobRecord, PipelineRunSummary)> {
         let accepted_at = envelope.received_at;
-        let record = validate_and_record(&self.store, &envelope)?;
+        let pending = validate_and_record(&self.store, &envelope)?;
 
-        let hosts = extract_host_candidates(&envelope)?.candidates;
-        let network_domains = extract_network_domain_candidates(&envelope)?.candidates;
-        let network_extraction = extract_network_segment_candidates(&envelope)?;
-        let networks_reported = network_extraction.reported;
-        let networks = network_extraction.candidates;
-        let elastic_ips = extract_elastic_ip_candidates(&envelope)?;
-        let processes = extract_process_runtime_candidates(&envelope)?.candidates;
-        let container_extraction = extract_container_runtime_candidates(&envelope)?;
-        let endpoint_extraction = extract_service_endpoint_candidates(&envelope)?;
-        let business_catalog = extract_business_catalog_candidates(&envelope)
-            .map(|result| result.candidates)
-            .unwrap_or_default();
-        let host_telemetry = extract_host_telemetry_candidates(&envelope)?.candidates;
-        let process_telemetry = extract_process_telemetry_candidates(&envelope)?.candidates;
-        let subjects = extract_subject_candidates(&envelope)
-            .map(|result| result.candidates)
-            .unwrap_or_default();
-        let assignments = extract_responsibility_assignment_candidates(&envelope)
-            .map(|result| result.candidates)
-            .unwrap_or_default();
+        // 物化整段放进闭包：任何一步失败都要把 job 行收尾成 `failed`，
+        // 不能把 `accepted` 留在库里（那会让「有行 = 有数据」这个错觉成立）。
+        let materialized: ApiResult<PipelineRunSummary> = (|| -> ApiResult<PipelineRunSummary> {
+            let hosts = extract_host_candidates(&envelope)?.candidates;
+            let network_domains = extract_network_domain_candidates(&envelope)?.candidates;
+            let network_extraction = extract_network_segment_candidates(&envelope)?;
+            let networks_reported = network_extraction.reported;
+            let networks = network_extraction.candidates;
+            let elastic_ips = extract_elastic_ip_candidates(&envelope)?;
+            let processes = extract_process_runtime_candidates(&envelope)?.candidates;
+            let container_extraction = extract_container_runtime_candidates(&envelope)?;
+            let endpoint_extraction = extract_service_endpoint_candidates(&envelope)?;
+            let business_catalog = extract_business_catalog_candidates(&envelope)
+                .map(|result| result.candidates)
+                .unwrap_or_default();
+            let host_telemetry = extract_host_telemetry_candidates(&envelope)?.candidates;
+            let process_telemetry = extract_process_telemetry_candidates(&envelope)?.candidates;
+            let subjects = extract_subject_candidates(&envelope)
+                .map(|result| result.candidates)
+                .unwrap_or_default();
+            let assignments = extract_responsibility_assignment_candidates(&envelope)
+                .map(|result| result.candidates)
+                .unwrap_or_default();
 
-        let mut catalog = hydrate_catalog(&self.store, envelope.tenant_id).conv_err()?;
-        let scope = envelope.ingest_scope();
-        // 容器 id 是确定性的：在物化进程之前就能算出本轮「确实采到的容器」集合，
-        // 进程与端口共用它来判断容器归属，避免写出指向不存在容器的引用。
-        let known_containers: BTreeSet<Uuid> = container_extraction
-            .candidates
-            .iter()
-            .map(|candidate| container_uuid(candidate.tenant_id, &candidate.container_key))
-            .collect();
-        materialize_business_catalog(&self.store, business_catalog, accepted_at).conv_err()?;
-        // 退役权每帧只登记一次（三组清扫共用）：同一账号多个生产者时不双倍推进。
-        let retirement = retirement_gate(&self.store, &envelope, accepted_at)?;
-        // 域必须在段之前：段靠域的稳定 ID 挂进去。
-        materialize_network_domains(
-            &self.store,
-            &mut catalog,
-            network_domains,
-            &scope,
-            accepted_at,
-        )
-        .conv_err()?;
-        let materialized = materialize_candidates(
-            &self.store,
-            &mut catalog,
-            hosts,
-            networks,
-            accepted_at,
-            &scope,
-        )
-        .conv_err()?;
-        let host_stale_count = sweep_stale_hosts(
-            &self.store,
-            &envelope,
-            &materialized,
-            &retirement,
-            accepted_at,
-        )
-        .conv_err()?;
-        // EIP 必须在主机之后：绑定目标要按刚落地的主机解析。
-        let materialized_ips = materialize_elastic_ips(
-            &self.store,
-            &catalog,
-            elastic_ips.candidates,
-            accepted_at,
-            &scope,
-        )
-        .conv_err()?;
-        let stale_elastic_ip_count = sweep_stale_elastic_ips(
-            &self.store,
-            &envelope,
-            &materialized_ips,
-            elastic_ips.reported,
-            &retirement,
-            accepted_at,
-        )
-        .conv_err()?;
-        let stale_network_count = sweep_stale_networks(
-            &self.store,
-            &envelope,
-            &materialized,
-            networks_reported,
-            &retirement,
-            accepted_at,
-        )
-        .conv_err()?;
-        let process_sweep = materialize_processes(
-            &self.store,
-            &mut catalog,
-            processes,
-            &known_containers,
-            accepted_at,
-            &scope,
-        )
-        .conv_err()?;
-        let stale_process_count =
-            sweep_stale_processes(&self.store, &envelope, &process_sweep, &scope, accepted_at)
+            let mut catalog = hydrate_catalog(&self.store, envelope.tenant_id).conv_err()?;
+            let scope = envelope.ingest_scope();
+            // 容器 id 是确定性的：在物化进程之前就能算出本轮「确实采到的容器」集合，
+            // 进程与端口共用它来判断容器归属，避免写出指向不存在容器的引用。
+            let known_containers: BTreeSet<Uuid> = container_extraction
+                .candidates
+                .iter()
+                .map(|candidate| container_uuid(candidate.tenant_id, &candidate.container_key))
+                .collect();
+            materialize_business_catalog(&self.store, business_catalog, accepted_at).conv_err()?;
+            // 退役权每帧只登记一次（三组清扫共用）：同一账号多个生产者时不双倍推进。
+            let retirement = retirement_gate(&self.store, &envelope, accepted_at)?;
+            // 域必须在段之前：段靠域的稳定 ID 挂进去。
+            materialize_network_domains(
+                &self.store,
+                &mut catalog,
+                network_domains,
+                &scope,
+                accepted_at,
+            )
+            .conv_err()?;
+            let materialized = materialize_candidates(
+                &self.store,
+                &mut catalog,
+                hosts,
+                networks,
+                accepted_at,
+                &scope,
+            )
+            .conv_err()?;
+            let host_stale_count = sweep_stale_hosts(
+                &self.store,
+                &envelope,
+                &materialized,
+                &retirement,
+                accepted_at,
+            )
+            .conv_err()?;
+            // EIP 必须在主机之后：绑定目标要按刚落地的主机解析。
+            let materialized_ips = materialize_elastic_ips(
+                &self.store,
+                &catalog,
+                elastic_ips.candidates,
+                accepted_at,
+                &scope,
+            )
+            .conv_err()?;
+            let stale_elastic_ip_count = sweep_stale_elastic_ips(
+                &self.store,
+                &envelope,
+                &materialized_ips,
+                elastic_ips.reported,
+                &retirement,
+                accepted_at,
+            )
+            .conv_err()?;
+            let stale_network_count = sweep_stale_networks(
+                &self.store,
+                &envelope,
+                &materialized,
+                networks_reported,
+                &retirement,
+                accepted_at,
+            )
+            .conv_err()?;
+            let process_sweep = materialize_processes(
+                &self.store,
+                &mut catalog,
+                processes,
+                &known_containers,
+                accepted_at,
+                &scope,
+            )
+            .conv_err()?;
+            let stale_process_count =
+                sweep_stale_processes(&self.store, &envelope, &process_sweep, &scope, accepted_at)
+                    .conv_err()?;
+            let container_sweep = materialize_containers(
+                &self.store,
+                &catalog,
+                container_extraction.candidates,
+                accepted_at,
+                &scope,
+            )
+            .conv_err()?;
+            let stale_container_count = if container_extraction.reported {
+                mark_stale_containers(&self.store, &container_sweep, &scope, accepted_at)
+                    .conv_err()?
+            } else {
+                0
+            };
+            // 端点必须在进程之后物化：它要按 pid 找到持有 socket 的进程行。
+            let endpoint_sweep = materialize_service_endpoints(
+                &self.store,
+                &catalog,
+                endpoint_extraction.candidates,
+                endpoint_extraction.reported,
+                &known_containers,
+                &materialized.host_ids,
+                accepted_at,
+            )
+            .conv_err()?;
+            materialize_host_telemetry(&self.store, &mut catalog, host_telemetry).conv_err()?;
+            materialize_process_telemetry(&self.store, &mut catalog, process_telemetry)
                 .conv_err()?;
-        let container_sweep = materialize_containers(
-            &self.store,
-            &catalog,
-            container_extraction.candidates,
-            accepted_at,
-            &scope,
-        )
-        .conv_err()?;
-        let stale_container_count = if container_extraction.reported {
-            mark_stale_containers(&self.store, &container_sweep, &scope, accepted_at).conv_err()?
-        } else {
-            0
-        };
-        // 端点必须在进程之后物化：它要按 pid 找到持有 socket 的进程行。
-        let endpoint_sweep = materialize_service_endpoints(
-            &self.store,
-            &catalog,
-            endpoint_extraction.candidates,
-            endpoint_extraction.reported,
-            &known_containers,
-            &materialized.host_ids,
-            accepted_at,
-        )
-        .conv_err()?;
-        materialize_host_telemetry(&self.store, &mut catalog, host_telemetry).conv_err()?;
-        materialize_process_telemetry(&self.store, &mut catalog, process_telemetry).conv_err()?;
-        materialize_subjects_and_assignments(
-            &self.store,
-            envelope.tenant_id,
-            subjects,
-            assignments,
-            accepted_at,
-        )
-        .conv_err()?;
+            materialize_subjects_and_assignments(
+                &self.store,
+                envelope.tenant_id,
+                subjects,
+                assignments,
+                accepted_at,
+            )
+            .conv_err()?;
 
-        Ok((
-            record,
-            PipelineRunSummary {
-                ingest_id: envelope.ingest_id,
+            Ok(PipelineRunSummary {
+                ingest_id: envelope.ingest_id.clone(),
                 accepted_at,
                 host_count: materialized.host_count,
                 network_count: materialized.network_count,
@@ -235,8 +238,26 @@ where
                 stale_elastic_ip_count,
                 stale_network_segment_count: stale_network_count,
                 retirement_held_by: retirement.held_by.clone(),
-            },
-        ))
+            })
+        })();
+
+        match materialized {
+            Ok(summary) => {
+                let record =
+                    mark_ingest_job(&self.store, &pending, IngestJobStatus::Accepted, None)?;
+                Ok((record, summary))
+            }
+            Err(err) => {
+                // 失败必须落库。收尾本身失败时保留原始错误 —— 数据面的报错才是要看的。
+                let _ = mark_ingest_job(
+                    &self.store,
+                    &pending,
+                    IngestJobStatus::Failed,
+                    Some(err.to_string()),
+                );
+                Err(err)
+            }
+        }
     }
 
     pub fn submit_atlas_input_and_materialize(
@@ -263,166 +284,165 @@ where
         envelope: IngestEnvelope,
     ) -> ApiResult<(IngestJobRecord, PipelineRunSummary)> {
         let accepted_at = envelope.received_at;
-        let record = validate_and_record_async(&self.store, &envelope).await?;
+        let pending = validate_and_record_async(&self.store, &envelope).await?;
 
-        let hosts = extract_host_candidates(&envelope)?.candidates;
-        let network_domains = extract_network_domain_candidates(&envelope)?.candidates;
-        let network_extraction = extract_network_segment_candidates(&envelope)?;
-        let networks_reported = network_extraction.reported;
-        let networks = network_extraction.candidates;
-        let elastic_ips = extract_elastic_ip_candidates(&envelope)?;
-        let processes = extract_process_runtime_candidates(&envelope)?.candidates;
-        let containers = extract_container_runtime_candidates(&envelope)?;
-        let endpoints = extract_service_endpoint_candidates(&envelope)?;
-        let business_catalog = extract_business_catalog_candidates(&envelope)
-            .map(|result| result.candidates)
-            .unwrap_or_default();
-        let host_telemetry = extract_host_telemetry_candidates(&envelope)?.candidates;
-        let process_telemetry = extract_process_telemetry_candidates(&envelope)?.candidates;
-        let subjects = extract_subject_candidates(&envelope)
-            .map(|result| result.candidates)
-            .unwrap_or_default();
-        let assignments = extract_responsibility_assignment_candidates(&envelope)
-            .map(|result| result.candidates)
-            .unwrap_or_default();
+        let materialized: ApiResult<PipelineRunSummary> = async {
+            let hosts = extract_host_candidates(&envelope)?.candidates;
+            let network_domains = extract_network_domain_candidates(&envelope)?.candidates;
+            let network_extraction = extract_network_segment_candidates(&envelope)?;
+            let networks_reported = network_extraction.reported;
+            let networks = network_extraction.candidates;
+            let elastic_ips = extract_elastic_ip_candidates(&envelope)?;
+            let processes = extract_process_runtime_candidates(&envelope)?.candidates;
+            let containers = extract_container_runtime_candidates(&envelope)?;
+            let endpoints = extract_service_endpoint_candidates(&envelope)?;
+            let business_catalog = extract_business_catalog_candidates(&envelope)
+                .map(|result| result.candidates)
+                .unwrap_or_default();
+            let host_telemetry = extract_host_telemetry_candidates(&envelope)?.candidates;
+            let process_telemetry = extract_process_telemetry_candidates(&envelope)?.candidates;
+            let subjects = extract_subject_candidates(&envelope)
+                .map(|result| result.candidates)
+                .unwrap_or_default();
+            let assignments = extract_responsibility_assignment_candidates(&envelope)
+                .map(|result| result.candidates)
+                .unwrap_or_default();
 
-        let mut catalog = hydrate_catalog_async(&self.store, envelope.tenant_id)
-            .await
-            .conv_err()?;
-        let scope = envelope.ingest_scope();
-        let known_containers: BTreeSet<Uuid> = containers
-            .candidates
-            .iter()
-            .map(|candidate| container_uuid(candidate.tenant_id, &candidate.container_key))
-            .collect();
-        materialize_business_catalog_async(&self.store, business_catalog, accepted_at)
-            .await
-            .conv_err()?;
-        let retirement = retirement_gate_async(&self.store, &envelope, accepted_at).await?;
-        materialize_network_domains_async(
-            &self.store,
-            &mut catalog,
-            network_domains,
-            &scope,
-            accepted_at,
-        )
-        .await
-        .conv_err()?;
-        let materialized = materialize_candidates_async(
-            &self.store,
-            &mut catalog,
-            hosts,
-            networks,
-            accepted_at,
-            &scope,
-        )
-        .await
-        .conv_err()?;
-        let host_stale_count = sweep_stale_hosts_async(
-            &self.store,
-            &envelope,
-            &materialized,
-            &retirement,
-            accepted_at,
-        )
-        .await
-        .conv_err()?;
-        let materialized_ips = materialize_elastic_ips_async(
-            &self.store,
-            &catalog,
-            elastic_ips.candidates,
-            accepted_at,
-            &scope,
-        )
-        .await
-        .conv_err()?;
-        let stale_elastic_ip_count = sweep_stale_elastic_ips_async(
-            &self.store,
-            &envelope,
-            &materialized_ips,
-            elastic_ips.reported,
-            &retirement,
-            accepted_at,
-        )
-        .await
-        .conv_err()?;
-        let stale_network_count = sweep_stale_networks_async(
-            &self.store,
-            &envelope,
-            &materialized,
-            networks_reported,
-            &retirement,
-            accepted_at,
-        )
-        .await
-        .conv_err()?;
-        let process_sweep = materialize_processes_async(
-            &self.store,
-            &mut catalog,
-            processes,
-            &known_containers,
-            accepted_at,
-            &scope,
-        )
-        .await
-        .conv_err()?;
-        let stale_process_count = sweep_stale_processes_async(
-            &self.store,
-            &envelope,
-            &process_sweep,
-            &scope,
-            accepted_at,
-        )
-        .await
-        .conv_err()?;
-        let container_sweep = materialize_containers_async(
-            &self.store,
-            &catalog,
-            containers.candidates,
-            accepted_at,
-            &scope,
-        )
-        .await
-        .conv_err()?;
-        let stale_container_count = if containers.reported {
-            mark_stale_containers_async(&self.store, &container_sweep, &scope, accepted_at)
+            let mut catalog = hydrate_catalog_async(&self.store, envelope.tenant_id)
                 .await
-                .conv_err()?
-        } else {
-            0
-        };
-        // 端点必须在进程之后物化：它要按 pid 找到持有 socket 的进程行。
-        let endpoint_sweep = materialize_service_endpoints_async(
-            &self.store,
-            &catalog,
-            endpoints.candidates,
-            endpoints.reported,
-            &known_containers,
-            &materialized.host_ids,
-            accepted_at,
-        )
-        .await
-        .conv_err()?;
-        materialize_host_telemetry_async(&self.store, &mut catalog, host_telemetry)
+                .conv_err()?;
+            let scope = envelope.ingest_scope();
+            let known_containers: BTreeSet<Uuid> = containers
+                .candidates
+                .iter()
+                .map(|candidate| container_uuid(candidate.tenant_id, &candidate.container_key))
+                .collect();
+            materialize_business_catalog_async(&self.store, business_catalog, accepted_at)
+                .await
+                .conv_err()?;
+            let retirement = retirement_gate_async(&self.store, &envelope, accepted_at).await?;
+            materialize_network_domains_async(
+                &self.store,
+                &mut catalog,
+                network_domains,
+                &scope,
+                accepted_at,
+            )
             .await
             .conv_err()?;
-        materialize_process_telemetry_async(&self.store, &mut catalog, process_telemetry)
+            let materialized = materialize_candidates_async(
+                &self.store,
+                &mut catalog,
+                hosts,
+                networks,
+                accepted_at,
+                &scope,
+            )
             .await
             .conv_err()?;
-        materialize_subjects_and_assignments_async(
-            &self.store,
-            envelope.tenant_id,
-            subjects,
-            assignments,
-            accepted_at,
-        )
-        .await
-        .conv_err()?;
+            let host_stale_count = sweep_stale_hosts_async(
+                &self.store,
+                &envelope,
+                &materialized,
+                &retirement,
+                accepted_at,
+            )
+            .await
+            .conv_err()?;
+            let materialized_ips = materialize_elastic_ips_async(
+                &self.store,
+                &catalog,
+                elastic_ips.candidates,
+                accepted_at,
+                &scope,
+            )
+            .await
+            .conv_err()?;
+            let stale_elastic_ip_count = sweep_stale_elastic_ips_async(
+                &self.store,
+                &envelope,
+                &materialized_ips,
+                elastic_ips.reported,
+                &retirement,
+                accepted_at,
+            )
+            .await
+            .conv_err()?;
+            let stale_network_count = sweep_stale_networks_async(
+                &self.store,
+                &envelope,
+                &materialized,
+                networks_reported,
+                &retirement,
+                accepted_at,
+            )
+            .await
+            .conv_err()?;
+            let process_sweep = materialize_processes_async(
+                &self.store,
+                &mut catalog,
+                processes,
+                &known_containers,
+                accepted_at,
+                &scope,
+            )
+            .await
+            .conv_err()?;
+            let stale_process_count = sweep_stale_processes_async(
+                &self.store,
+                &envelope,
+                &process_sweep,
+                &scope,
+                accepted_at,
+            )
+            .await
+            .conv_err()?;
+            let container_sweep = materialize_containers_async(
+                &self.store,
+                &catalog,
+                containers.candidates,
+                accepted_at,
+                &scope,
+            )
+            .await
+            .conv_err()?;
+            let stale_container_count = if containers.reported {
+                mark_stale_containers_async(&self.store, &container_sweep, &scope, accepted_at)
+                    .await
+                    .conv_err()?
+            } else {
+                0
+            };
+            // 端点必须在进程之后物化：它要按 pid 找到持有 socket 的进程行。
+            let endpoint_sweep = materialize_service_endpoints_async(
+                &self.store,
+                &catalog,
+                endpoints.candidates,
+                endpoints.reported,
+                &known_containers,
+                &materialized.host_ids,
+                accepted_at,
+            )
+            .await
+            .conv_err()?;
+            materialize_host_telemetry_async(&self.store, &mut catalog, host_telemetry)
+                .await
+                .conv_err()?;
+            materialize_process_telemetry_async(&self.store, &mut catalog, process_telemetry)
+                .await
+                .conv_err()?;
+            materialize_subjects_and_assignments_async(
+                &self.store,
+                envelope.tenant_id,
+                subjects,
+                assignments,
+                accepted_at,
+            )
+            .await
+            .conv_err()?;
 
-        Ok((
-            record,
-            PipelineRunSummary {
-                ingest_id: envelope.ingest_id,
+            Ok(PipelineRunSummary {
+                ingest_id: envelope.ingest_id.clone(),
                 accepted_at,
                 host_count: materialized.host_count,
                 network_count: materialized.network_count,
@@ -439,8 +459,28 @@ where
                 stale_elastic_ip_count,
                 stale_network_segment_count: stale_network_count,
                 retirement_held_by: retirement.held_by.clone(),
-            },
-        ))
+            })
+        }
+        .await;
+
+        match materialized {
+            Ok(summary) => {
+                let record =
+                    mark_ingest_job_async(&self.store, &pending, IngestJobStatus::Accepted, None)
+                        .await?;
+                Ok((record, summary))
+            }
+            Err(err) => {
+                let _ = mark_ingest_job_async(
+                    &self.store,
+                    &pending,
+                    IngestJobStatus::Failed,
+                    Some(err.to_string()),
+                )
+                .await;
+                Err(err)
+            }
+        }
     }
 
     pub async fn submit_atlas_input_and_materialize_async(
@@ -462,8 +502,9 @@ where
 mod materialize;
 use materialize::{
     ContainerSweep, MaterializedElasticIps, MaterializedHosts, ProcessSweep, container_uuid,
-    hydrate_catalog, hydrate_catalog_async, mark_stale_containers, mark_stale_containers_async,
-    mark_stale_elastic_ips, mark_stale_elastic_ips_async, mark_stale_hosts, mark_stale_hosts_async,
+    hydrate_catalog, hydrate_catalog_async, mark_ingest_job, mark_ingest_job_async,
+    mark_stale_containers, mark_stale_containers_async, mark_stale_elastic_ips,
+    mark_stale_elastic_ips_async, mark_stale_hosts, mark_stale_hosts_async,
     mark_stale_network_segments, mark_stale_network_segments_async, mark_stale_processes,
     mark_stale_processes_async, materialize_business_catalog, materialize_business_catalog_async,
     materialize_candidates, materialize_candidates_async, materialize_containers,

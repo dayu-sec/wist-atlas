@@ -22,6 +22,16 @@
   不再产生零长度区间；
 - 新增用例：多网卡同帧保持有效（sync + async）、下一帧消失的网卡收口。
 
+### 修复（`ingest_job` 的失败不再伪装成 `accepted`）
+
+job 行以前在**物化之前**就写 `accepted`，失败也不改状态。于是「库里有行」会被当成
+「数据已经进来了」，而实际上一帧都没写进去（看板一直「无数据」，`ingest_job` 却一直在长）。
+
+- 收到时先写 `pending`：进程在物化中途挂掉，库里能看出「收到了但没跑完」；
+- 物化成功收尾成 `accepted`，失败收尾成 `failed` 并把错误写进 `error`（收尾本身失败不覆盖原始错误）；
+- `/internal/atlas/stats`（含计数器 seed 与窗口计数）只数 `accepted`，失败帧留证据但不冒充数据；
+- 新增用例：失败帧落 `failed`（sync + async）、失败帧不计入 `received`。
+
 ## [0.7.2] · 2026-11-15
 
 ### 新增（累计写入条数：`/internal/atlas/stats` 的 `total`）
