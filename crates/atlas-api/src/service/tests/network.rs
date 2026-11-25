@@ -617,3 +617,45 @@ fn an_association_missing_from_the_next_frame_is_closed() {
     assert_eq!(closed[0].ip_addr, "172.18.0.1");
     assert_no_zero_length_interval(&rows);
 }
+
+#[test]
+fn changing_the_ip_within_a_segment_closes_the_old_association() {
+    // 网卡没变、子网没变，只换了 IP：旧关联要封口，新关联保持敞开。
+    // 收口从「每写一条关掉其它所有」挪到「一帧结束按上报集合收口」后，这条必须仍然成立。
+    let service = TopologyIngestService::new_in_memory();
+    let tenant_id = TenantId(Uuid::new_v4());
+
+    for (ingest_id, ip) in [("ing-ip-1", "10.0.1.10"), ("ing-ip-2", "10.0.1.11")] {
+        ingest(
+            &service,
+            ingest_id,
+            json!({
+                "hosts": [{ "hostname": "node-a", "machine_id": "machine-a" }],
+                "interfaces": [{
+                    "host_ref": "node-a",
+                    "machine_id": "machine-a",
+                    "name": "eth0",
+                    "addresses": [{ "family": "ipv4", "ip": ip, "prefix": 24 }],
+                }],
+            }),
+            tenant_id,
+        );
+    }
+
+    let node_a = host_id(&service, tenant_id, "node-a");
+    let rows = assocs(&service, node_a);
+    let open: Vec<_> = rows
+        .iter()
+        .filter(|assoc| assoc.validity.valid_to.is_none())
+        .collect();
+    let closed: Vec<_> = rows
+        .iter()
+        .filter(|assoc| assoc.validity.valid_to.is_some())
+        .collect();
+
+    assert_eq!(open.len(), 1, "换 IP 后同时只能有一条「现在有效」");
+    assert_eq!(open[0].ip_addr, "10.0.1.11");
+    assert_eq!(closed.len(), 1, "旧 IP 要封口，不能删（历史要留）");
+    assert_eq!(closed[0].ip_addr, "10.0.1.10");
+    assert_no_zero_length_interval(&rows);
+}

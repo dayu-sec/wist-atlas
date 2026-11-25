@@ -326,10 +326,13 @@ fn ingest_stats_counts_only_jobs_inside_the_window() {
     let other = TenantId(Uuid::new_v4());
     let now = Utc::now();
 
-    for (id, owner, age_minutes) in [
-        ("ing-now", tenant_id, 1),
-        ("ing-old", tenant_id, 120),
-        ("ing-else", other, 1),
+    for (id, owner, age_minutes, status) in [
+        ("ing-now", tenant_id, 1, "accepted"),
+        ("ing-old", tenant_id, 120, "accepted"),
+        ("ing-else", other, 1, "accepted"),
+        // 失败 / 未完成也落行（排障证据），但不算「收到数据」。
+        ("ing-failed", tenant_id, 1, "failed"),
+        ("ing-pending", tenant_id, 1, "pending"),
     ] {
         IngestStore::record_ingest_job(
             &store,
@@ -339,7 +342,7 @@ fn ingest_stats_counts_only_jobs_inside_the_window() {
                 source_name: "fixture".to_string(),
                 source_kind: "batch_import".to_string(),
                 received_at: now - chrono::Duration::minutes(age_minutes),
-                status: "accepted".to_string(),
+                status: status.to_string(),
                 payload_ref: None,
                 error: None,
             },
@@ -349,7 +352,10 @@ fn ingest_stats_counts_only_jobs_inside_the_window() {
 
     let stats =
         IngestStore::ingest_stats(&store, tenant_id, now - chrono::Duration::hours(1)).unwrap();
-    assert_eq!(stats.received, 1, "窗口外与别的租户都不算");
+    assert_eq!(
+        stats.received, 1,
+        "窗口外、别的租户、以及 failed / pending 的行都不算"
+    );
     assert!(
         stats.last_received_at.is_some(),
         "最后一条时间要看板用来分「没数据」和「断了」"

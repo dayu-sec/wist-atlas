@@ -87,8 +87,9 @@ struct TenantIngest {
 /// 进程内的投递计数：看板要「累计写入条数 + 最后一次写入时间」。
 ///
 /// 为什么不在每次请求里 `count(*)`：`ingest_job` 一直在长，秒级轮询会变成反复扫表。
-/// 这里写成功就记一次（按快照条数计），读只读两个原子量；
-/// 进程重启后第一次读用一次 `count(*)` 对齐基线。
+/// 这里写成功就记一次（按成功入库的快照条数计），读只读两个原子量；
+/// 进程重启后第一次读用一次 `count(*)` 对齐基线（只数 `accepted` 的行 ——
+/// `pending` / `failed` 的 job 行是证据，不是「数据进来了」）。
 #[derive(Debug, Default)]
 pub(crate) struct IngestCounter {
     per_tenant: Mutex<HashMap<String, TenantIngest>>,
@@ -101,7 +102,10 @@ impl IngestCounter {
         f(slot)
     }
 
-    /// 一次成功投递里写进的快照条数（重投不计：它什么都没写）。
+    /// 一次成功投递里写进库的快照条数。
+    ///
+    /// 重投**也计**：幂等去重发生在库里，它仍然证明这条链路是通的；
+    /// 看板要的是「有没有在进」，不是「有没有新状态」。
     fn record(&self, tenant: TenantId, at: chrono::DateTime<chrono::Utc>, count: u64) {
         if count == 0 {
             return;
@@ -117,7 +121,7 @@ impl IngestCounter {
         self.with_tenant(tenant, |slot| slot.seeded.load(Ordering::Relaxed))
     }
 
-    /// 用库里已有的一行数做基线（取 max：计数与 count 之间那个极小窗口不能把已计过的抹掉）。
+    /// 用库里**已成功写入**的行数做基线（取 max：计数与 count 之间那个极小窗口不能把已计过的抹掉）。
     fn seed(&self, tenant: TenantId, total: u64, last_at_ms: Option<i64>) {
         self.with_tenant(tenant, |slot| {
             slot.total.fetch_max(total, Ordering::Relaxed);
@@ -139,10 +143,13 @@ impl IngestCounter {
     }
 }
 
-/// `GET /internal/atlas/stats?window_seconds=&tenant=` — 窗口内投递批次 + 最后一次时间。
+/// `GET /internal/atlas/stats?window_seconds=&tenant=` — 窗口内**成功**投递批次 + 最后一次时间。
 ///
 /// 一行 `ingest_job` = 数据面发来的一批（`batch_size > 1` 时一批里有多条记录），
 /// 所以单位是**批**，不是条。看板要的是「有没有数据进来」，不是「进来多少条记录」。
+///
+/// 统计只认 `status = 'accepted'`：`pending` / `failed` 的行也落库（排障要证据），
+/// 但把它们算成「收到数据」正是「库里有行、看板无数据」那种最难查的错觉。
 ///
 /// 客户号走写入时同一条解析（`resolve_write`）：未登记一律 400，
 /// 不静默汇总成“全租户”，否则多客户站点会把不同客户的数加在一起。
